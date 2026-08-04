@@ -14,6 +14,7 @@ import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { RunPausePrompt } from '@/src/components/RunPausePrompt';
 import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
@@ -674,6 +675,7 @@ export default function TestRuns() {
           {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
           {selectedRun.triggerMeta?.automationJobId && (
             <div className="p-5 border-b border-[var(--border)] overflow-auto">
+              <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
               <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
             </div>
           )}

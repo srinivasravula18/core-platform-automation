@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Download, FileVideo, Image as ImageIcon, FileArchive, FileText, Copy } from 'lucide-react';
 import { showToast } from '@/src/lib/dialog';
-import { useAgentEvents, jobStatusMeta, type Job } from '@/src/lib/useAutomation';
+import { useAgentEvents, useJobPauses, jobStatusMeta, type Job } from '@/src/lib/useAutomation';
 import { automationProgressPercent, type ExecutionStepProgress } from '@/core/shared/automationProgress';
 
 /**
@@ -58,6 +58,7 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
   const [loading, setLoading] = useState(true);
   const [showShots, setShowShots] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
+  const { pauses } = useJobPauses(jobId);
 
   const loadJob = useCallback(async () => {
     try { const d = await fetch(`/api/automation/jobs/${jobId}`).then((r) => r.json()); setJob(d?.job || null); } catch { /* keep */ }
@@ -71,7 +72,7 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
 
   // SSE can be missed while a tab is hidden or reconnecting; poll until the durable job is terminal.
   useEffect(() => {
-    if (job && !['queued', 'dispatched', 'running', 'uploading'].includes(job.status)) return;
+    if (job && !['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status)) return;
     const timer = window.setInterval(() => { void loadJob(); void loadArtifacts(); }, 2000);
     return () => window.clearInterval(timer);
   }, [job?.status, loadJob, loadArtifacts]);
@@ -99,13 +100,13 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
   const screenshots = artifacts.filter((a) => a.kind === 'screenshot');
   const video = artifacts.find((a) => a.kind === 'video');
   const others = artifacts.filter((a) => a.kind !== 'screenshot' && a.kind !== 'video');
-  const running = ['queued', 'dispatched', 'running', 'uploading'].includes(status);
+  const running = ['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(status);
   const steps = (Array.isArray((s as any).executionSteps) ? (s as any).executionSteps : []) as ExecutionStepProgress[];
   const currentStep = steps.find((step) => step.status === 'Running');
   const completedSteps = steps.filter((step) => step.status !== 'Running').length;
   const stepTotal = Math.max(Number((s as any).stepTotal) || 0, steps.length);
   const elapsedMs = job?.startedAt ? Math.max(0, (job.finishedAt ? Date.parse(job.finishedAt) : clock) - Date.parse(job.startedAt)) : 0;
-  const progress = automationProgressPercent(status, Number((s as any).stepCompleted) || completedSteps, stepTotal, String((s as any).event || ''));
+  const progress = automationProgressPercent(status === 'awaiting_user' ? 'running' : status, Number((s as any).stepCompleted) || completedSteps, stepTotal, String((s as any).event || ''));
 
   useEffect(() => {
     if (!running) return;
@@ -179,6 +180,17 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
         </div>
       )}
       {job?.error && <div className="mt-2 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">{job.error}</div>}
+
+      {pauses.length > 0 && (
+        <div className="mt-3 overflow-x-auto rounded border border-[var(--border)]">
+          <table className="w-full min-w-[34rem] text-left text-xs">
+            <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)]"><tr><th className="px-3 py-2">Assistance</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2">Resolved by</th><th className="px-3 py-2 text-right">Time</th></tr></thead>
+            <tbody className="divide-y divide-[var(--border)]">{pauses.map((pause) => (
+              <tr key={`${pause.pauseId}:${pause.attempt}`}><td className="px-3 py-2 text-[var(--text-primary)]">{pause.prompt}</td><td className="px-3 py-2 capitalize text-[var(--text-muted)]">{pause.outcome === 'open' ? 'Waiting' : pause.outcome}</td><td className="px-3 py-2 text-[var(--text-muted)]">{pause.resolvedBy || '—'}</td><td className="px-3 py-2 text-right tabular-nums text-[var(--text-muted)]">{duration(Math.max(0, Date.parse(pause.resolvedAt || new Date(clock).toISOString()) - Date.parse(pause.openedAt)))}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
 
       {loading ? (
         <div className="mt-3 flex items-center gap-2 text-xs text-[var(--text-muted)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading snapshots…</div>

@@ -15,6 +15,9 @@ import { uploadArtifact } from './cloud.js';
 import { collectArtifacts } from './artifacts.js';
 import { chromiumChannel } from './browsers.js';
 import { playwrightFailure } from './playwrightFailure.js';
+import { startPauseControl } from './pauseControl.js';
+import { pausePreludeSource } from './preludeSource.js';
+import { browserPermissionPrelude, normalizeBrowserPermissionSettings } from './browserPermissions.js';
 const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
 const require = createRequire(import.meta.url);
 const playwrightCli = path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js');
@@ -46,20 +49,24 @@ function progressFromLine(line) {
         return null;
     }
 }
-function configTemplate(engine, headed) {
+export function configTemplate(engine, headed, hasPauses = false, settings = { permissions: [] }) {
     const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
     // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
     const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
+    const fakeMediaArgs = browserName === 'chromium' && settings.fakeMedia
+        ? `, launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }`
+        : '';
+    const geolocation = settings.geolocation ? `, geolocation: ${JSON.stringify(settings.geolocation)}` : '';
     return `import { defineConfig } from 'playwright/test';
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
-  timeout: 60000,
+  timeout: ${hasPauses ? 0 : 60000},
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'}, trace: 'on', video: 'on', screenshot: 'on' },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'}, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${fakeMediaArgs} },
 });
 `;
 }
@@ -70,6 +77,7 @@ export class Runner {
     send;
     cancelled = new Set();
     running = new Map();
+    pauseControls = new Map();
     constructor(log, workDir, config, send) {
         this.log = log;
         this.workDir = workDir;
@@ -79,8 +87,31 @@ export class Runner {
     isBusy() {
         return this.running.size > 0;
     }
+    isAwaitingUser() {
+        return [...this.pauseControls.values()].some((control) => control.openPauses().length > 0);
+    }
+    openPauses() {
+        return [...this.pauseControls.values()].flatMap((control) => control.openPauses());
+    }
+    advertiseOpenPauses() {
+        for (const pause of this.openPauses())
+            this.send('job.paused', { ...pause });
+    }
+    resolvePause(jobId, answer) {
+        const control = this.pauseControls.get(jobId);
+        const wasOpen = control?.openPauses().some((pause) => pause.pauseId === answer.pauseId && pause.attempt === answer.attempt) ?? false;
+        const resolved = control?.resolve(answer.pauseId, answer) ?? false;
+        if (resolved && wasOpen)
+            this.send('job.progress', { jobId, phase: 'running', event: 'pause_resolved', pauseId: answer.pauseId, outcome: answer.outcome });
+        return resolved;
+    }
+    cancelPause(jobId, pauseId, attempt = 1, resolvedBy = 'cloud') {
+        return this.resolvePause(jobId, { pauseId, attempt, outcome: 'aborted', resolvedBy });
+    }
     cancel(jobId) {
         this.cancelled.add(jobId);
+        for (const pause of this.pauseControls.get(jobId)?.openPauses() || [])
+            this.cancelPause(jobId, pause.pauseId, pause.attempt, 'job_cancelled');
         const child = this.running.get(jobId);
         if (child?.pid) {
             if (process.platform === 'win32')
@@ -91,13 +122,26 @@ export class Runner {
     }
     async run(job) {
         const runDir = path.join(this.workDir, 'runs', job.jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
-        fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
-        fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed));
-        fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
-        fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), bundledTestRuntime(job.script || ''));
-        this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed }, 'job started');
-        this.send('job.progress', { jobId: job.jobId, phase: 'running' });
-        const { exitCode, output } = await this.execute(job, runDir);
+        const hasPauses = job.pauseResume === true && /\btf\.pause\s*\(/.test(job.script || '');
+        const browserPermissions = normalizeBrowserPermissionSettings(job.browserPermissions);
+        const control = hasPauses ? await startPauseControl(job.jobId, (pause) => this.send('job.paused', { ...pause })) : undefined;
+        if (control)
+            this.pauseControls.set(job.jobId, control);
+        let exitCode = 1;
+        let output = [];
+        try {
+            fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
+            fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed, hasPauses, browserPermissions));
+            fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
+            fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, job.appUrl)}${hasPauses ? pausePreludeSource : ''}${bundledTestRuntime(job.script || '')}`);
+            this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed, pauses: hasPauses }, 'job started');
+            this.send('job.progress', { jobId: job.jobId, phase: 'running' });
+            ({ exitCode, output } = await this.execute(job, runDir, control));
+        }
+        finally {
+            this.pauseControls.delete(job.jobId);
+            await control?.close();
+        }
         if (this.cancelled.has(job.jobId)) {
             this.cancelled.delete(job.jobId);
             this.send('job.done', { jobId: job.jobId, exitCode: 130, summary: {}, error: 'Cancelled.' });
@@ -111,12 +155,17 @@ export class Runner {
         this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
         this.log.info({ jobId: job.jobId, exitCode, summary }, 'job finished');
     }
-    execute(job, runDir) {
+    execute(job, runDir, control) {
         return new Promise((resolve) => {
             const output = [];
             const child = spawn(process.execPath, [playwrightCli, 'test', '--config', 'playwright.config.ts'], {
                 cwd: runDir,
-                env: { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never', TESTFLOW_STEP_TOTAL: String(job.stepTotal || 0) },
+                env: {
+                    ...process.env,
+                    PLAYWRIGHT_HTML_OPEN: 'never',
+                    TESTFLOW_STEP_TOTAL: String(job.stepTotal || 0),
+                    ...(control ? { TESTFLOW_CONTROL_URL: control.url, TESTFLOW_CONTROL_KEY: control.key, TESTFLOW_JOB_ID: job.jobId } : {}),
+                },
             });
             this.running.set(job.jobId, child);
             const onLine = (line) => {

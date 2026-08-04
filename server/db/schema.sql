@@ -1120,6 +1120,32 @@ CREATE INDEX IF NOT EXISTS automation_jobs_agent_idx ON automation_jobs(agent_id
 CREATE INDEX IF NOT EXISTS automation_jobs_status_idx ON automation_jobs(status);
 CREATE INDEX IF NOT EXISTS automation_jobs_batch_idx ON automation_jobs(batch_id, row_number);
 
+-- Human-in-the-loop pause metadata. Supplied values are deliberately never stored.
+CREATE TABLE IF NOT EXISTS automation_job_pauses (
+  id              TEXT PRIMARY KEY,
+  job_id          TEXT NOT NULL REFERENCES automation_jobs(id) ON DELETE CASCADE,
+  pause_id        TEXT NOT NULL,
+  attempt         INTEGER NOT NULL DEFAULT 1,
+  kind            TEXT NOT NULL,
+  prompt          TEXT NOT NULL,
+  hint            TEXT DEFAULT '',
+  masked          BOOLEAN NOT NULL DEFAULT true,
+  requires_headed BOOLEAN NOT NULL DEFAULT false,
+  timeout_ms      INTEGER NOT NULL,
+  on_timeout      TEXT NOT NULL DEFAULT 'fail',
+  outcome         TEXT NOT NULL DEFAULT 'open', -- open | resolved | skipped | expired | aborted
+  opened_at       TIMESTAMPTZ NOT NULL,
+  expires_at      TIMESTAMPTZ NOT NULL,
+  resolved_at     TIMESTAMPTZ,
+  resolved_by     TEXT DEFAULT '',
+  value_length    INTEGER,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(job_id, pause_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS automation_job_pauses_job_idx ON automation_job_pauses(job_id, opened_at);
+CREATE INDEX IF NOT EXISTS automation_job_pauses_open_idx ON automation_job_pauses(job_id, outcome) WHERE outcome = 'open';
+
 -- Schedules that enqueue jobs. kind: now | daily | weekly | monthly | cron | webhook.
 CREATE TABLE IF NOT EXISTS automation_schedules (
   id                 TEXT PRIMARY KEY,

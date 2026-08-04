@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { withEventSourceAuth } from '@/src/lib/base-path';
+import type { BrowserPermissionSettings } from '@/core/shared/browserPermissions';
+export type { BrowserPermissionSettings } from '@/core/shared/browserPermissions';
 
 // Client types mirror the cloud's PublicAgent / recording / job / schedule shapes (server/features/automation).
 export interface Agent {
@@ -22,12 +24,20 @@ export interface Recording {
   id: string; name: string; appUrl: string; browser: string; environment: string;
   status: 'draft' | 'recording' | 'ready'; script: string; agentId: string | null;
   stats: Record<string, number>; createdAt: string; completedAt: string | null;
+  metadata?: { browserPermissions?: BrowserPermissionSettings; [key: string]: any };
 }
 
 export interface Job {
   id: string; recordingId: string; agentId: string; trigger: string; status: string;
   queuedAt: string; startedAt: string | null; finishedAt: string | null; exitCode: number | null;
   summary: Record<string, any>; error: string;
+}
+
+export interface JobPause {
+  id: string; jobId: string; pauseId: string; attempt: number; kind: 'input' | 'manual_action';
+  prompt: string; hint?: string; masked: boolean; requiresHeaded: boolean; timeoutMs: number;
+  onTimeout: 'fail' | 'skip'; outcome: 'open' | 'resolved' | 'skipped' | 'expired' | 'aborted';
+  openedAt: string; expiresAt: string; resolvedAt?: string | null; resolvedBy?: string; valueLength?: number | null;
 }
 
 export interface Schedule {
@@ -45,6 +55,7 @@ export function jobStatusMeta(status: string): { label: string; cls: string } {
     case 'done': return { label: 'Passed', cls: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30' };
     case 'failed': return { label: 'Failed', cls: 'bg-red-500/15 text-red-500 border-red-500/30' };
     case 'running': return { label: 'Running', cls: 'bg-blue-500/15 text-blue-500 border-blue-500/30' };
+    case 'awaiting_user': return { label: 'Waiting for you', cls: 'bg-amber-500/15 text-amber-500 border-amber-500/30' };
     case 'uploading': return { label: 'Uploading', cls: 'bg-blue-500/15 text-blue-500 border-blue-500/30' };
     case 'dispatched': return { label: 'Dispatched', cls: 'bg-indigo-500/15 text-indigo-500 border-indigo-500/30' };
     case 'cancelled': return { label: 'Cancelled', cls: 'bg-slate-500/15 text-slate-400 border-slate-500/30' };
@@ -114,6 +125,23 @@ export function useJobs() { const { items, loading, refresh } = useCollection<Jo
 export function useRecordings() { const { items, loading, refresh } = useCollection<Recording>('/api/automation/recordings', 'recordings'); return { recordings: items, loading, refresh }; }
 export function useSchedules() { const { items, loading, refresh } = useCollection<Schedule>('/api/automation/schedules', 'schedules'); return { schedules: items, loading, refresh }; }
 
+export function useJobPauses(jobId: string) {
+  const [pauses, setPauses] = useState<JobPause[]>([]);
+  const [loading, setLoading] = useState(true);
+  const refresh = useCallback(async () => {
+    if (!jobId) return;
+    try {
+      const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}/pauses`).then((response) => response.json());
+      setPauses(Array.isArray(data?.pauses) ? data.pauses : []);
+    } catch { /* keep previous */ } finally { setLoading(false); }
+  }, [jobId]);
+  useEffect(() => { setPauses([]); setLoading(true); void refresh(); }, [refresh]);
+  useAgentEvents((event) => {
+    if (event.scopeType === 'job' && event.scopeId === jobId && (event.type === 'job.paused' || event.type === 'job.resumed')) void refresh();
+  });
+  return { pauses, loading, refresh };
+}
+
 /**
  * Subscribe to the live automation event stream (SSE). The handler ref is kept current so the
  * EventSource itself is created once and survives handler changes (no reconnect storms).
@@ -136,6 +164,7 @@ export interface RecordingCaseMeta {
 }
 export interface StartRecordingInput {
   name: string; appUrl: string; browser: string; environment: string; agentId: string; caseMeta?: RecordingCaseMeta;
+  browserPermissions?: BrowserPermissionSettings;
 }
 export type RecordingPhase = 'setup' | 'recording' | 'summary';
 

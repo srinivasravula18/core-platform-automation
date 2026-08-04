@@ -25,7 +25,7 @@ export interface GroupedStep {
   groupIndex?: number;
 }
 
-type StepKind = 'nav' | 'click' | 'fill' | 'check' | 'select' | 'press' | 'verify';
+type StepKind = 'nav' | 'click' | 'fill' | 'check' | 'select' | 'press' | 'pause' | 'verify';
 
 interface AtomicStep {
   action: string;
@@ -182,7 +182,10 @@ export function parseAtomicSteps(script: string): AtomicStep[] {
   for (const raw of String(script || '').split('\n')) {
     const line = raw.trim();
     let m: RegExpMatchArray | null;
-    if ((m = line.match(/\.(?:goto|waitForURL)\(['"`]([^'"`]+)['"`]/))) {
+    if (/\btf\.pause\s*\(/.test(line)) {
+      const prompt = line.match(/["']prompt["']\s*:\s*["']([^"']+)/)?.[1] || line.match(/\bprompt\s*:\s*["']([^"']+)/)?.[1] || 'human input';
+      steps.push({ action: `Pause for ${prompt}`, expected: 'The requested human action is completed.', kind: 'pause', locator: prompt });
+    } else if ((m = line.match(/\.(?:goto|waitForURL)\(['"`]([^'"`]+)['"`]/))) {
       steps.push({ action: `Navigate to ${m[1]}`, expected: 'The page loads successfully.', kind: 'nav', locator: m[1] });
     } else if (/getBy\w+\(/.test(line) && /\.click\(/.test(line)) {
       const d = describeLocator(line);

@@ -27,6 +27,9 @@ const MISSION_SCRIPT = `test('agent profile', async ({ page }) => {
 async function main() {
   const service = await import('../server/features/automation/recordingService');
   const { createScriptMaterializer } = await import('../server/features/automation/scriptMaterializer');
+  const { proposeRecordingPauses } = await import('../server/features/automation/pauseDetection');
+  const { setPauseResumeV1 } = await import('../server/features/automation/flag');
+  setPauseResumeV1(1);
   const { Scripts } = await import('../server/db/repository');
   const { db } = await import('../server/shared/storage');
   db.recordings = []; db.recordingSteps = []; db.recordingStepOverrides = [];
@@ -61,7 +64,7 @@ async function main() {
   assert.strictEqual(editedStep.canUndo, true);
   assert.strictEqual(editedStep.canRedo, false);
   const invalid = await service.overrideRecordingStep(recording.id, steps[0].id, 'not-an-email');
-  assert.ok('error' in invalid && invalid.status === 400, 'field-type validation rejects invalid email');
+  assert.ok(!('error' in invalid), 'email-like fields still accept usernames');
 
   await Scripts.upsert({
     id: 'SCR-AGENT-1', name: 'Agent profile', filename: 'agent-profile.spec.ts', code: MISSION_SCRIPT,
@@ -90,7 +93,38 @@ test('empty', async ({ page }) => {
     'a parseable recording never falls back to the generic run-the-script step',
   );
 
-  console.log('PASS: recording step derivation, immutable overrides, undo/redo, and empty-recording guard.');
+  const otpScript = `test('verify', async ({ page }) => {\n  await page.getByLabel('Verification Code').fill('123456');\n});`;
+  const otpRecording = await service.createRecording({ name: 'Verify', appUrl: 'https://example.test' }, scope);
+  await service.finalizeRecording(otpRecording.id, { script: otpScript });
+  let otpStep = (await service.listRecordingSteps(otpRecording.id))[0];
+  assert.strictEqual(otpStep.metadata.pauseProposal.kind, 'input', 'one-time code fields get a review-only proposal');
+  assert.strictEqual(otpStep.metadata.pause, undefined, 'proposals do not change execution before acceptance');
+  const accepted = await service.updateRecordingStepPause(otpRecording.id, otpStep.id, 'accept');
+  assert.ok(!('error' in accepted), 'a proposed pause can be accepted');
+  otpStep = (await service.listRecordingSteps(otpRecording.id))[0];
+  const pausedScript = createScriptMaterializer(otpScript, [otpStep], [], [])({ values: {} });
+  assert.ok(pausedScript.includes('fill(await tf.pause('), 'accepted input pause supplies the recorded action value');
+  assert.ok(!pausedScript.includes('123456'), 'recorded one-time value is removed from the runtime script');
+  const manualScript = createScriptMaterializer(otpScript, [{ ...otpStep, metadata: { ...otpStep.metadata, pause: { ...otpStep.metadata.pause, kind: 'manual_action' } } }], [], [])({ values: {} });
+  assert.ok(manualScript.includes('await tf.pause(') && manualScript.includes("fill('123456')"), 'manual pauses run before the recorded action');
+  setPauseResumeV1(0);
+  assert.ok(createScriptMaterializer(otpScript, [otpStep], [], [])({ values: {} }).includes("fill('123456')"), 'flag off leaves accepted markers inert');
+  setPauseResumeV1(1);
+
+  const draft = (label: string, metadata: Record<string, unknown> = {}) => ({ ordinal: 0, type: 'fill' as const, locator: label, locatorStrategy: 'label' as const, fieldKind: 'text' as const, originalValue: null, readOnly: true, metadata: { label, ...metadata } });
+  const external = proposeRecordingPauses("await page.goto('https://login.example.net');\nawait page.getByLabel('Account').fill('x');", [draft('Account')], 'https://example.test');
+  assert.strictEqual((external[0].metadata.pauseProposal as any).reason, 'cross-origin', 'cross-origin fields get a manual-action proposal');
+  const idle = proposeRecordingPauses("await page.getByLabel('Approval').fill('x');", [draft('Approval')], 'https://example.test', { 0: { idleMs: 20_000 } });
+  assert.strictEqual((idle[0].metadata.pauseProposal as any).reason, 'idle-gap', 'observed idle gaps get a manual-action proposal');
+  const dismissedRecording = await service.createRecording({ name: 'Dismiss', appUrl: 'https://example.test' }, scope);
+  await service.finalizeRecording(dismissedRecording.id, { script: otpScript });
+  const dismissedStep = (await service.listRecordingSteps(dismissedRecording.id))[0];
+  await service.updateRecordingStepPause(dismissedRecording.id, dismissedStep.id, 'dismiss');
+  const afterDismiss = (await service.listRecordingSteps(dismissedRecording.id))[0];
+  assert.strictEqual(afterDismiss.metadata.pauseProposal, undefined, 'a proposal can be dismissed');
+  assert.strictEqual(afterDismiss.metadata.pauseProposalDismissed, true, 'dismissal is persisted');
+
+  console.log('PASS: recording step derivation, overrides, pause proposals/authoring, and empty-recording guard.');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

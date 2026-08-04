@@ -62,6 +62,7 @@ export default function TestCases() {
   const { agents: runAgents } = useAgents();
   // Application URL for the New Case → Automation (codegen) recording; shown above Title.
   const [automationUrl, setAutomationUrl] = useState('');
+  const [automationEnvironment, setAutomationEnvironment] = useState('QA');
   const [automationFooterTarget, setAutomationFooterTarget] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
@@ -835,7 +836,7 @@ export default function TestCases() {
 
           {automationMode ? (
             <div className="flex flex-col gap-4">
-              <AppUrlField value={automationUrl} onChange={setAutomationUrl} />
+              <AppUrlField value={automationUrl} onChange={setAutomationUrl} onEnvironment={setAutomationEnvironment} />
               <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
                 <input type="text" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g., Login → List view" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -865,6 +866,8 @@ export default function TestCases() {
               {automationFooterTarget && <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
+                selectedEnvironment={automationEnvironment}
+                onEnvironmentChange={setAutomationEnvironment}
                 caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
                 footerTarget={automationFooterTarget}

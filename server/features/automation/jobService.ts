@@ -9,7 +9,7 @@
  * LangGraph runtime uses for agent runs.
  */
 
-import { AutomationExecutionBatches, AutomationJobs, Recordings, Runs } from '../../db/repository';
+import { Agents, AutomationExecutionBatches, AutomationJobPauses, AutomationJobs, Recordings, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
@@ -22,6 +22,18 @@ import { cancelServerJob } from './serverRunner';
 import { runTeardown } from './teardownService';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
 import { parseAtomicSteps } from './stepGrouping';
+import { closeOpenPausesForJob, recordPause } from './pauseService';
+import { isPauseResumeEnabled } from './flag';
+
+const MAX_PAUSED_PER_AGENT = 3;
+export const MIN_PAUSE_AGENT_VERSION = '1.0.2';
+
+export function agentSupportsPauseResume(version: string): boolean {
+  const parts = (value: string) => String(value || '').split('.').slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  const current = parts(version); const minimum = parts(MIN_PAUSE_AGENT_VERSION);
+  for (let index = 0; index < 3; index += 1) if (current[index] !== minimum[index]) return current[index] > minimum[index];
+  return true;
+}
 
 function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
@@ -30,7 +42,7 @@ function persist(reason: string) {
 export async function setJobStatus(jobId: string, status: JobStatus, patch: Record<string, any> = {}) {
   const job = await AutomationJobs.get(jobId);
   if (!job) return null;
-  if (['done', 'failed', 'cancelled'].includes(job.status) && ['queued', 'dispatched', 'running', 'uploading'].includes(status)) return job;
+  if (['done', 'failed', 'cancelled'].includes(job.status) && ['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(status)) return job;
   const terminal = status === 'done' || status === 'failed' || status === 'cancelled';
   const summary = terminal
     ? finalizeExecutionProgress(patch.summary || job.summary || {}, status, String(patch.error || job.error || ''), Date.parse(String(patch.finishedAt || '')) || Date.now())
@@ -39,7 +51,7 @@ export async function setJobStatus(jobId: string, status: JobStatus, patch: Reco
   persist('job status');
   await emitEvent({ scopeType: 'job', scopeId: jobId, type: `job.${status}`, ownerId: job.ownerId, data: { job: saved } });
   if (saved.batchId) await refreshExecutionBatch(saved.batchId);
-  if (['queued', 'dispatched', 'running', 'uploading'].includes(status)) await syncLinkedRunProgress(jobId, status, saved.summary || {});
+  if (['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(status)) await syncLinkedRunProgress(jobId, status, saved.summary || {});
   return saved;
 }
 const setStatus = setJobStatus;
@@ -81,8 +93,17 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
   const active = (await AutomationJobs.list()).some((item) =>
     item.id !== job.id && item.agentId === job.agentId && ['dispatched', 'running', 'uploading'].includes(item.status));
   if (active) return false;
+  const paused = (await AutomationJobs.list()).filter((item) => item.agentId === job.agentId && item.status === 'awaiting_user').length;
+  if (paused >= MAX_PAUSED_PER_AGENT) return false;
   const rec = job.recordingId ? await Recordings.get(job.recordingId) : null;
   const script = (job as any).script || rec?.script || '';
+  if (isPauseResumeEnabled() && /\btf\.pause\s*\(/.test(script)) {
+    const agent = await Agents.get(job.agentId);
+    if (!agentSupportsPauseResume(String(agent?.version || ''))) {
+      await setStatus(jobId, 'failed', { error: `This run requires desktop agent ${MIN_PAUSE_AGENT_VERSION} or newer. Update the agent and retry.`, finishedAt: new Date().toISOString() });
+      return false;
+    }
+  }
   const ok = dispatchToAgent(job.agentId, {
     type: 'job.dispatch',
     payload: {
@@ -93,10 +114,12 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
       browser: rec?.browser || 'chromium',
       environment: rec?.environment || 'QA',
       appUrl: rec?.appUrl || '',
+      browserPermissions: rec?.metadata?.browserPermissions || {},
       // Manual runs are always headed (a window opens on the agent so the user can watch). Derive it
       // from the persisted trigger so the flag survives a server restart or a re-dispatch on reconnect
       // — the in-memory jobRunOptions below is only a same-process fast path, not the source of truth.
       headed: jobRunOptions.get(job.id)?.headed ?? (job.trigger === 'manual'),
+      pauseResume: isPauseResumeEnabled(),
     },
   });
   if (ok) {
@@ -121,7 +144,7 @@ export async function refreshExecutionBatch(batchId: string): Promise<any> {
   const summary = {
     total: jobs.length,
     queued: count('queued'),
-    running: count('dispatched') + count('running') + count('uploading'),
+    running: count('dispatched') + count('running') + count('awaiting_user') + count('uploading'),
     passed: count('done'),
     failed: count('failed'),
     cancelled: count('cancelled'),
@@ -192,6 +215,7 @@ export async function cancelJob(jobId: string) {
   if (job.agentId && isAgentConnected(job.agentId)) dispatchToAgent(job.agentId, { type: 'cancel', payload: { jobId } });
   else cancelServerJob(jobId); // server-side run (scheduled): kill the local playwright process
   await setStatus(jobId, 'cancelled', { finishedAt: new Date().toISOString() });
+  await closeOpenPausesForJob(jobId);
   await syncLinkedRun(jobId, 'cancelled', {});
   if (job.agentId) await dispatchNextForAgent(job.agentId);
   return { ok: true };
@@ -216,9 +240,13 @@ export async function recoverOrphanedJobs(): Promise<number> {
   const jobs = await AutomationJobs.list();
   let n = 0;
   for (const job of jobs) {
-    if (['queued', 'dispatched', 'running', 'uploading'].includes(job.status) && !isAgentConnected(job.agentId)) {
+    if (['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status) && !isAgentConnected(job.agentId)) {
       // Leave still-queued jobs for a connected agent alone; only fail ones that were mid-flight.
       if (job.status === 'queued') continue;
+      if (job.status === 'awaiting_user') {
+        const open = await AutomationJobPauses.listOpen(job.id);
+        if (open.some((pause: any) => Date.parse(pause.expiresAt) > Date.now())) continue;
+      }
       await setStatus(job.id, 'failed', { error: 'Interrupted by a server restart.', finishedAt: new Date().toISOString() });
       n++;
     }
@@ -251,6 +279,17 @@ onAgentFrame('job.progress', async (_agentId, frame: AgentFrame) => {
   });
 });
 
+onAgentFrame('job.paused', async (agentId, frame: AgentFrame) => {
+  const pause = await recordPause(agentId, frame.payload);
+  if (!pause) return;
+  const job = await AutomationJobs.get(pause.jobId);
+  const prior = job?.summary || {};
+  await setStatus(pause.jobId, 'awaiting_user', {
+    summary: { ...prior, pauseCount: (await AutomationJobPauses.listByJob(pause.jobId)).length, assisted: true },
+  });
+  await dispatchNextForAgent(agentId);
+});
+
 onAgentFrame('job.log', async (_agentId, frame: AgentFrame) => {
   const { jobId, line } = frame.payload || {};
   if (!jobId) return;
@@ -267,6 +306,7 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
   const finalSummary = { ...(current?.summary || {}), ...(summary || {}) };
   await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
+  await closeOpenPausesForJob(jobId);
   await syncLinkedRun(jobId, status, summary || {});
   const job = await AutomationJobs.get(jobId);
   // Result gate: on a failed row in a stop-on-failure batch, cancel the rest so no more bad data is written.
@@ -278,7 +318,7 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
 async function enforceStopOnFailure(batchId: string): Promise<void> {
   const batch = await AutomationExecutionBatches.get(batchId);
   if (!batch?.stopOnFailure) return;
-  const pending = (await AutomationJobs.list()).filter((job) => job.batchId === batchId && ['queued', 'dispatched', 'running', 'uploading'].includes(job.status));
+  const pending = (await AutomationJobs.list()).filter((job) => job.batchId === batchId && ['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status));
   for (const job of pending) await cancelJob(job.id);
 }
 
@@ -288,11 +328,15 @@ export async function syncLinkedRunProgress(jobId: string, phase: string, detail
   const completed = Math.max(0, Number(detail.stepCompleted ?? detail.completed) || 0);
   const total = Math.max(0, Number(detail.stepTotal ?? detail.total) || 0);
   const event = String(detail.event || '');
-  const percent = automationProgressPercent(phase, completed, total, event);
+  const percent = phase === 'awaiting_user'
+    ? Number(run.triggerMeta?.automationExecution?.percent || 20)
+    : automationProgressPercent(phase, completed, total, event);
   const currentTest = String(detail.stepTitle || detail.currentTest || '').trim();
   const label = phase === 'uploading'
     ? 'Uploading execution evidence'
-    : phase === 'dispatched'
+      : phase === 'awaiting_user'
+        ? 'Waiting for your input'
+      : phase === 'dispatched'
       ? 'Starting on local agent'
       : phase === 'queued'
         ? 'Queued for execution'

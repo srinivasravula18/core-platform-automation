@@ -23,27 +23,47 @@ const SCOPE = { projectId: 'p1', appId: 'a1' as string | null, userId: 'u1', rol
 async function main() {
   const rec = await import('../server/features/automation/recordingService');
   const jobs = await import('../server/features/automation/jobService');
+  const { setPauseResumeV1 } = await import('../server/features/automation/flag');
+  setPauseResumeV1(1);
   const sched = await import('../server/features/automation/schedulerService');
   const artifacts = await import('../server/features/automation/artifactService');
   const gateway = await import('../server/features/automation/agentGateway');
   const events = await import('../server/features/automation/eventsService');
+  const pauses = await import('../server/features/automation/pauseService');
   const { db } = await import('../server/shared/storage');
   const { AutomationEvents, AutomationJobs, Runs, Scripts } = await import('../server/db/repository');
   const { playwrightFailure } = await import('../agent/src/playwrightFailure');
-  db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
+  db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationJobPauses = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
+  ok(!jobs.agentSupportsPauseResume('0.9.9') && !jobs.agentSupportsPauseResume('1.0.1') && jobs.agentSupportsPauseResume('1.0.2') && jobs.agentSupportsPauseResume('1.2.0'), 'pause runs require a compatible desktop agent version');
 
   console.log('recording lifecycle');
-  const r = await rec.createRecording({ name: 'Login flow', appUrl: 'http://localhost:5002', browser: 'chromium' }, SCOPE);
+  const r = await rec.createRecording({
+    name: 'Login flow', appUrl: 'http://localhost:5002', browser: 'chromium',
+    browserPermissions: { permissions: ['camera', 'geolocation'], geolocation: { latitude: 12.97, longitude: 77.59 }, fakeMedia: true },
+  }, SCOPE);
   ok(!!r.id && r.status === 'draft', 'recording created as draft');
   ok(r.ownerId === 'u1' && r.projectId === 'p1', 'recording scope-stamped');
+  ok(r.metadata.browserPermissions?.fakeMedia === true && r.metadata.browserPermissions?.geolocation?.latitude === 12.97, 'browser permission preferences persisted');
   const renamed = await rec.updateRecording(r.id, { name: 'Login flow v2' });
   ok(renamed?.name === 'Login flow v2', 'recording renamed');
 
   console.log('record.done frame ingests the script + stats');
-  await gateway.deliverAgentFrame('agent-x', { type: 'record.done', agentId: 'agent-x', seq: 1, payload: { recordingId: r.id, script: "import { test } from '@playwright/test';", stats: { actions: 12, assertions: 3 } } });
+  const completeRecordedScript = "import { test } from '@playwright/test';\ntest('recorded flow', async ({ page }) => {\n  await page.goto('http://localhost:5002');\n  await page.getByRole('button', { name: 'Continue' }).click();\n});";
+  await gateway.deliverAgentFrame('agent-x', { type: 'record.done', agentId: 'agent-x', seq: 1, payload: { recordingId: r.id, script: completeRecordedScript, stats: { actions: 12, assertions: 3 } } });
   const done = await rec.getRecording(r.id);
   ok(done.status === 'ready', 'recording marked ready after record.done');
-  ok(done.script.includes('@playwright/test') && done.stats.actions === 12, 'script + stats persisted');
+  ok(done.script === completeRecordedScript && done.stats.actions === 12, 'complete script + stats persisted');
+
+  console.log('late record.done replaces a partial stop fallback');
+  const fallbackRace = await rec.createRecording({ name: 'Fallback race', appUrl: 'http://localhost:5002', browser: 'chromium' }, SCOPE);
+  const partialScript = "import { test } from '@playwright/test';\ntest('flow', async ({ page }) => { await page.goto('http://localhost:5002'); });";
+  const fullScript = partialScript.replace(' });', " await page.getByRole('button', { name: 'Continue' }).click(); });");
+  await rec.finalizeRecording(fallbackRace.id, { script: partialScript });
+  await rec.finalizeRecording(fallbackRace.id, { script: fullScript, metadata: { generatedOn: 'tester-laptop' } });
+  const completedRace = await rec.getRecording(fallbackRace.id);
+  const completedRaceScript = await Scripts.get(completedRace.metadata.scriptId);
+  ok(completedRace.script === fullScript, 'agent final file replaces partial fallback recording');
+  ok(completedRaceScript?.code === fullScript, 'agent final file replaces partial linked script');
 
   console.log('repository script resolves to one reusable execution recording');
   const repositoryScript = await Scripts.upsert({ id: 'SCR-REPOSITORY-1', name: 'Repository flow', code: "import { test } from '@playwright/test';\ntest('flow', async () => {});", projectId: 'p1', appId: 'a1', ownerId: 'u1' });
@@ -85,6 +105,26 @@ async function main() {
 
   const serverJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
   ok(serverJob.status === 'queued' && serverJob.agentId === '', 'manual server job does not require an agent');
+
+  console.log('pause lifecycle persists metadata without values');
+  const pausedJob = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);
+  await gateway.deliverAgentFrame('agent-x', { type: 'job.paused', agentId: 'agent-x', seq: 20, payload: {
+    jobId: pausedJob.id, pauseId: 'otp', attempt: 1,
+    request: { id: 'otp', kind: 'input', prompt: 'Enter OTP', timeoutMs: 5000 },
+    openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 5000).toISOString(),
+  } });
+  ok((await jobs.getJob(pausedJob.id)).status === 'awaiting_user', 'job.paused → awaiting_user');
+  ok((await pauses.listJobPauses(pausedJob.id))[0]?.masked === true, 'pause defaults persisted');
+  await jobs.cancelJob(pausedJob.id);
+  ok((await pauses.listJobPauses(pausedJob.id))[0]?.outcome === 'aborted', 'cancelling a job closes its pause');
+
+  const localPauseJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
+  await pauses.recordPause('', { jobId: localPauseJob.id, attempt: 1, request: { id: 'server-otp', kind: 'input', prompt: 'OTP', timeoutMs: 5000 } });
+  const unregister = pauses.registerLocalPauseResolver(localPauseJob.id, (answer) => answer.value === '654321');
+  const resolvedPause = await pauses.resolvePause(localPauseJob.id, 'server-otp', { outcome: 'resolved', value: '654321' }, 'u1');
+  unregister();
+  ok(resolvedPause.pause?.outcome === 'resolved' && resolvedPause.pause?.valueLength === 6, 'server pause resolves with value length only');
+  ok(!JSON.stringify(await pauses.listJobPauses(localPauseJob.id)).includes('654321'), 'pause value is never persisted');
 
   console.log('stopping a job cancels its linked Test Run');
   const cancelledJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);

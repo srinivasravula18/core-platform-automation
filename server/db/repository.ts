@@ -2710,6 +2710,19 @@ export const RecordingSteps = {
     }]));
     return steps.map((s: any) => mapRecordingStep(s, byStep.get(s.id), historyByStep.get(s.id)));
   },
+  async setMetadata(recordingId: string, stepId: string, metadata: Record<string, unknown>): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const step = db.recordingSteps.find((item: any) => item.recordingId === recordingId && item.id === stepId);
+      if (!step) return false;
+      step.metadata = metadata;
+      step.updatedAt = new Date().toISOString();
+      return true;
+    }
+    return !!await queryOne(
+      'UPDATE automation_recording_steps SET metadata = $3::jsonb, updated_at = now() WHERE recording_id = $1 AND id = $2 RETURNING id',
+      [recordingId, stepId, JSON.stringify(metadata)],
+    );
+  },
   async addOverride(recordingId: string, stepId: string, value: string | boolean | null): Promise<any> {
     if (!isPgEnabled()) {
       const version = Math.max(0, ...db.recordingStepOverrides.filter((o: any) => o.stepId === stepId).map((o: any) => o.version)) + 1;
@@ -3102,6 +3115,70 @@ export const AutomationJobs = {
        j.script || '', j.batchId || null, j.datasetRowId || null, typeof j.rowNumber === 'number' ? j.rowNumber : null],
     );
     return mapJob(row);
+  },
+};
+
+function mapJobPause(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    pauseId: r.pause_id,
+    attempt: r.attempt,
+    kind: r.kind,
+    prompt: r.prompt,
+    hint: r.hint || '',
+    masked: r.masked,
+    requiresHeaded: r.requires_headed,
+    timeoutMs: r.timeout_ms,
+    onTimeout: r.on_timeout,
+    outcome: r.outcome,
+    openedAt: r.opened_at,
+    expiresAt: r.expires_at,
+    resolvedAt: r.resolved_at,
+    resolvedBy: r.resolved_by || '',
+    valueLength: r.value_length,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const AutomationJobPauses = {
+  async listByJob(jobId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).filter((pause) => pause.jobId === jobId);
+    return (await query('SELECT * FROM automation_job_pauses WHERE job_id = $1 ORDER BY opened_at ASC', [jobId])).map(mapJobPause);
+  },
+  async listOpen(jobId?: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).filter((pause) => pause.outcome === 'open' && (!jobId || pause.jobId === jobId));
+    const rows = jobId
+      ? await query("SELECT * FROM automation_job_pauses WHERE job_id = $1 AND outcome = 'open' ORDER BY opened_at ASC", [jobId])
+      : await query("SELECT * FROM automation_job_pauses WHERE outcome = 'open' ORDER BY opened_at ASC");
+    return rows.map(mapJobPause);
+  },
+  async getAttempt(jobId: string, pauseId: string, attempt: number): Promise<any | null> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).find((pause) => pause.jobId === jobId && pause.pauseId === pauseId && pause.attempt === attempt) || null;
+    return mapJobPause(await queryOne('SELECT * FROM automation_job_pauses WHERE job_id = $1 AND pause_id = $2 AND attempt = $3', [jobId, pauseId, attempt]));
+  },
+  async upsert(pause: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const index = (db.automationJobPauses as any[]).findIndex((item) => item.id === pause.id);
+      if (index >= 0) db.automationJobPauses[index] = { ...db.automationJobPauses[index], ...pause };
+      else db.automationJobPauses.push(pause);
+      return pause;
+    }
+    const id = pause.id || uid('PAUSE');
+    const row = await queryOne(
+      `INSERT INTO automation_job_pauses (id, job_id, pause_id, attempt, kind, prompt, hint, masked, requires_headed, timeout_ms, on_timeout, outcome, opened_at, expires_at, resolved_at, resolved_by, value_length)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14::timestamptz,$15::timestamptz,$16,$17)
+       ON CONFLICT (job_id, pause_id, attempt) DO UPDATE SET
+         outcome=EXCLUDED.outcome, resolved_at=EXCLUDED.resolved_at, resolved_by=EXCLUDED.resolved_by,
+         value_length=EXCLUDED.value_length, expires_at=EXCLUDED.expires_at, updated_at=now()
+       RETURNING *`,
+      [id, pause.jobId, pause.pauseId, pause.attempt || 1, pause.kind, pause.prompt, pause.hint || '', pause.masked !== false,
+       !!pause.requiresHeaded, pause.timeoutMs, pause.onTimeout || 'fail', pause.outcome || 'open', pause.openedAt,
+       pause.expiresAt, pause.resolvedAt || null, pause.resolvedBy || '', typeof pause.valueLength === 'number' ? pause.valueLength : null],
+    );
+    return mapJobPause(row);
   },
 };
 

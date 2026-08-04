@@ -89,9 +89,13 @@ export default function LocalAgent() {
                 actions={
                   <>
                     {updateAvailable && (
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2.5 py-1.5 text-xs font-medium text-[var(--accent)]">
+                      <button
+                        onClick={handleDownload}
+                        disabled={downloading}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
                         <ArrowUpCircle className="h-3.5 w-3.5" /> Update to {latest}
-                      </span>
+                      </button>
                     )}
                     <button
                       onClick={() => revoke(agent.id, agent.name)}

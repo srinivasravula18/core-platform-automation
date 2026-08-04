@@ -47,8 +47,9 @@ import {
   overrideRecordingStep,
   undoRecordingStepOverride,
   redoRecordingStepOverride,
+  updateRecordingStepPause,
 } from './recordingService';
-import { createJob, createServerJob, createLinkedTestRun, cancelJob, getJob, refreshExecutionBatch, tryDispatch } from './jobService';
+import { createJob, createServerJob, createLinkedTestRun, cancelJob, getJob, refreshExecutionBatch, setJobStatus, tryDispatch } from './jobService';
 import { isAgentConnected } from './agentGateway';
 import { runBatchOnServer, runJobOnServer } from './serverRunner';
 import { computeNextRun } from './schedulerService';
@@ -66,6 +67,7 @@ import { resolveExpression, newRunToken, expressionHasUniqueGenerator } from './
 import { buildTemplateWorkbook, inferIntent, intentTip, sampleFor } from './templateService';
 import { buildSlots } from './placeholderRegistry';
 import type { AgentRecord, ArtifactKind, ScheduleKind } from './types';
+import { listJobPauses, resolvePause } from './pauseService';
 
 /** Authenticate an agent from its `Authorization: Bearer <agentId>.<secret>` token. */
 function requireAgent(req: Request, res: Response, next: NextFunction) {
@@ -250,9 +252,9 @@ export function registerAutomationRoutes(app: Express) {
   }
 
   app.post('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
-    const { name, appUrl, browser, environment, agentId, caseMeta } = req.body || {};
+    const { name, appUrl, browser, environment, agentId, caseMeta, browserPermissions } = req.body || {};
     if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
-    const rec = await createRecording({ name, appUrl, browser, environment, agentId, caseMeta }, reqScope(req));
+    const rec = await createRecording({ name, appUrl, browser, environment, agentId, caseMeta, browserPermissions }, reqScope(req));
     res.status(201).json({ recording: rec });
   });
 
@@ -693,6 +695,33 @@ export function registerAutomationRoutes(app: Express) {
     if (!job) return res.status(404).json({ error: 'Job not found.' });
     res.json({ job });
   });
+
+  app.patch('/api/automation/recordings/:id/steps/:stepId/pause', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const out = await updateRecordingStepPause(rec.id, req.params.stepId, String(req.body?.action || 'save'), req.body?.pause);
+    if ('error' in out) return res.status(out.status).json({ error: out.error });
+    res.json(out);
+  });
+
+  app.get('/api/automation/jobs/:id/pauses', requireAuth, async (req: Request, res: Response) => {
+    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    if (!job) return res.status(404).json({ error: 'Job not found.' });
+    res.json({ pauses: await listJobPauses(job.id) });
+  });
+
+  const answerPause = (outcome: 'resolved' | 'skipped') => asyncRoute(async (req: Request, res: Response) => {
+    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    if (!job) return res.status(404).json({ error: 'Job not found.' });
+    const result = await resolvePause(job.id, req.params.pauseId, { attempt: req.body?.attempt, outcome, value: req.body?.value }, reqScope(req).userId || 'user');
+    if (result.error) return res.status(result.status || 400).json({ error: result.error });
+    const pausedMs = Math.max(0, Date.parse(result.pause.resolvedAt) - Date.parse(result.pause.openedAt));
+    await setJobStatus(job.id, 'running', { summary: { ...(job.summary || {}), pausedMs: Number(job.summary?.pausedMs || 0) + pausedMs, assisted: true } });
+    res.json({ pause: result.pause });
+  });
+
+  app.post('/api/automation/jobs/:id/pauses/:pauseId/resume', requireAuth, answerPause('resolved'));
+  app.post('/api/automation/jobs/:id/pauses/:pauseId/skip', requireAuth, answerPause('skipped'));
 
   app.post('/api/automation/jobs/:id/cancel', requireAuth, async (req: Request, res: Response) => {
     const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);

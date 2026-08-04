@@ -48,6 +48,9 @@ function main() {
   const noNav = scriptToGroupedSteps(`await page.getByRole('button', { name: 'X' }).click();`);
   ok(noNav.length === 1 && noNav[0].group === 'Initial steps' && noNav[0].groupIndex === 0, 'pre-nav step grouped as Initial steps');
 
+  const paused = parseAtomicSteps(`await tf.pause({ id: 'approval', kind: 'manual_action', prompt: 'Approve sign-in' });`);
+  ok(paused.length === 1 && paused[0].kind === 'pause', 'a pause counts as one atomic step');
+
   console.log('end-to-end: a 300-interaction recording collapses to a readable number of groups');
   const big: string[] = [];
   for (let p = 0; p < 6; p++) {

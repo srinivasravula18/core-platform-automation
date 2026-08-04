@@ -1,5 +1,7 @@
 import ts from 'typescript';
 import { resolveExpression } from './variableEngine';
+import { normalizePauseRequest } from '../../../core/shared/pause';
+import { isPauseResumeEnabled } from './flag';
 
 const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'select', 'setInputFiles', 'type']);
 
@@ -28,6 +30,20 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
   return (row: any): string => {
     const replacements: Replacement[] = [];
     for (const step of steps) {
+      const pause = isPauseResumeEnabled() && step.metadata?.pause ? normalizePauseRequest(step.metadata.pause) : null;
+      if (pause) {
+        const editable = calls[step.ordinal];
+        const call = editable?.call;
+        if (!editable || !call || !ts.isPropertyAccessExpression(call.expression)) throw new Error(`Could not materialize pause for ${step.metadata?.label || step.locator}.`);
+        const expression = `await tf.pause(${JSON.stringify(pause)})`;
+        const argument = call.arguments[editable.valueArgument];
+        if (pause.kind === 'input' && argument && !['check', 'uncheck'].includes(call.expression.name.text)) {
+          replacements.push({ start: argument.getStart(source), end: argument.getEnd(), text: expression });
+        } else {
+          replacements.push({ start: call.getStart(source), end: call.getStart(source), text: `${expression};\n  ` });
+        }
+        continue;
+      }
       const mapping = mappings.find((item) => item.stepId === step.id && (!item.datasetId || item.datasetId === row.datasetId));
       let value: any;
       if (mapping) {

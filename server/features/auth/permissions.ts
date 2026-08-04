@@ -132,7 +132,7 @@ const ROUTE_RULES: RouteRule[] = [
 
   // Automation family (coarse)
   R('GET', /^\/api\/automation\//, 'automation:read'),
-  R('POST', /^\/api\/automation\/(runs|jobs\/[^/]+\/(cancel|retry))/, 'automation:execute'),
+  R('POST', /^\/api\/automation\/(runs|jobs\/[^/]+\/(cancel|retry|pauses\/[^/]+\/(resume|skip)))/, 'automation:execute'),
   R('DELETE', /^\/api\/automation\//, 'automation:delete'),
   R('*', /^\/api\/automation\//, 'automation:update'),
 

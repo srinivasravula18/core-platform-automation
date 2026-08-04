@@ -212,7 +212,7 @@ A small prelude prepended to `recording.spec.ts` (alongside the existing `bundle
 
 ## 11. Complete Refactoring Strategy
 
-Additive throughout. No existing function signature changes; `JobStatus` gains a member (a union widening — every `switch` over it is audited in Phase 2). Everything sits behind the flag `PAUSE_RESUME_V1` (default **off**), consistent with `REMOTE_AGENT_V1` in `flag.ts`. With the flag off, no prelude is injected, no control server starts, and `tf.pause` never appears in a compiled script.
+Additive throughout. No existing function signature changes; `JobStatus` gains a member (a union widening — every `switch` over it is audited in Phase 2). Everything sits behind the code-level flag `PAUSE_RESUME_V1` (default **1/on**) in `flag.ts`. With the flag off, no prelude is injected, no control server starts, and `tf.pause` never appears in a compiled script.
 
 ---
 
@@ -304,7 +304,7 @@ Additive throughout. No existing function signature changes; `JobStatus` gains a
 
 ## 18. Rollback Strategy
 
-- **Level 1:** set `PAUSE_RESUME_V1=false` and restart the backend — no pauses compiled, no control server, no new statuses emitted. Instant.
+- **Level 1:** set the code-level `PAUSE_RESUME_V1` constant to `0` and redeploy — no pauses compiled, no control server, no new statuses emitted.
 - **Level 2:** if paused jobs are stuck, `POST /jobs/:id/pauses/:pauseId/skip` or cancel the job; both paths already terminate the child process.
 - **Level 3:** revert Phases E→A in order. The pause table can be dropped independently (no FK from jobs; the join is by `job_id` only, deliberately).
 

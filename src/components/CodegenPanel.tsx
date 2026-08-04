@@ -5,7 +5,8 @@ import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriang
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
-import { useRemoteAgentFlag, useAgents, useRecordingSession, type RecordingCaseMeta } from '@/src/lib/useAutomation';
+import { useRemoteAgentFlag, useAgents, useRecordingSession, type BrowserPermissionSettings, type RecordingCaseMeta } from '@/src/lib/useAutomation';
+import { AUTOMATION_BROWSER_PERMISSIONS, type AutomationBrowserPermission } from '@/core/shared/browserPermissions';
 import { NoAgentState } from '@/src/components/NoAgentState';
 import { createClientRunId } from '@/src/lib/startSelectedRun';
 import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
@@ -25,9 +26,9 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   appUrl: string;
   caseMeta: RecordingCaseMeta;
   onDone: (caseId: string) => void;
+  footerTarget: HTMLElement;
   selectedEnvironment?: string;
   onEnvironmentChange?: (environment: string) => void;
-  footerTarget: HTMLElement;
 }) {
   const navigate = useNavigate();
   const flag = useRemoteAgentFlag();
@@ -38,14 +39,20 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const [agentId, setAgentId] = useState('');
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
+  const [permissions, setPermissions] = useState<AutomationBrowserPermission[]>([]);
+  const [latitude, setLatitude] = useState('0');
+  const [longitude, setLongitude] = useState('0');
+  const [fakeMedia, setFakeMedia] = useState(true);
+  const [acceptDialogs, setAcceptDialogs] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
-  useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
   const [savedScript, setSavedScript] = useState('');
   const [scriptDraft, setScriptDraft] = useState('');
   const [editingScript, setEditingScript] = useState(false);
   const [savingScript, setSavingScript] = useState(false);
+  const [savingRecording, setSavingRecording] = useState(false);
 
   useEffect(() => { setSavedScript(script); setScriptDraft(script); }, [script]);
+  useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
 
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
@@ -54,7 +61,13 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const startRecording = async () => {
     if (!appUrl.trim() || !title.trim() || !selectedAgent || busy) return;
     try {
-      await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta });
+      const browserPermissions: BrowserPermissionSettings = {
+        permissions,
+        ...(permissions.includes('geolocation') ? { geolocation: { latitude: Number(latitude), longitude: Number(longitude) } } : {}),
+        ...(fakeMedia ? { fakeMedia: true } : {}),
+        ...(acceptDialogs ? { acceptDialogs: true } : {}),
+      };
+      await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta, browserPermissions });
       showToast('Recording started — interact with your app in the codegen window.', { tone: 'success' });
     } catch (err: any) { showToast(err?.message || 'Could not start recording.', { tone: 'error' }); }
   };
@@ -107,6 +120,25 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     }
   };
 
+  const saveRecording = async () => {
+    if (!recordingId || savingRecording) return;
+    setSavingRecording(true);
+    try {
+      const response = await fetch(`/api/automation/recordings/${recordingId}`);
+      const body = await response.json().catch(() => ({}));
+      const recording = body.recording;
+      if (!response.ok || !recording) throw new Error(body.error || 'Could not verify the recording.');
+      if (recording.status !== 'ready') throw new Error('The complete script is still being saved. Try again in a moment.');
+      if (!empty && !String(recording.script || '').trim()) throw new Error('The recorded script is empty and was not saved.');
+      showToast('Recording and complete script saved.', { tone: 'success' });
+      onDone(String(recording.metadata?.caseId || caseId || ''));
+    } catch (error: any) {
+      showToast(error?.message || 'Could not save the recording.', { tone: 'error' });
+    } finally {
+      setSavingRecording(false);
+    }
+  };
+
   if (flag === false) return <div className="p-4 text-sm text-[var(--text-muted)]">The local desktop agent feature is not enabled on this server.</div>;
   if (loading) return <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Checking for a connected agent…</div>;
   const hasAgent = connected.length > 0;
@@ -139,6 +171,34 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
             </label>
           )}
         </div>
+        <fieldset className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+          <legend className="px-1 text-xs font-medium text-[var(--text-muted)]">Browser permissions and pop-ups</legend>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {AUTOMATION_BROWSER_PERMISSIONS.map((permission) => (
+              <label key={permission} className="flex items-center gap-2 text-sm capitalize text-[var(--text-primary)]">
+                <input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} />
+                {permission}
+              </label>
+            ))}
+            <label className="flex items-center gap-2 text-sm text-[var(--text-primary)]">
+              <input type="checkbox" checked={acceptDialogs} onChange={(event) => setAcceptDialogs(event.target.checked)} />
+              Accept JavaScript dialogs
+            </label>
+            {(permissions.includes('camera') || permissions.includes('microphone')) && (
+              <label className="flex items-center gap-2 text-sm text-[var(--text-primary)]">
+                <input type="checkbox" checked={fakeMedia} onChange={(event) => setFakeMedia(event.target.checked)} disabled={browser !== 'chromium'} />
+                Use fake camera/microphone
+              </label>
+            )}
+          </div>
+          {permissions.includes('geolocation') && (
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <label className="text-xs text-[var(--text-muted)]">Latitude<input type="number" min="-90" max="90" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)]" /></label>
+              <label className="text-xs text-[var(--text-muted)]">Longitude<input type="number" min="-180" max="180" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)]" /></label>
+            </div>
+          )}
+          <p className="mt-2 text-[11px] text-[var(--text-muted)]">Playback grants selected permissions before navigation. Recording uses a dedicated site profile, so browser-level approvals can be remembered safely.</p>
+        </fieldset>
         {/* URL/browser/environment are always selectable; the agent just needs to be running to record. */}
         {!hasAgent && <NoAgentState onRetry={refresh} />}
         {!title.trim() && <p className="text-xs text-amber-500">Enter a Title above to name this recorded test case.</p>}
@@ -220,11 +280,11 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
         </div>
       </div>}
       {createPortal(<div className="flex flex-wrap gap-2">
-        <button onClick={() => onDone(caseId)} disabled={startingRun}
-          className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
-          Done Without Running
+        <button onClick={() => void saveRecording()} disabled={startingRun || savingRecording}
+          className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+          {savingRecording && <Loader2 className="h-4 w-4 animate-spin" />} {savingRecording ? 'Saving...' : 'Save'}
         </button>
-        <button onClick={session.reset} disabled={startingRun} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+        <button onClick={session.reset} disabled={startingRun || savingRecording} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
           Record Again
         </button>
       </div>, footerTarget)}

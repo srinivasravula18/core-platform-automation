@@ -20,10 +20,13 @@ import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { hardenRecordedScript } from './scriptHardening';
 import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps, parseRecordingSteps } from './stepGrouping';
 import { humanizeRecordedSteps } from './humanizeSteps';
-import { isRecorderStepGroupingEnabled } from './flag';
+import { isPauseResumeEnabled, isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
 import type { RecordingFieldKind } from './types';
 import { nextArtifactId } from '../../shared/artifactIds';
+import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
+import { normalizePauseRequest, type PauseRequest } from '../../../core/shared/pause';
+import { proposeRecordingPauses } from './pauseDetection';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
 // Test Case created at finalize is classified the same as a manually-authored one.
@@ -40,7 +43,7 @@ function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
 }
 
-export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string; caseMeta?: RecordingCaseMeta }, scope: Scope) {
+export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string; caseMeta?: RecordingCaseMeta; browserPermissions?: BrowserPermissionSettings }, scope: Scope) {
   const now = new Date().toISOString();
   const rec = {
     id: uid('REC'),
@@ -53,7 +56,10 @@ export async function createRecording(input: { name: string; appUrl: string; bro
     script: '',
     // Stash the Test Case classification (from the New Case → Automation form) so finalize can
     // build a fully-classified case; caseId/scriptId get written back here for idempotency.
-    metadata: input.caseMeta ? { caseMeta: input.caseMeta } : {},
+    metadata: {
+      ...(input.caseMeta ? { caseMeta: input.caseMeta } : {}),
+      browserPermissions: normalizeBrowserPermissionSettings(input.browserPermissions),
+    },
     stats: { actions: 0, selectors: 0, assertions: 0, networkCalls: 0, consoleErrors: 0, pages: 0 },
     startedAt: null,
     completedAt: null,
@@ -72,7 +78,7 @@ export async function startRecording(recordingId: string, agentId: string) {
   if (!isAgentConnected(agentId)) return { error: 'Target agent is not connected.', status: 409 };
   await Recordings.upsert({ ...rec, agentId, status: 'recording', startedAt: new Date().toISOString() });
   persist('recording started');
-  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser } });
+  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser, browserPermissions: normalizeBrowserPermissionSettings(rec.metadata?.browserPermissions) } });
   await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.started', ownerId: rec.ownerId, data: {} });
   return { ok: true };
 }
@@ -89,7 +95,12 @@ function clearStopFallback(recordingId: string) {
 export async function finalizeRecording(recordingId: string, patch: { script?: string; stats?: any; metadata?: any }) {
   clearStopFallback(recordingId);
   const rec = await Recordings.get(recordingId);
-  if (!rec || rec.status === 'ready') return;
+  if (!rec) return;
+  // The stop fallback may finalize the last streamed (partial) script before record.done arrives.
+  // Only the agent's final file (tagged with its host) may replace that fallback; stale frames must
+  // never overwrite an already-complete recording.
+  const incomingScript = typeof patch.script === 'string' ? patch.script : '';
+  if (rec.status === 'ready' && (!incomingScript || rec.metadata?.generatedOn || !patch.metadata?.generatedOn)) return;
   // Harden the raw codegen output once, at finalization: insert post-login settle waits so the
   // recorded script doesn't race its own login redirect on replay (see scriptHardening.ts).
   const finalScript = hardenRecordedScript(String(patch.script ?? rec.script ?? ''));
@@ -103,7 +114,11 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   });
   // Keep editable data independent from the immutable recording script. Re-finalizing a ready
   // recording is already a no-op, so replacing this derived model cannot erase user edits.
-  await RecordingSteps.replaceForRecording(saved.id, parseRecordingSteps(finalScript).map((step, ordinal) => ({
+  const parsedSteps = parseRecordingSteps(finalScript);
+  const steps = isPauseResumeEnabled()
+    ? proposeRecordingPauses(finalScript, parsedSteps, saved.appUrl, patch.metadata?.stepObservations)
+    : parsedSteps;
+  await RecordingSteps.replaceForRecording(saved.id, steps.map((step, ordinal) => ({
     ...step,
     id: `${saved.id}:step:${ordinal + 1}`,
     recordingId: saved.id,
@@ -289,6 +304,30 @@ export async function overrideRecordingStep(recordingId: string, stepId: string,
   return { step: (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId), override };
 }
 
+export async function updateRecordingStepPause(recordingId: string, stepId: string, action: string, value?: PauseRequest) {
+  const step = (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId);
+  if (!step) return { error: 'Recording step not found.', status: 404 } as const;
+  const metadata = { ...(step.metadata || {}) } as any;
+  try {
+    if (action === 'dismiss') {
+      metadata.pauseProposalDismissed = true;
+      delete metadata.pauseProposal;
+    } else if (action === 'remove') {
+      delete metadata.pause;
+    } else {
+      const request = action === 'accept' ? metadata.pauseProposal : value;
+      metadata.pause = normalizePauseRequest(request);
+      delete metadata.pauseProposal;
+      delete metadata.pauseProposalDismissed;
+    }
+  } catch (error: any) {
+    return { error: error?.message || 'Invalid pause.', status: 400 } as const;
+  }
+  await RecordingSteps.setMetadata(recordingId, stepId, metadata);
+  persist('recording pause updated');
+  return { step: (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId) };
+}
+
 export async function undoRecordingStepOverride(recordingId: string, stepId: string) {
   const changed = await RecordingSteps.undo(recordingId, stepId);
   if (changed) persist('recording step override undo');
@@ -310,6 +349,11 @@ export async function updateRecording(id: string, patch: { name?: string }) {
 }
 
 export async function removeRecording(id: string) {
+  const recording = await Recordings.get(id);
+  clearStopFallback(id);
+  if (recording?.status === 'recording' && recording.agentId && isAgentConnected(recording.agentId)) {
+    dispatchToAgent(recording.agentId, { type: 'record.stop', payload: { recordingId: id } });
+  }
   const ok = await Recordings.remove(id);
   persist('recording removed');
   return ok;

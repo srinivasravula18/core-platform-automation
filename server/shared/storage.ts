@@ -109,6 +109,7 @@ export const db: any = {
   automationDataMappings: [] as any[],
   automationExecutionBatches: [] as any[],
   automationJobs: [] as any[],
+  automationJobPauses: [] as any[],
   automationSchedules: [] as any[],
   automationArtifacts: [] as any[],
   automationEvents: [] as any[],
@@ -167,6 +168,7 @@ function getPersistableDbSnapshot() {
     automationDataMappings: db.automationDataMappings,
     automationExecutionBatches: db.automationExecutionBatches,
     automationJobs: db.automationJobs,
+    automationJobPauses: db.automationJobPauses,
     automationSchedules: db.automationSchedules,
     automationArtifacts: db.automationArtifacts,
     automationEvents: db.automationEvents,
@@ -238,6 +240,7 @@ export async function loadPersistedData() {
     db.automationDataMappings = Array.isArray(data.automationDataMappings) ? data.automationDataMappings : [];
     db.automationExecutionBatches = Array.isArray(data.automationExecutionBatches) ? data.automationExecutionBatches : [];
     db.automationJobs = Array.isArray(data.automationJobs) ? data.automationJobs : [];
+    db.automationJobPauses = Array.isArray(data.automationJobPauses) ? data.automationJobPauses : [];
     db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
     db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];
     db.automationEvents = Array.isArray(data.automationEvents) ? data.automationEvents : [];

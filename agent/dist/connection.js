@@ -60,6 +60,7 @@ export class ConnectionManager {
             this.backoff = 1_000;
             this.log.info('connected to cloud');
             this.send('hello', { telemetry: collectTelemetry() });
+            this.runner.advertiseOpenPauses();
             this.startHeartbeat();
         });
         ws.on('message', (raw) => this.onMessage(raw));
@@ -101,7 +102,7 @@ export class ConnectionManager {
             clearInterval(this.heartbeat);
         this.heartbeat = setInterval(() => {
             const busy = this.recorder.isRecording() || this.runner.isBusy();
-            this.send('heartbeat', { status: busy ? 'busy' : 'online', telemetry: collectTelemetry() });
+            this.send('heartbeat', { status: this.runner.isAwaitingUser() ? 'awaiting_user' : busy ? 'busy' : 'online', telemetry: collectTelemetry() });
         }, HEARTBEAT_MS);
         this.heartbeat.unref?.();
     }
@@ -128,13 +129,28 @@ export class ConnectionManager {
             return;
         switch (frame.type) {
             case 'record.start':
-                this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser);
+                this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions);
                 break;
             case 'record.stop':
                 this.recorder.stop(frame.payload.recordingId);
                 break;
             case 'job.dispatch':
                 void this.runner.run(frame.payload);
+                break;
+            case 'pause.resume':
+                if (frame.payload?.jobId && frame.payload?.pauseId) {
+                    this.runner.resolvePause(frame.payload.jobId, {
+                        pauseId: frame.payload.pauseId,
+                        attempt: Number(frame.payload.attempt) || 1,
+                        outcome: frame.payload.outcome === 'skipped' ? 'skipped' : 'resolved',
+                        ...(frame.payload.value != null ? { value: String(frame.payload.value) } : {}),
+                        resolvedBy: String(frame.payload.resolvedBy || 'cloud'),
+                    });
+                }
+                break;
+            case 'pause.cancel':
+                if (frame.payload?.jobId && frame.payload?.pauseId)
+                    this.runner.cancelPause(frame.payload.jobId, frame.payload.pauseId, Number(frame.payload.attempt) || 1, String(frame.payload.resolvedBy || 'cloud'));
                 break;
             case 'cancel':
                 if (frame.payload.jobId)

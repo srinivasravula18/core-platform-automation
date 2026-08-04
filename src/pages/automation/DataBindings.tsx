@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent } from 'react';
+import type { DragEvent, FormEvent } from 'react';
 import { ChevronDown, Database, Download, FileSpreadsheet, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
 import { Runnable, RunnablePicker, runnableKey } from './RunnablePicker';
 import { FieldChipEditor, PalettePill } from './FieldChips';
@@ -42,6 +42,42 @@ async function json(url: string, init?: RequestInit) {
 
 type DragPayload = { type: 'column'; columnId: string };
 const PAGE = 50;
+
+function PauseAuthoring({ step, onChange }: { step: any; onChange: (action: string, pause?: Record<string, unknown>) => void }) {
+  const proposal = step.metadata?.pauseProposal;
+  const pause = step.metadata?.pause;
+  if (proposal) return <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+    <div className="font-medium text-amber-500">Suggested pause · {String(proposal.reason || '').replace('-', ' ')}</div>
+    <div className="mt-0.5 text-[var(--text-secondary)]">{proposal.prompt}</div>
+    <div className="mt-1.5 flex gap-1.5">
+      <button type="button" onClick={() => onChange('accept')} className="rounded bg-amber-500 px-2 py-1 text-black">Accept</button>
+      <button type="button" onClick={() => onChange('dismiss')} className="rounded border border-[var(--border)] px-2 py-1">Dismiss</button>
+    </div>
+  </div>;
+  if (!pause) return <button type="button" onClick={() => onChange('save', { id: `pause-step-${step.ordinal + 1}`, kind: 'manual_action', prompt: `Complete the manual action before ${step.metadata?.label || step.locator}`, requiresHeaded: true })}
+    className="mt-2 text-[11px] text-[var(--accent)] hover:underline">+ Add human pause</button>;
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const kind = String(data.get('kind'));
+    onChange('save', {
+      id: pause.id,
+      kind,
+      prompt: String(data.get('prompt') || ''),
+      masked: kind === 'input' && data.get('masked') === 'on',
+      requiresHeaded: kind === 'manual_action',
+    });
+  };
+  return <form onSubmit={submit} className="mt-2 flex flex-wrap items-center gap-1.5 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-2 text-xs">
+    <select name="kind" defaultValue={pause.kind} aria-label="Pause kind" className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1">
+      <option value="manual_action">Manual action</option><option value="input">User input</option>
+    </select>
+    <input name="prompt" required defaultValue={pause.prompt} aria-label="Pause prompt" className="min-w-40 flex-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1" />
+    <label className="inline-flex items-center gap-1"><input name="masked" type="checkbox" defaultChecked={pause.masked} />Mask input</label>
+    <button type="submit" className="rounded bg-[var(--accent)] px-2 py-1 text-white">Save</button>
+    <button type="button" onClick={() => onChange('remove')} className="rounded border border-[var(--border)] px-2 py-1">Remove</button>
+  </form>;
+}
 
 // Searchable single-select (replaces raw <select> for dataset/profile so it scales to long lists).
 function SearchableSelect({ items, value, onChange, placeholder, ariaLabel, disabled }: {
@@ -235,6 +271,14 @@ export default function DataBindings() {
   const historyStep = async (stepId: string, redo = false) => {
     try {
       await json(`/api/automation/recordings/${recordingId}/steps/${stepId}/${redo ? 'redo' : 'undo'}`, { method: 'POST' });
+      await loadSteps();
+    } catch (error: any) { setMessage(error.message); }
+  };
+  const changePause = async (stepId: string, action: string, pause?: Record<string, unknown>) => {
+    try {
+      await json(`/api/automation/recordings/${recordingId}/steps/${stepId}/pause`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, pause }),
+      });
       await loadSteps();
     } catch (error: any) { setMessage(error.message); }
   };
@@ -524,6 +568,7 @@ export default function DataBindings() {
                     {previews.map((preview) => `Row ${preview.rowNumber}: ${preview.error || (preview.value === '' ? '(empty)' : preview.value)}`).join('  •  ')}
                   </div>
                 </div>}
+                <PauseAuthoring step={step} onChange={(action, pause) => void changePause(step.id, action, pause)} />
               </div>;
             })}
           </div>
