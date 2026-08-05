@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Download, Loader2, Trash2, ArrowUpCircle } from 'lucide-react';
+import { Download, Loader2, Trash2, ArrowUpCircle, CheckCircle2 } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { useRemoteAgentFlag, useAgents, useAgentEvents } from '@/src/lib/useAutomation';
 import { AgentStatusCard } from '@/src/components/AgentStatusCard';
 import { NoAgentState, downloadAgent } from '@/src/components/NoAgentState';
+
+/** Numeric, segment-wise compare: a plain string check offers "1.0.2" as an update over "1.0.5". */
+function compareVersions(a: string, b: string): number {
+  const parts = (value: string) => String(value || '').split('.').slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  const left = parts(a); const right = parts(b);
+  for (let index = 0; index < 3; index += 1) if (left[index] !== right[index]) return left[index] > right[index] ? 1 : -1;
+  return 0;
+}
 
 export default function LocalAgent() {
   const flag = useRemoteAgentFlag();
@@ -80,7 +88,9 @@ export default function LocalAgent() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {active.map((agent) => {
-            const updateAvailable = latest && agent.version && latest !== agent.version;
+            const known = Boolean(latest && agent.version);
+            const updateAvailable = known && compareVersions(latest, agent.version) > 0;
+            const upToDate = known && !updateAvailable;
             return (
               <AgentStatusCard
                 key={agent.id}
@@ -96,6 +106,11 @@ export default function LocalAgent() {
                       >
                         <ArrowUpCircle className="h-3.5 w-3.5" /> Update to {latest}
                       </button>
+                    )}
+                    {upToDate && (
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-400">
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Already on the latest version
+                      </span>
                     )}
                     <button
                       onClick={() => revoke(agent.id, agent.name)}
