@@ -11,6 +11,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { createClientRunId, pendingRunState, startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
+import { FolderSelect } from '@/src/components/FolderSelect';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
 import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
@@ -110,7 +111,7 @@ export default function TestCases() {
   const [runMode, setRunMode] = useState<'headless' | 'headed'>('headless');
   const [runAgentId, setRunAgentId] = useState('');
   const emptyStep = { action: '', expected: '' };
-  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, steps: [emptyStep] };
+  const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -302,6 +303,7 @@ export default function TestCases() {
     setFormData({
       title: testCase.title || '', description: testCase.description || '',
       preconditions: testCase.preconditions || '',
+      folderId: testCase.folderId || '',
       testPlanIds: planIds, testSuiteIds: suiteIds,
       createdBy: actorName(testCase.metadata?.createdBy) || testCase.createdByName || testCase.createdBy || 'Admin',
       tags: Array.isArray(testCase.tags) ? testCase.tags : String(testCase.tags || '').split(',').map((t: string) => t.trim()).filter(Boolean),
@@ -842,6 +844,10 @@ export default function TestCases() {
                 <input type="text" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g., Login → List view" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <FolderSelect
+                  value={formData.folderId}
+                  onChange={(folderId) => setFormData({ ...formData, folderId })}
+                />
                 <div>
                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
                   <MultiSelectDropdown label="Select types" options={TESTING_TYPES.map((type) => ({ id: type, name: type }))} value={formData.testingTypes} onChange={(testingTypes) => setFormData({ ...formData, testingTypes })} />
@@ -868,7 +874,7 @@ export default function TestCases() {
                 appUrl={automationUrl}
                 selectedEnvironment={automationEnvironment}
                 onEnvironmentChange={setAutomationEnvironment}
-                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
+                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
                 footerTarget={automationFooterTarget}
               />}
@@ -876,6 +882,10 @@ export default function TestCases() {
           ) : (
           <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FolderSelect
+              value={formData.folderId}
+              onChange={(folderId) => setFormData({ ...formData, folderId })}
+            />
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
                 <MultiSelectDropdown label="None" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))} value={formData.testPlanIds} onChange={(ids) => setFormData({ ...formData, testPlanIds: ids })} />
