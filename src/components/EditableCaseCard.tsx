@@ -82,9 +82,12 @@ interface Props {
   onUnlink?: () => void;
   /** Called after a successful save / AI edit so the parent can refresh. */
   onSaved?: () => void;
+  /** AI authoring tools (rework panel, step multi-select, Expand/Merge). Off where a run only needs
+   *  plain step editing — case authoring lives in Test Cases. */
+  aiTools?: boolean;
 }
 
-export default function EditableCaseCard({ initial, startEditing = false, linkType, selected, onToggleSelected, onUnlink, onSaved }: Props): ReactElement {
+export default function EditableCaseCard({ initial, startEditing = false, linkType, selected, onToggleSelected, onUnlink, onSaved, aiTools = true }: Props): ReactElement {
   const navigate = useNavigate();
   const [c, setC] = useState<EditableCase>(() => ({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }));
   const [editing, setEditing] = useState(startEditing);
@@ -378,13 +381,13 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test Steps</span>
               <div className="flex items-center gap-1.5">
-                {mergePick.size >= 1 && (
+                {aiTools && mergePick.size >= 1 && (
                   <button onClick={() => editPickedSteps('expand')} disabled={busy === 'expand'} title="Break the ticked steps into finer sub-steps (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
                     {busy === 'expand' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
                     Expand {mergePick.size} step{mergePick.size === 1 ? '' : 's'}
                   </button>
                 )}
-                {mergePick.size >= 2 && (
+                {aiTools && mergePick.size >= 2 && (
                   <button onClick={() => editPickedSteps('merge')} disabled={busy === 'merge'} title="Combine the ticked steps into one (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50">
                     {busy === 'merge' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3 rotate-180" />}
                     Merge {mergePick.size} steps
@@ -393,10 +396,12 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
               </div>
             </div>
             {(c.steps || []).map((s, si) => (
-              <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
-                <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
-                  <input type="checkbox" checked={mergePick.has(si)} onChange={() => toggleMergePick(si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
-                </label>
+              <div key={si} className={`grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 ${aiTools ? 'lg:grid-cols-[auto_1fr_1fr_auto]' : 'lg:grid-cols-[1fr_1fr_auto]'}`}>
+                {aiTools && (
+                  <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
+                    <input type="checkbox" checked={mergePick.has(si)} onChange={() => toggleMergePick(si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                  </label>
+                )}
                 <textarea value={s.action || ''} onChange={(e) => patchStep(si, { action: e.target.value })} placeholder={`Step ${si + 1} action`} className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                 <textarea value={s.expected || ''} onChange={(e) => patchStep(si, { expected: e.target.value })} placeholder="Expected result" className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                 <button onClick={() => removeStep(si)} className="rounded px-2 text-[11px] font-medium text-red-400 hover:bg-red-500/10">Remove</button>
@@ -406,7 +411,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
           </div>
 
           <div className="space-y-2 border-t border-[var(--border)] pt-2">
-            <AIReworkPanel
+            {aiTools && <AIReworkPanel
               compact
               scopeLabel={c.title || 'Current Case'}
               showScopeLabel={false}
@@ -437,7 +442,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
                   ))}
                 </div>
               )}
-            />
+            />}
             <div className="flex justify-end">
               <div className="flex items-center gap-2">
                 <button onClick={() => { setEditing(false); setC({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }); }} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">

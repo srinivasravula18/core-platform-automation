@@ -95,6 +95,19 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     }
   };
 
+  const selectAllBrowserSetup = () => {
+    setPermissions([...AUTOMATION_BROWSER_PERMISSIONS]);
+    setAcceptDialogs(true);
+    setFakeMedia(true);
+    if (!geolocation) void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }));
+  };
+
+  const clearAllBrowserSetup = () => {
+    setPermissions([]);
+    setAcceptDialogs(false);
+    setFakeMedia(false);
+  };
+
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
   useEffect(() => { if (!agentId && connected[0]) setAgentId(connected[0].id); }, [connected, agentId]);
@@ -243,7 +256,13 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
           )}
         </div>
         <fieldset className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
-          <legend className="px-1 text-xs font-medium text-[var(--text-muted)]">Browser permissions and pop-ups</legend>
+          <legend className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>Browser permissions and pop-ups</span>
+            <div className="flex gap-2">
+              <button type="button" onClick={selectAllBrowserSetup} className="text-xs font-medium text-[var(--accent)] hover:underline">Select all</button>
+              <button type="button" onClick={clearAllBrowserSetup} className="text-xs font-medium text-[var(--accent)] hover:underline">Clear all</button>
+            </div>
+          </legend>
           <div className="grid gap-2 sm:grid-cols-2">
             {AUTOMATION_BROWSER_PERMISSIONS.map((permission) => (
               <label key={permission} className="flex items-center gap-2 text-sm capitalize text-[var(--text-primary)]">

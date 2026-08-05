@@ -117,7 +117,8 @@ export async function createExpressApp() {
 
   const app = express();
 
-  app.use(express.json({ limit: '5mb' }));
+  // Case attachments are sent as base64 JSON; 30 MB covers five 4 MB files plus encoding.
+  app.use(express.json({ limit: '30mb' }));
   app.use(authContextMiddleware);
   app.use(apiAuthGate);
   app.use(scopeMiddleware);

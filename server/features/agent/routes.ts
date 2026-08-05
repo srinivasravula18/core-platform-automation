@@ -1224,7 +1224,8 @@ async function persistAgentCaseArtifacts(run: any) {
       testSuiteId: suiteId,
       status: 'Draft',
       tags: normalizeCaseTags([...(testCase.tags || []), groupTag]),
-      type: testCase.type || 'Manual',
+      // Agent-run output is automation; an explicit type from the generator still wins.
+      type: testCase.type || 'Automated',
       priority: testCase.priority || 'Medium',
       folderId: run.folderId || null,
       createdBy: 'QA Assistant',
@@ -7083,10 +7084,11 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
           testSuiteId: c.testSuiteId || linkedSuiteId || null,
           status: c.status || 'Draft',
           tags: normalizeCaseTags(c.tags || []),
-          type: c.type || 'Manual',
+          // Agent output is automation; an explicit type from the generator wins.
+          type: c.type || 'Automated',
           priority: c.priority || 'Medium',
           automationStatus: c.automationStatus || 'Not Automated',
-          testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
+          testingScope: c.testingScope || ((c.type || 'Automated') === 'Automated' ? 'Automation' : 'Manual'),
           testingType: c.testingType || 'Functional',
           folderId: c.folderId || linkedRun?.folderId || null,
           createdBy: c.createdBy || 'QA Assistant',

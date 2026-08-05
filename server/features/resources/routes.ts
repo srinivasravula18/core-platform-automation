@@ -22,7 +22,7 @@ import { recordingForScript } from '../automation/recordingService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
-import { isManualOutcome, rollupCaseOutcome, computeRunRollup } from '../../../core/shared/manualRun';
+import { isManualOutcome, rollupCaseOutcome, computeRunRollup, caseHasScript } from '../../../core/shared/manualRun';
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
@@ -252,7 +252,7 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
-const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed']);
+const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Cancelled']);
 
 function manualRunStatus(value: unknown): string | null {
   const status = String(value || 'Not Started').trim();
@@ -267,6 +267,18 @@ function manualRunnerEnabled(): boolean {
 
 // Roll run-level aggregate onto a shallow run copy from its per-case results. Also derives the run's
 // start/complete timestamps (earliest activity → latest completion) so duration is the actual run time.
+// Run type follows what the cases can execute: a linked script means automated, none means manual.
+// An explicit mode from the caller wins.
+async function runModeForCases(requested: unknown, selectedCases: any[]): Promise<'manual' | 'automated'> {
+  if (!manualRunnerEnabled()) return 'automated';
+  const asked = String(requested || '').toLowerCase();
+  if (asked === 'manual') return 'manual';
+  if (asked === 'automated') return 'automated';
+  if (!selectedCases.length) return 'automated';
+  const scripts = (await Scripts.list()) as any[];
+  return selectedCases.some((testCase) => caseHasScript(testCase, scripts)) ? 'automated' : 'manual';
+}
+
 function applyRunRollup(run: any, results: any[]): any {
   const rolled: any = { ...run, ...computeRunRollup(results) };
   const starts = results.map((r) => r.startedAt).filter(Boolean).sort();
@@ -308,6 +320,9 @@ async function seedManualResults(run: any, selectedCases: any[]): Promise<void> 
       revisionNo,
       caseTitle: testCase.title || '',
       priority: testCase.priority || '',
+      // Execution context now authored on the case flows into the run instead of being retyped.
+      configuration: testCase.configuration || '',
+      runBy: testCase.assignedTo || '',
       outcome: 'Not Run',
       stepResults,
     });
@@ -324,6 +339,58 @@ function saveEvidenceImage(dataUrl: string, runId: string): string {
   const file = `manual-${String(runId).replace(/[^A-Za-z0-9]/g, '')}-${randomUUID()}.${ext}`;
   fs.writeFileSync(path.join(dir, file), Buffer.from(match[2], 'base64'));
   return `/evidence/${file}`;
+}
+
+const CASE_ATTACHMENT_TYPES: Record<string, string[]> = {
+  'application/pdf': ['pdf'],
+  'application/msword': ['doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+  'application/vnd.ms-excel': ['xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['xlsx'],
+  'text/csv': ['csv'],
+  'text/plain': ['txt'],
+  'image/jpeg': ['jpg', 'jpeg'], 'image/png': ['png'], 'image/webp': ['webp'], 'image/gif': ['gif'],
+  'video/mp4': ['mp4'], 'video/webm': ['webm'], 'video/quicktime': ['mov'],
+};
+const CASE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+const CASE_ATTACHMENT_MAX_COUNT = 5;
+
+function caseAttachmentError(attachments: any): string {
+  if (!Array.isArray(attachments)) return 'Attachments must be an array.';
+  if (attachments.length > CASE_ATTACHMENT_MAX_COUNT) return `Attach up to ${CASE_ATTACHMENT_MAX_COUNT} files.`;
+  for (const attachment of attachments) {
+    const name = String(attachment?.name || '');
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const match = /^data:([^;]+);base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) {
+      if (attachment?.url) continue; // Existing persisted files are checked separately below.
+      return `Attachment "${name || 'file'}": invalid file data.`;
+    }
+    const allowedExts = CASE_ATTACHMENT_TYPES[match[1]] || [];
+    if (!allowedExts.includes(ext)) return `Attachment "${name}": unsupported file type.`;
+    if (Buffer.from(match[2], 'base64').length > CASE_ATTACHMENT_MAX_BYTES) return `Attachment "${name}": files must be 4 MB or smaller.`;
+  }
+  return '';
+}
+
+function saveCaseAttachments(attachments: any, caseId: string): any[] {
+  const error = caseAttachmentError(attachments);
+  if (error) throw new Error(error);
+  const dir = path.resolve(process.cwd(), 'evidence');
+  fs.mkdirSync(dir, { recursive: true });
+  return attachments.map((attachment: any) => {
+    const existingUrl = String(attachment?.url || '');
+    if (existingUrl) {
+      if (!/^\/evidence\/case-[A-Za-z0-9-]+\.[a-z0-9]+$/i.test(existingUrl)) throw new Error('Invalid existing attachment.');
+      return { name: String(attachment?.name || 'Attachment'), url: existingUrl, mimeType: String(attachment?.mimeType || '') };
+    }
+    const match = /^data:([^;]+);base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) throw new Error('Invalid attachment.');
+    const ext = String(attachment.name).split('.').pop()!.toLowerCase();
+    const file = `case-${String(caseId).replace(/[^A-Za-z0-9]/g, '')}-${randomUUID()}.${ext}`;
+    fs.writeFileSync(path.join(dir, file), Buffer.from(match[2], 'base64'));
+    return { name: String(attachment.name), url: `/evidence/${file}`, mimeType: match[1] };
+  });
 }
 
 const DEFECT_SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
@@ -1495,6 +1562,8 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/cases ---------- */
   app.post('/api/cases', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const c = req.body;
+    const attachmentError = caseAttachmentError(c.attachments || []);
+    if (attachmentError) return res.status(400).json({ error: attachmentError });
     const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
       ...scopeStamp(reqScope(req)),
@@ -1514,16 +1583,36 @@ export function registerResourceRoutes(app: Express) {
       testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
       ...typeFields,
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
+      assignedTo: c.assignedTo || '',
+      requestedBy: c.requestedBy || '',
+      configuration: c.configuration || '',
+      targetUrl: c.targetUrl || '',
+      attachments: [],
       folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',
       createdAt: new Date(),
     };
     const savedCase = await Cases.upsert(newCase);
+    if (c.attachments?.length) await Cases.upsert({ ...savedCase, attachments: saveCaseAttachments(c.attachments, savedCase.id) });
     if (!isPgEnabled()) persistDataInBackground('case');
     await ensureTagsInCatalog(newCase.tags, reqScope(req));
     logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
     res.json({ success: true, id: savedCase.id });
+  }));
+
+  app.put('/api/cases/:id', asyncRoute(async (req, res) => {
+    const existing = await Cases.get(req.params.id);
+    if (!existing || !scopeFilter([existing], reqScope(req)).length) return res.status(404).json({ error: 'Test case not found.' });
+    const c = { ...req.body, folderId: req.body?.folderId ?? existing.folderId };
+    const attachmentError = caseAttachmentError(c.attachments || []);
+    if (attachmentError) return res.status(400).json({ error: attachmentError });
+    const merged = { ...existing, ...c };
+    const saved = await Cases.upsert({ ...merged, ...scopeStamp(reqScope(req)), id: existing.id, description: buildCaseDescription(merged), steps: normalizeCaseSteps(merged.steps), tags: normalizeCaseTags(merged.tags || []), attachments: saveCaseAttachments(merged.attachments || [], existing.id) });
+    if (!isPgEnabled()) persistDataInBackground('case');
+    await ensureTagsInCatalog(saved.tags, reqScope(req));
+    logActivity(req, `Updated Case: ${saved.title}`, { type: 'case', entityId: saved.id });
+    res.json({ success: true, id: saved.id });
   }));
 
   /* ---------- POST /api/cases/ai-action ---------- */
@@ -1756,7 +1845,7 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
-    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
+    const runMode = await runModeForCases(req.body?.mode, selectedCases);
     const newRun = {
       ...scopeStamp(scope),
       id: runId,
@@ -1831,7 +1920,7 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
-    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
+    const runMode = await runModeForCases(req.body?.mode, selectedCase ? [selectedCase] : []);
     const newRun = {
       ...scopeStamp(reqScope(req)),
       id: runId,
@@ -1920,8 +2009,8 @@ Rules:
     res.json({ success: true, run: started });
   });
 
-  // Stop/finish a MANUAL run — freezes the duration clock and marks it Completed (keeping the rolled-up
-  // pass/fail status when the run was fully evaluated).
+  // Stopping an active manual run is a cancellation, not a successful completion. Case outcomes remain
+  // available for review, but must not make a user-stopped run look like it passed.
   app.post('/api/runs/:id/stop', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
@@ -1929,8 +2018,7 @@ Rules:
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (r.startedAt && !r.completedAt) await RunCaseResults.upsert({ ...r, completedAt: now });
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
-    const status = rolled.status === 'In Progress' || rolled.status === 'Not Started' ? 'Completed' : rolled.status;
-    const stopped = { ...rolled, state: 'Completed', status, completedAt: now, progress: 'Run completed' };
+    const stopped = { ...rolled, state: 'Cancelled', status: 'Cancelled', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });

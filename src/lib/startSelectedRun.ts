@@ -7,6 +7,7 @@ type RunSelection = {
   folderId?: string;
   tags?: string[];
   name?: string;
+  mode?: 'manual' | 'automated';
 };
 
 export function createClientRunId(): string {

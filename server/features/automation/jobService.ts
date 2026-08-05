@@ -197,6 +197,7 @@ export async function createLinkedTestRun(job: any, recording: any, scope: Scope
     ...scopeStamp(scope),
     id,
     name: `${input.name || recording?.name || 'Automation run'} - ${id}`,
+    mode: 'automated',
     caseIds: caseId ? [caseId] : [],
     requestedBy: input.requestedBy || '',
     status: 'Running',

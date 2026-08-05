@@ -739,8 +739,12 @@ export function registerAutomationRoutes(app: Express) {
     const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
     if (!testCase) return res.status(404).json({ error: 'Test case not found.' });
     // The recorded script lives on the recording that produced this case (linked via metadata.caseId).
-    const rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
+    let rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
       .find((r: any) => r.metadata?.caseId === caseId && r.status === 'ready' && r.script);
+    if (!rec) {
+      const script = scopeFilter((await Scripts.list()) as any[], scope).find((item: any) => String(item.caseId || '') === caseId && String(item.code || '').trim());
+      if (script) rec = await recordingForScript(script.id, scope);
+    }
     if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
     // Persist the linked run before execution. A fast completion must be able to
     // synchronize its counts onto this record.

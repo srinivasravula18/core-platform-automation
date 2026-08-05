@@ -268,6 +268,11 @@ function mapCase(r: any) {
     testingType: r.testing_type || 'Functional',
     testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
     captureEvidenceOnManualRun: r.capture_evidence_on_manual_run !== false,
+    assignedTo: r.assigned_to || '',
+    requestedBy: r.requested_by || '',
+    configuration: r.configuration || '',
+    targetUrl: r.target_url || '',
+    attachments: r.attachments || [],
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -1238,8 +1243,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, assigned_to, requested_by, configuration, target_url, attachments, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1250,6 +1255,7 @@ export const Cases = {
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
          testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
          test_suite_ids=EXCLUDED.test_suite_ids, capture_evidence_on_manual_run=EXCLUDED.capture_evidence_on_manual_run,
+         assigned_to=EXCLUDED.assigned_to, requested_by=EXCLUDED.requested_by, configuration=EXCLUDED.configuration, target_url=EXCLUDED.target_url, attachments=EXCLUDED.attachments,
          project_id=COALESCE(EXCLUDED.project_id, cases.project_id), updated_at=now()
        RETURNING *`,
       [
@@ -1261,7 +1267,8 @@ export const Cases = {
         c.sourceRunId || null, c.agentRunId || null,
         c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
         JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
-        c.captureEvidenceOnManualRun !== false, c.projectId || null,
+        c.captureEvidenceOnManualRun !== false,
+        c.assignedTo || '', c.requestedBy || '', c.configuration || '', c.targetUrl || '', JSON.stringify(c.attachments || []), c.projectId || null,
       ],
     );
     await writeScopeCols('cases', id, c);

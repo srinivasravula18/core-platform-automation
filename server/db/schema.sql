@@ -307,6 +307,12 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manua
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE;
+-- Manual-execution fields authored on the case (previously only on the manual run form).
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS assigned_to       TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS requested_by      TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS configuration     TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS target_url        TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS attachments       JSONB NOT NULL DEFAULT '[]'::jsonb;
 -- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;

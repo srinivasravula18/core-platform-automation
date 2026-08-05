@@ -1,6 +1,9 @@
 import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
+
+/** Authoring shape for a case step; captureEvidence gates screenshots in the manual runner. */
+type CaseStep = { action: string; expected: string; captureEvidence?: boolean };
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server, Paperclip, X } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -33,6 +36,10 @@ import { allCasesHaveRunTags, readAutomationRunResponse, runTagsForCases } from 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
+type CaseAttachment = { name: string; dataUrl?: string; url?: string; mimeType?: string };
+const CASE_ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime';
+const CASE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+const CASE_ATTACHMENT_MAX_COUNT = 5;
 const TESTING_SCOPES = ['Manual', 'Automation'];
 function InlineCaseSelect({ children, ...props }: ComponentProps<'select'>) {
   return (
@@ -108,11 +115,14 @@ export default function TestCases() {
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [runTags, setRunTags] = useState<string[]>([]);
   const [pendingRunCaseIds, setPendingRunCaseIds] = useState<string[]>([]);
-  const [runMode, setRunMode] = useState<'headless' | 'headed'>('headless');
+  const [runType, setRunType] = useState<'manual' | 'automated'>('manual');
+  const [browserMode, setBrowserMode] = useState<'headless' | 'headed'>('headless');
   const [runAgentId, setRunAgentId] = useState('');
-  const emptyStep = { action: '', expected: '' };
-  const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, steps: [emptyStep] };
+  const emptyStep: CaseStep = { action: '', expected: '', captureEvidence: true };
+  const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, assignedTo: '', requestedBy: '', configuration: '', targetUrl: '', steps: [emptyStep] as CaseStep[] };
   const [formData, setFormData] = useState(blankForm);
+  const [attachments, setAttachments] = useState<CaseAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState('');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
@@ -301,6 +311,8 @@ export default function TestCases() {
     setSelectedCaseId(null);
     setFormData(blankForm);
     setAutomationUrl('');
+    setAttachments([]);
+    setAttachmentError('');
     setIsCaseModalOpen(true);
   };
 
@@ -320,16 +332,32 @@ export default function TestCases() {
       testingTypes: normalizeTestCaseTypes(testCase),
       priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
       captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
+      assignedTo: testCase.assignedTo || '', requestedBy: testCase.requestedBy || '', configuration: testCase.configuration || '', targetUrl: testCase.targetUrl || '',
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
+    setAttachments(Array.isArray(testCase.attachments) ? testCase.attachments : []);
+    setAttachmentError('');
     setIsCaseModalOpen(true);
   };
 
-  const handleSaveCase = () => {
+  const addAttachments = async (files: FileList | null) => {
+    if (!files) return;
+    const next = [...attachments];
+    const errors: string[] = [];
+    for (const file of Array.from(files)) {
+      if (next.length >= CASE_ATTACHMENT_MAX_COUNT) { errors.push(`Attach up to ${CASE_ATTACHMENT_MAX_COUNT} files.`); break; }
+      if (file.size > CASE_ATTACHMENT_MAX_BYTES) { errors.push(`${file.name} is larger than 4 MB.`); continue; }
+      next.push({ name: file.name, dataUrl: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('Could not read file.')); reader.readAsDataURL(file); }) });
+    }
+    setAttachments(next);
+    setAttachmentError(errors.join(' '));
+  };
+
+  const handleSaveCase = async () => {
     if (!formData.title.trim()) return;
     const tags = formData.tags.map((s) => s.trim()).filter(Boolean);
     const steps = formData.steps
-      .map((step) => ({ action: step.action.trim(), expected: step.expected.trim() }))
+      .map((step: any) => ({ action: step.action.trim(), expected: step.expected.trim(), captureEvidence: step.captureEvidence !== false }))
       .filter((step) => step.action || step.expected);
     // Derive the legacy singular fields so run/linking + exports keyed on them keep working.
     const payload = {
@@ -338,32 +366,58 @@ export default function TestCases() {
       tags,
       steps,
       type: formData.testingScope === 'Automation' ? 'Automated' : 'Manual',
+      attachments,
       testPlanId: formData.testPlanIds[0] || '',
       testSuiteId: formData.testSuiteIds[0] || '',
     };
 
-    if (selectedCaseId) {
-      fetch(`/api/cases/${selectedCaseId}`, {
-        method: 'PUT',
+    try {
+      const response = await fetch(selectedCaseId ? `/api/cases/${selectedCaseId}` : '/api/cases', {
+        method: selectedCaseId ? 'PUT' : 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-      }).then(() => {
-         setIsCaseModalOpen(false);
-         fetchCases();
+        body: JSON.stringify(selectedCaseId ? payload : { ...payload, projectId: selectedProjectId || '', appId: selectedAppId || '' })
       });
-    } else {
-      fetch('/api/cases', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...payload, projectId: selectedProjectId || '', appId: selectedAppId || '' })
-      }).then(() => {
-         setIsCaseModalOpen(false);
-         fetchCases();
-      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Could not save test case.');
+      setIsCaseModalOpen(false);
+      fetchCases();
+    } catch (error: any) {
+      setAttachmentError(error.message || 'Could not save test case.');
     }
   };
 
-  const updateFormStep = (index: number, updates: Partial<{ action: string; expected: string }>) => {
+  // Step multi-select drives the AI Expand/Merge actions below (same endpoint the run editor used).
+  const [stepPick, setStepPick] = useState<Set<number>>(new Set());
+  const [stepAiBusy, setStepAiBusy] = useState<'expand' | null>(null);
+  const toggleStepPick = (index: number) => setStepPick((prev) => {
+    const next = new Set(prev);
+    if (next.has(index)) next.delete(index); else next.add(index);
+    return next;
+  });
+  // Steps expand only (merging is a case-level action). The AI returns the FULL new ordered list,
+  // so untouched steps are preserved.
+  const editPickedSteps = async (op: 'expand') => {
+    const picks = [...stepPick];
+    if (!picks.length) return;
+    setStepAiBusy(op);
+    try {
+      const res = await fetch('/api/agent/expand-case-steps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testCase: { ...formData, steps: formData.steps }, op, selectedStepIndexes: picks, targetUrl: formData.targetUrl || '' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.steps) || !data.steps.length) throw new Error(data.error || 'Could not rewrite the selected steps.');
+      setFormData((prev) => ({ ...prev, steps: data.steps.map((step: any) => ({ action: String(step.action || ''), expected: String(step.expected || ''), captureEvidence: step.captureEvidence !== false })) }));
+      setStepPick(new Set());
+    } catch (error: any) {
+      void showAlert(error?.message || 'Could not rewrite the selected steps.');
+    } finally {
+      setStepAiBusy(null);
+    }
+  };
+
+  const updateFormStep = (index: number, updates: Partial<CaseStep>) => {
     const steps = [...formData.steps];
     steps[index] = { ...steps[index], ...updates };
     setFormData({ ...formData, steps });
@@ -374,6 +428,7 @@ export default function TestCases() {
   };
 
   const removeFormStep = (index: number) => {
+    setStepPick(new Set());
     const steps = formData.steps.filter((_, stepIndex) => stepIndex !== index);
     setFormData({ ...formData, steps: steps.length ? steps : [{ action: '', expected: '' }] });
   };
@@ -463,16 +518,13 @@ export default function TestCases() {
       const testCase = cases.find((item: any) => String(item.id) === String(id));
       return testCase && isAutomationCase(testCase);
     });
-    if (allCasesHaveRunTags(cases, caseIds) && !hasAutomation) {
-      void runSelectedCases(caseIds, savedTags);
-      return;
-    }
     setPendingRunCaseIds(caseIds);
     const selectedCase = caseIds.length === 1
       ? cases.find((item: any) => String(item.id) === String(caseIds[0]))
       : null;
     const savedScript = selectedCase ? relatedScript(selectedCase) : null;
-    setRunMode(savedScript?.executionMode === 'headed' ? 'headed' : 'headless');
+    setRunType(hasAutomation ? 'automated' : 'manual');
+    setBrowserMode(savedScript?.executionMode === 'headed' ? 'headed' : 'headless');
     setRunAgentId(String(savedScript?.preferredAgentId || ''));
     setIsRunModalOpen(true);
   };
@@ -500,7 +552,7 @@ export default function TestCases() {
    * silently creating a Not Started run for cases the row button would have actually executed.
    * One case failing to start must not abort the rest of the selection.
    */
-  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags, saveTagsToCases = false, executionMode: 'headless' | 'headed' = 'headless', agentId = '') => {
+  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags, saveTagsToCases = false, type: 'manual' | 'automated' = 'manual', executionMode: 'headless' | 'headed' = 'headless', agentId = '') => {
     if (!caseIds.length || isStartingRun) return;
     const normalizedRunTags = normalizeTags(tags);
     if (saveTagsToCases && !normalizedRunTags.length) { void showAlert('Add at least one tag before starting this case.'); return; }
@@ -521,13 +573,16 @@ export default function TestCases() {
           : testCase));
       }
 
-      const automationCases: any[] = [];
-      const otherCaseIds: string[] = [];
-      for (const id of caseIds) {
-        const testCase = cases.find((item: any) => String(item.id) === String(id));
-        // An id we cannot resolve keeps the previous behaviour rather than being dropped.
-        if (testCase && isAutomationCase(testCase)) automationCases.push(testCase);
-        else otherCaseIds.push(id);
+      if (type === 'manual') {
+        await startSelectedRun({ caseIds, tags: normalizedRunTags, mode: 'manual' }, navigate);
+        setIsRunModalOpen(false);
+        bulk.clearSelection();
+        return;
+      }
+
+      const automationCases = caseIds.map((id) => cases.find((item: any) => String(item.id) === String(id))).filter(Boolean);
+      if (automationCases.length !== caseIds.length || automationCases.some((testCase) => !isAutomationCase(testCase))) {
+        throw new Error('Automated runs require a saved automation script for every selected test case.');
       }
 
       const failures: string[] = [];
@@ -548,9 +603,6 @@ export default function TestCases() {
           failures.push(`${testCase.title || testCase.id}: ${error.message || 'could not start'}`);
         }
       }
-
-      // startSelectedRun navigates itself; otherwise open the first automation run dispatched.
-      if (otherCaseIds.length) await startSelectedRun({ caseIds: otherCaseIds, tags: normalizedRunTags }, navigate);
 
       setIsRunModalOpen(false);
       bulk.clearSelection();
@@ -637,6 +689,10 @@ export default function TestCases() {
       || (runId && candidates.length === 1 ? candidates[0] : null);
   };
   const pendingRunHasAutomation = pendingRunCaseIds.some((id) => {
+    const testCase = cases.find((item: any) => String(item.id) === String(id));
+    return testCase && isAutomationCase(testCase);
+  });
+  const pendingRunCanAutomate = pendingRunCaseIds.length > 0 && pendingRunCaseIds.every((id) => {
     const testCase = cases.find((item: any) => String(item.id) === String(id));
     return testCase && isAutomationCase(testCase);
   });
@@ -898,10 +954,10 @@ export default function TestCases() {
           ) : (
           <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FolderSelect
-              value={formData.folderId}
-              onChange={(folderId) => setFormData({ ...formData, folderId })}
-            />
+             <FolderSelect
+               value={formData.folderId}
+               onChange={(folderId) => setFormData({ ...formData, folderId })}
+             />
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
                 <MultiSelectDropdown label="None" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))} value={formData.testPlanIds} onChange={(ids) => setFormData({ ...formData, testPlanIds: ids })} />
@@ -916,121 +972,126 @@ export default function TestCases() {
             <input type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} placeholder="e.g., Login with valid credentials" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description (Steps, Ex. Results)</label>
-            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Preconditions, test steps..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
+            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Short summary of what this case covers…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Pre Conditions</label>
             <textarea value={formData.preconditions} onChange={(e) => setFormData({...formData, preconditions: e.target.value})} placeholder="State that must be true before running this case (e.g. user is logged in as Admin, an app exists)…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20 resize-y" />
           </div>
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-[var(--text-muted)]">Test Steps & Expected Results</label>
-              <button onClick={addFormStep} type="button" className="text-xs text-[var(--accent)] hover:underline">Add Step</button>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="block text-sm font-medium text-[var(--text-muted)]">Attachments</label>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
+                <Paperclip className="h-3.5 w-3.5" /> Add files
+                <input type="file" multiple accept={CASE_ATTACHMENT_ACCEPT} className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.target.value = ''; }} />
+              </label>
             </div>
-            <div ref={stepEditorRef}>
-              {formData.steps.map((step, index) => (
-                <div key={index} className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
-                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2">
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                      Step {index + 1}
-                    </span>
-                    <button
-                      onClick={() => removeFormStep(index)}
-                      type="button"
-                      className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
-                      disabled={formData.steps.length === 1 && !step.action && !step.expected}
-                    >
-                      Remove
+            <p className="text-xs text-[var(--text-muted)]">PDF, Word, Excel, CSV, text, photos, and MP4/WebM/MOV videos. Up to 5 files, 4 MB each.</p>
+            {attachments.length > 0 && <div className="mt-2 flex flex-wrap gap-2">
+              {attachments.map((attachment, index) => <span key={`${attachment.name}-${index}`} className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-muted)]">
+                {attachment.url ? <a href={attachment.url} target="_blank" rel="noreferrer" className="truncate hover:text-[var(--accent)]">{attachment.name}</a> : <span className="truncate">{attachment.name}</span>}
+                <button type="button" onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${attachment.name}`} className="shrink-0 hover:text-red-500"><X className="h-3.5 w-3.5" /></button>
+              </span>)}
+            </div>}
+            {attachmentError && <p role="alert" className="mt-1 text-xs text-red-500">{attachmentError}</p>}
+          </div>
+          {/* Steps: same compact table as Create Manual Run (# / Action / Expected Result / Evidence). */}
+          <div>
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Steps</label>
+              <div className="flex items-center gap-1.5">
+                {stepPick.size >= 1 && (
+                  <button type="button" onClick={() => void editPickedSteps('expand')} disabled={stepAiBusy !== null} title="Break the ticked steps into finer sub-steps (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+                    {stepAiBusy === 'expand' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                    Expand {stepPick.size} step{stepPick.size === 1 ? '' : 's'}
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="rounded-md border border-[var(--border)]">
+              <div className="grid grid-cols-[1.25rem_1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                <span /><span>#</span><span>Action</span><span>Expected Result</span><span>Evidence</span><span />
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                {formData.steps.length === 0 && (
+                  <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet. Add the first step below.</div>
+                )}
+                {formData.steps.map((step, index) => (
+                  <div key={index} className="grid grid-cols-[1.25rem_1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
+                    <label className="flex items-start justify-center pt-2" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
+                      <input type="checkbox" checked={stepPick.has(index)} onChange={() => toggleStepPick(index)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                    </label>
+                    <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{index + 1}</span>
+                    <textarea value={step.action} onChange={(e) => updateFormStep(index, { action: e.target.value })} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    <textarea value={step.expected} onChange={(e) => updateFormStep(index, { expected: e.target.value })} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    {/* Evidence toggle: when ON, the tester may attach a screenshot to this step during the run. */}
+                    <div className="flex items-center pt-1.5">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={step.captureEvidence !== false}
+                        title={step.captureEvidence !== false ? 'Evidence allowed on this step — click to disable' : 'Evidence disabled — click to allow'}
+                        onClick={() => updateFormStep(index, { captureEvidence: step.captureEvidence === false })}
+                        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence !== false ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+                      >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence !== false ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+                    <button type="button" onClick={() => removeFormStep(index)} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
-                  <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                        Test Step
-                      </label>
-                      <textarea
-                        data-auto-size="true"
-                        value={step.action}
-                        onChange={(e) => {
-                          updateFormStep(index, { action: e.target.value });
-                          resizeTextArea(e.currentTarget);
-                        }}
-                        onInput={(e) => resizeTextArea(e.currentTarget)}
-                        placeholder={`${index + 1}. Enter test step...`}
-                        className="min-h-[132px] w-full resize-none overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm leading-6 text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                        Expected Result
-                      </label>
-                      <textarea
-                        data-auto-size="true"
-                        value={step.expected}
-                        onChange={(e) => {
-                          updateFormStep(index, { expected: e.target.value });
-                          resizeTextArea(e.currentTarget);
-                        }}
-                        onInput={(e) => resizeTextArea(e.currentTarget)}
-                        placeholder={`${index + 1}. Enter expected result...`}
-                        className="min-h-[132px] w-full resize-none overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm leading-6 text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
+            <button type="button" onClick={addFormStep} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
+              <Plus className="h-4 w-4" /> Add step
+            </button>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Created By</label>
-            <input type="text" value={formData.createdBy} onChange={(e) => setFormData({...formData, createdBy: e.target.value})} placeholder="e.g. Admin or user name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             {/* Testing Scope is chosen via the Manual/Automation toggle at the top of this form. */}
-             {selectedCaseId && (
-               <div>
-                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Scope</label>
-                   <select value={formData.testingScope} onChange={(e) => setFormData({...formData, testingScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                      {TESTING_SCOPES.map((scope) => (
-                        <option key={scope} value={scope}>{scope}</option>
-                      ))}
-                   </select>
-               </div>
-             )}
-             <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
-                 <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    {CASE_STATUSES.map((status) => (
-                      <option key={status} value={status}>{status}</option>
-                    ))}
-                 </select>
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Automation Status</label>
-                 <select value={formData.automationStatus} onChange={(e) => setFormData({...formData, automationStatus: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    {AUTOMATION_STATUSES.map((status) => (
-                      <option key={status} value={status}>{status}</option>
-                    ))}
-                 </select>
-             </div>
-             <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
-                 <MultiSelectDropdown label="Select types" options={TESTING_TYPES.map((type) => ({ id: type, name: type }))} value={formData.testingTypes} onChange={(testingTypes) => setFormData({ ...formData, testingTypes })} />
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
-                 <select value={formData.priority} onChange={(e) => setFormData({...formData, priority: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    <option>Low</option>
-                    <option>Medium</option>
-                    <option>High</option>
-                    <option>Critical</option>
-                 </select>
-             </div>
+          {/* Case attributes + manual-execution context, paired two-up like Create Manual Run.
+              Testing Scope is set by the Manual / Record and Play toggle at the top of this form. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Status</label>
+              <select value={formData.status} onChange={(e) => setFormData({ ...formData, status: e.target.value })} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                {CASE_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Priority</label>
+              <select value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: e.target.value })} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                <option>Low</option><option>Medium</option><option>High</option><option>Critical</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Type Of Test Case</label>
+              <div className="mt-1">
+                <MultiSelectDropdown label="Select types" options={TESTING_TYPES.map((type) => ({ id: type, name: type }))} value={formData.testingTypes} onChange={(testingTypes) => setFormData({ ...formData, testingTypes })} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Automation Status</label>
+              <select value={formData.automationStatus} onChange={(e) => setFormData({ ...formData, automationStatus: e.target.value })} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                {AUTOMATION_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Assign To</label>
+              <input value={formData.assignedTo} onChange={(e) => setFormData({ ...formData, assignedTo: e.target.value })} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Configuration</label>
+              <input value={formData.configuration} onChange={(e) => setFormData({ ...formData, configuration: e.target.value })} placeholder="e.g. Sandbox / Chrome" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Requested By</label>
+              <input value={formData.requestedBy} onChange={(e) => setFormData({ ...formData, requestedBy: e.target.value })} placeholder="Requester" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL</label>
+              <input value={formData.targetUrl} onChange={(e) => setFormData({ ...formData, targetUrl: e.target.value })} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
@@ -1087,8 +1148,8 @@ export default function TestCases() {
           <div className="flex justify-end gap-2">
             <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
             <button
-              onClick={() => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, runMode, selectedRunAgentId)}
-              disabled={isStartingRun || (pendingRunNeedsTags && !runTags.length) || (runMode === 'headed' && !selectedRunAgentId)}
+              onClick={() => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, runType, browserMode, selectedRunAgentId)}
+              disabled={isStartingRun || (pendingRunNeedsTags && !runTags.length) || (runType === 'automated' && browserMode === 'headed' && !selectedRunAgentId)}
               className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
             >
               {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} {pendingRunNeedsTags ? 'Save & Run' : 'Run'}
@@ -1098,19 +1159,33 @@ export default function TestCases() {
       >
         <div className="space-y-4">
           <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
-          {pendingRunHasAutomation && <fieldset>
-            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Execution mode</legend>
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Run type</legend>
             <div className="grid gap-2 sm:grid-cols-2">
-              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runMode === 'headed' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="run-mode" value="headed" checked={runMode === 'headed'} onChange={() => setRunMode('headed')} className="mt-1" />
+              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runType === 'manual' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="run-type" value="manual" checked={runType === 'manual'} onChange={() => setRunType('manual')} className="mt-1" />
+                <span><span className="text-sm font-semibold text-[var(--text-primary)]">Manual run</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Execute each test step yourself and record outcomes and evidence.</span></span>
+              </label>
+              <label className={`flex gap-3 rounded-lg border p-3 ${pendingRunCanAutomate ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${runType === 'automated' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="run-type" value="automated" checked={runType === 'automated'} disabled={!pendingRunCanAutomate} onChange={() => setRunType('automated')} className="mt-1" />
+                <span><span className="text-sm font-semibold text-[var(--text-primary)]">Automated run</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run the saved Playwright script for every selected case.</span></span>
+              </label>
+            </div>
+            {!pendingRunCanAutomate && pendingRunHasAutomation && <p className="mt-2 text-xs text-amber-500">Automated runs need a saved automation script for every selected case.</p>}
+          </fieldset>
+          {runType === 'automated' && <fieldset>
+            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Automated browser mode</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${browserMode === 'headed' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="browser-mode" value="headed" checked={browserMode === 'headed'} onChange={() => setBrowserMode('headed')} className="mt-1" />
                 <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Monitor className="h-4 w-4" /> Headed</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Open the browser on the local agent for OTP, access codes, or other manual input.</span></span>
               </label>
-              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runMode === 'headless' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="run-mode" value="headless" checked={runMode === 'headless'} onChange={() => setRunMode('headless')} className="mt-1" />
+              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${browserMode === 'headless' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="browser-mode" value="headless" checked={browserMode === 'headless'} onChange={() => setBrowserMode('headless')} className="mt-1" />
                 <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Server className="h-4 w-4" /> Headless</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run unattended on the server. No browser window is shown.</span></span>
               </label>
             </div>
-            {runMode === 'headed' && (onlineRunAgents.length ? (
+            {browserMode === 'headed' && (onlineRunAgents.length ? (
               <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">
                 Run on agent
                 <select value={selectedRunAgentId} onChange={(event) => setRunAgentId(event.target.value)}
