@@ -50,7 +50,7 @@ function stepTone(status: ExecutionStepProgress['status']): string {
   return 'text-blue-400';
 }
 
-export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
+export function AutomationRunArtifacts({ jobId, videoOnly = false }: { jobId: string; videoOnly?: boolean }) {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -113,6 +113,12 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
     const timer = window.setInterval(() => setClock(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [running]);
+
+  if (videoOnly) {
+    return video && previews[video.id]
+      ? <video src={previews[video.id]} controls className="max-h-[70vh] w-full rounded border border-[var(--border)] bg-black" />
+      : <div className="flex min-h-32 items-center justify-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Generating video preview…</div>;
+  }
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 px-4 py-4">

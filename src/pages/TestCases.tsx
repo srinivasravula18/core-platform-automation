@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react
 /** Authoring shape for a case step; captureEvidence gates screenshots in the manual runner. */
 type CaseStep = { action: string; expected: string; captureEvidence?: boolean };
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server, Paperclip, X } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server, Paperclip, X, Video } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -19,7 +19,8 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
 import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 import CaseHistoryModal from '@/src/components/CaseHistoryModal';
-import { useAgents, useRemoteAgentFlag } from '@/src/lib/useAutomation';
+import { useAgents, useRecordings, useRemoteAgentFlag } from '@/src/lib/useAutomation';
+import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { useProjects } from '@/src/store/project';
@@ -68,6 +69,7 @@ export default function TestCases() {
   const { projects, selectedProjectId, selectedAppId, fetchProjects } = useProjects();
   const remoteAgentFlag = useRemoteAgentFlag();
   const { agents: runAgents } = useAgents();
+  const { recordings } = useRecordings();
   // Application URL for the New Case → Automation (codegen) recording; shown above Title.
   const [automationUrl, setAutomationUrl] = useState('');
   const [automationEnvironment, setAutomationEnvironment] = useState('QA');
@@ -78,6 +80,7 @@ export default function TestCases() {
   const [runs, setRuns] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
   const [scriptViewer, setScriptViewer] = useState<{ id: string; title: string; filename: string; code: string } | null>(null);
+  const [videoViewer, setVideoViewer] = useState<{ title: string; url?: string; jobId?: string } | null>(null);
   const [scriptDraft, setScriptDraft] = useState('');
   const [isEditingScript, setIsEditingScript] = useState(false);
   const [isSavingScript, setIsSavingScript] = useState(false);
@@ -688,6 +691,11 @@ export default function TestCases() {
     return candidates.find((script) => normalizeTitle(script.title) === title || normalizeTitle(script.test_case_title) === title)
       || (runId && candidates.length === 1 ? candidates[0] : null);
   };
+  const previewJobByCase = useMemo(() => new Map(recordings
+    .filter((recording) => recording.metadata?.caseId && recording.metadata?.videoPreviewJobId)
+    .map((recording) => [String(recording.metadata!.caseId), String(recording.metadata!.videoPreviewJobId)])), [recordings]);
+  const uploadedVideo = (testCase: any) => (Array.isArray(testCase.attachments) ? testCase.attachments : [])
+    .find((attachment: CaseAttachment) => String(attachment.mimeType || '').startsWith('video/') || /\.(mp4|webm|mov)$/i.test(String(attachment.name || '')));
   const pendingRunHasAutomation = pendingRunCaseIds.some((id) => {
     const testCase = cases.find((item: any) => String(item.id) === String(id));
     return testCase && isAutomationCase(testCase);
@@ -1260,6 +1268,10 @@ export default function TestCases() {
         )}
       </Modal>
 
+      <Modal isOpen={!!videoViewer} onClose={() => setVideoViewer(null)} title={videoViewer?.title || 'Video'} size="xl">
+        {videoViewer?.jobId ? <AutomationRunArtifacts jobId={videoViewer.jobId} videoOnly /> : videoViewer?.url && <video src={videoViewer.url} controls className="max-h-[70vh] w-full rounded-lg bg-black" />}
+      </Modal>
+
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex flex-col gap-3 flex-shrink-0">
           <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
@@ -1582,15 +1594,11 @@ export default function TestCases() {
                     })()}
                   </td>
                   <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })}
-                      title="Update evidence capture"
-                    >
-                      <option value="on">Snapshot On</option>
-                      <option value="off">Snapshot Off</option>
-                    </InlineCaseSelect>
+                    {(() => {
+                      const uploaded = uploadedVideo(tc);
+                      const previewJobId = previewJobByCase.get(String(tc.id));
+                      return <div className="flex items-center gap-1"><InlineCaseSelect value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })} title="Update evidence capture"><option value="on">Snapshot On</option><option value="off">Snapshot Off</option></InlineCaseSelect>{uploaded && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — ${uploaded.name}`, url: uploaded.url }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Video</button>}{previewJobId && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — Recorded preview`, jobId: previewJobId }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Preview</button>}</div>;
+                    })()}
                   </td>
                   <td className="py-3 px-4">
                     <TagMultiSelect

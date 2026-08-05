@@ -100,8 +100,10 @@ export class Recorder {
         if (!state)
             return;
         this.killTree(state.child);
-        // finalize runs on the child 'exit' handler; call directly too in case exit is delayed.
-        setTimeout(() => this.finalize(recordingId), 300);
+        // Do not wait for Playwright codegen's process-exit event: on Windows that can lag after the
+        // browser is already closed, leaving the authoring UI stuck on "Generating".
+        this.tick(recordingId);
+        this.finalize(recordingId);
     }
     finalize(recordingId) {
         const state = this.active.get(recordingId);

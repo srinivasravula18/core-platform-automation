@@ -81,6 +81,8 @@ const ROUTE_RULES: RouteRule[] = [
   // Record & Play (Playwright codegen + run)
   R('POST', /^\/api\/playwright\/codegen\/start$/, 'record-play:start'),
   R('POST', /^\/api\/playwright\/codegen\/[^/]+\/stop$/, 'record-play:stop'),
+  R('POST', /^\/api\/automation\/recordings\/import-codegen$/, 'record-play:stop'),
+  R('POST', /^\/api\/automation\/recordings\/[^/]+\/video-preview$/, 'record-play:execute'),
   R('GET', /^\/api\/playwright\/codegen\//, 'record-play:read'),
   R('*', /^\/api\/playwright\/run/, 'record-play:execute'),
 

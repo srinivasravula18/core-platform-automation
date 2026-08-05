@@ -38,6 +38,7 @@ import {
 } from './agentService';
 import {
   createRecording,
+  finalizeRecording,
   startRecording,
   stopRecording,
   updateRecording,
@@ -263,6 +264,25 @@ export function registerAutomationRoutes(app: Express) {
     res.json({ recordings: mine });
   });
 
+  // The local Record & Play screen uses Playwright codegen directly. Once stopped, promote that
+  // temporary file into the same durable recording store used by the remote agent flow. This does
+  // not create or start a Test Run.
+  app.post('/api/automation/recordings/import-codegen', requireAuth, async (req: Request, res: Response) => {
+    const script = String(req.body?.script || '').trim();
+    const appUrl = String(req.body?.appUrl || '').trim();
+    if (!script) return res.status(400).json({ error: 'Record at least one action before saving.' });
+    if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
+    const recording = await createRecording({
+      name: String(req.body?.name || 'Recorded flow').trim(),
+      appUrl,
+      browser: 'chromium',
+      environment: 'QA',
+    }, reqScope(req));
+    await finalizeRecording(recording.id, { script, metadata: { source: 'local-codegen' } });
+    const saved = await Recordings.get(recording.id);
+    res.status(201).json({ recording: saved });
+  });
+
   // Data-drivable RUNNABLES = repository Scripts (each linked to a Test Case) + finalized recordings.
   // The user selects one of these; .../runnables/prepare resolves it to the recordingId the binding +
   // batch flow uses, so a Test Case's generated script is data-driven through the SAME engine as a
@@ -379,6 +399,19 @@ export function registerAutomationRoutes(app: Express) {
     const out = await stopRecording(req.params.id);
     if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out);
+  });
+
+  // A codegen session records source actions but Playwright's codegen CLI does not emit video.
+  // Replay the saved script through the same artifact runner as Test Runs to create a video preview
+  // without creating a Test Run record.
+  app.post('/api/automation/recordings/:id/video-preview', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    if (!String(rec.script || '').trim()) return res.status(400).json({ error: 'Save a recording with actions before creating its video preview.' });
+    const job = await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
+    await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, videoPreviewJobId: job.id } });
+    void runJobOnServer(job.id).catch((error) => console.error('[automation] recording video preview failed:', error?.message || error));
+    res.status(202).json({ job });
   });
 
   // Download an Excel template built from THIS recording — headers = field names, plus a Guide sheet.

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil } from 'lucide-react';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil, Video } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { useRemoteAgentFlag, useAgents, useRecordingSession, type BrowserPermissionSettings, type RecordingCaseMeta } from '@/src/lib/useAutomation';
 import { AUTOMATION_BROWSER_PERMISSIONS, type AutomationBrowserPermission } from '@/core/shared/browserPermissions';
 import { NoAgentState } from '@/src/components/NoAgentState';
+import { can } from '@/src/components/AuthGate';
 import { createClientRunId } from '@/src/lib/startSelectedRun';
 import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
 import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
+import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD', 'staging'] as const;
@@ -60,6 +62,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const [editingScript, setEditingScript] = useState(true);
   const [savingScript, setSavingScript] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
+  const [previewJobId, setPreviewJobId] = useState('');
   // Spec file name for the case's linked script; editable once the recording has produced one.
   const [specName, setSpecName] = useState('');
   const [savedSpecName, setSavedSpecName] = useState('');
@@ -123,6 +126,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
         ...(acceptDialogs ? { acceptDialogs: true } : {}),
       };
       await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta, browserPermissions });
+      setPreviewJobId('');
       showToast('Recording started — interact with your app in the codegen window.', { tone: 'success' });
     } catch (err: any) { showToast(err?.message || 'Could not start recording.', { tone: 'error' }); }
   };
@@ -220,6 +224,20 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
       showToast(error?.message || 'Could not save the recording.', { tone: 'error' });
     } finally {
       setSavingRecording(false);
+    }
+  };
+
+  const createVideoPreview = async () => {
+    if (!recordingId || busy) return;
+    try {
+      await persistScript();
+      const response = await fetch(`/api/automation/recordings/${encodeURIComponent(recordingId)}/video-preview`, { method: 'POST' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.job?.id) throw new Error(body.error || 'Could not create the video preview.');
+      setPreviewJobId(body.job.id);
+      showToast('Creating a video preview from the saved recording.', { tone: 'success' });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not create the video preview.', { tone: 'error' });
     }
   };
 
@@ -363,6 +381,8 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
           />
         </div>
       )}
+      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]"><span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-500">Stage 1</span> Playwright code created <CheckCircle2 className="h-4 w-4 text-emerald-500" /></div>
       <ScriptPane
         script={savedScript}
         placeholder="No script was generated."
@@ -375,6 +395,19 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
           <button type="button" onClick={() => void saveScript()} disabled={savingScript || !scriptDraft.trim()} className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{savingScript ? 'Saving…' : 'Save'}</button>
         </> : <button type="button" onClick={() => setEditingScript(true)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"><Pencil className="h-3.5 w-3.5" /> Edit</button>) : undefined}
       />
+      </section>
+      {!empty && recordingId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]"><span className="rounded bg-[var(--accent)]/15 px-2 py-0.5 text-xs text-[var(--accent)]">Stage 2</span> Video preview</div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Replays this saved script with the same video artifacts used in Test Runs. It does not create a Test Run.</p>
+          </div>
+          <button type="button" onClick={() => void createVideoPreview()} disabled={busy || !can('record-play:execute')} title={!can('record-play:execute') ? 'You do not have permission to run recordings.' : undefined} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+            <Video className="h-4 w-4" /> Create video preview
+          </button>
+        </div>
+        {previewJobId && <div className="mt-3"><AutomationRunArtifacts jobId={previewJobId} videoOnly /></div>}
+      </div>}
       {!empty && caseId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
         <div className="text-sm font-semibold text-[var(--text-primary)]">Run this recorded case now?</div>
         <p className="mt-1 text-xs text-[var(--text-muted)]">Recording always uses the headed local agent. Choose how the generated script should execute.</p>

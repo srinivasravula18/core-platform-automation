@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Download, Loader2, Radio, RefreshCcw, Square } from 'lucide-react';
+import { Download, Loader2, Radio, RefreshCcw, Square, Video } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
+import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 
 const NO_PERM = "You don't have permission for this action";
 
@@ -11,6 +12,8 @@ export default function RecordPlay() {
   const [sessionId, setSessionId] = useState('');
   const [script, setScript] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [savedRecordingId, setSavedRecordingId] = useState('');
+  const [previewJobId, setPreviewJobId] = useState('');
   const [status, setStatus] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [websites, setWebsites] = useState<any[]>([]);
@@ -43,6 +46,8 @@ export default function RecordPlay() {
       if (!res.ok) throw new Error(data.error || 'Failed to start recorder');
       setSessionId(data.id || '');
       setOutputPath(data.outputPath || '');
+      setSavedRecordingId('');
+      setPreviewJobId('');
       setScript('');
       setStatus('Recorder started. Complete the flow in the Playwright window, then load the code.');
     } catch (err: any) {
@@ -73,15 +78,43 @@ export default function RecordPlay() {
     if (!sessionId || isBusy) return;
     setIsBusy(true);
     try {
-      await fetch(`/api/playwright/codegen/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
+      const stopped = await fetch(`/api/playwright/codegen/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
+      if (!stopped.ok) throw new Error('Failed to stop recorder.');
       const res = await fetch(`/api/playwright/codegen/${encodeURIComponent(sessionId)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load generated code');
-      setScript(data.code || '');
+      const code = String(data.code || '');
+      if (!code) throw new Error('No generated code was captured. Record at least one action and try again.');
+      const saved = await fetch('/api/automation/recordings/import-codegen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: scriptName.trim() || sessionId, appUrl: targetUrl.trim(), script: code }),
+      });
+      const savedData = await saved.json().catch(() => ({}));
+      if (!saved.ok || !savedData.recording?.id) throw new Error(savedData.error || 'Failed to save recording.');
+      setScript(savedData.recording.script || code);
       setOutputPath(data.outputPath || outputPath);
-      setStatus(data.code ? 'Recorder stopped. Generated code loaded.' : 'Recorder stopped.');
+      setSavedRecordingId(savedData.recording.id);
+      setPreviewJobId('');
+      setStatus('Recording saved. Preview is ready below.');
     } catch (err: any) {
       void showAlert(err.message || 'Failed to stop recorder.');
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const createVideoPreview = async () => {
+    if (!savedRecordingId || isBusy) return;
+    setIsBusy(true);
+    try {
+      const res = await fetch(`/api/automation/recordings/${encodeURIComponent(savedRecordingId)}/video-preview`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.job?.id) throw new Error(data.error || 'Could not create video preview.');
+      setPreviewJobId(data.job.id);
+      setStatus('Creating video preview from the saved recording.');
+    } catch (err: any) {
+      void showAlert(err.message || 'Could not create video preview.');
     } finally {
       setIsBusy(false);
     }
@@ -207,15 +240,21 @@ export default function RecordPlay() {
 
         <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
           <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
-            <div className="text-sm font-semibold text-[var(--text-primary)]">Generated Playwright Code</div>
-            <button
-              onClick={downloadScript}
-              disabled={!script}
-              className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Download
-            </button>
+            <div>
+              <div className="text-sm font-semibold text-[var(--text-primary)]">{savedRecordingId ? 'Saved Recording Preview' : 'Generated Playwright Code'}</div>
+              {savedRecordingId && <div className="mt-0.5 font-mono text-[11px] text-[var(--text-muted)]">Recording: {savedRecordingId}</div>}
+            </div>
+            <div className="flex items-center gap-2">
+              {savedRecordingId && <button onClick={createVideoPreview} disabled={isBusy || !can('record-play:execute')} title={!can('record-play:execute') ? NO_PERM : undefined} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"><Video className="h-3.5 w-3.5" /> Create video preview</button>}
+              <button
+                onClick={downloadScript}
+                disabled={!script}
+                className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download
+              </button>
+            </div>
           </div>
           {script ? (
             <pre className="max-h-[calc(100dvh-13rem)] overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200">
@@ -223,9 +262,10 @@ export default function RecordPlay() {
             </pre>
           ) : (
             <div className="flex h-80 items-center justify-center px-6 text-center text-sm text-[var(--text-muted)]">
-              Start a recorder session and load the generated script.
+              Start and stop a recorder session to save a recording preview.
             </div>
           )}
+          {previewJobId && <div className="border-t border-[var(--border)] p-4"><AutomationRunArtifacts jobId={previewJobId} /></div>}
         </div>
       </div>
     </div>
