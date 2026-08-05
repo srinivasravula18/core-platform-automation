@@ -27,7 +27,7 @@ const MISSION_SCRIPT = `test('agent profile', async ({ page }) => {
 async function main() {
   const service = await import('../server/features/automation/recordingService');
   const { createScriptMaterializer } = await import('../server/features/automation/scriptMaterializer');
-  const { proposeRecordingPauses } = await import('../server/features/automation/pauseDetection');
+  const { proposeRecordingPauses, injectAuthChallengePauses, isAuthChallengeText } = await import('../server/features/automation/pauseDetection');
   const { setPauseResumeV1 } = await import('../server/features/automation/flag');
   setPauseResumeV1(1);
   const { Scripts } = await import('../server/db/repository');
@@ -96,20 +96,31 @@ test('empty', async ({ page }) => {
   const otpScript = `test('verify', async ({ page }) => {\n  await page.getByLabel('Verification Code').fill('123456');\n});`;
   const otpRecording = await service.createRecording({ name: 'Verify', appUrl: 'https://example.test' }, scope);
   await service.finalizeRecording(otpRecording.id, { script: otpScript });
-  let otpStep = (await service.listRecordingSteps(otpRecording.id))[0];
-  assert.strictEqual(otpStep.metadata.pauseProposal.kind, 'input', 'one-time code fields get a review-only proposal');
-  assert.strictEqual(otpStep.metadata.pause, undefined, 'proposals do not change execution before acceptance');
-  const accepted = await service.updateRecordingStepPause(otpRecording.id, otpStep.id, 'accept');
-  assert.ok(!('error' in accepted), 'a proposed pause can be accepted');
-  otpStep = (await service.listRecordingSteps(otpRecording.id))[0];
-  const pausedScript = createScriptMaterializer(otpScript, [otpStep], [], [])({ values: {} });
-  assert.ok(pausedScript.includes('fill(await tf.pause('), 'accepted input pause supplies the recorded action value');
-  assert.ok(!pausedScript.includes('123456'), 'recorded one-time value is removed from the runtime script');
-  const manualScript = createScriptMaterializer(otpScript, [{ ...otpStep, metadata: { ...otpStep.metadata, pause: { ...otpStep.metadata.pause, kind: 'manual_action' } } }], [], [])({ values: {} });
-  assert.ok(manualScript.includes('await tf.pause(') && manualScript.includes("fill('123456')"), 'manual pauses run before the recorded action');
-  setPauseResumeV1(0);
-  assert.ok(createScriptMaterializer(otpScript, [otpStep], [], [])({ values: {} }).includes("fill('123456')"), 'flag off leaves accepted markers inert');
-  setPauseResumeV1(1);
+  const otpStep = (await service.listRecordingSteps(otpRecording.id))[0];
+  assert.strictEqual((otpStep.metadata.pauseProposal as any).reason, 'one-time-code', 'auth challenges are surfaced for review');
+  assert.strictEqual(otpStep.metadata.pause, undefined, 'the executable gate comes from dispatch, not the step model');
+
+  // Hand-edited and agent-authored scripts never pass through step detection, so gating runs at dispatch.
+  const injected = injectAuthChallengePauses("await page.getByLabel('Email').fill('a@b.c');\nawait page.getByLabel('SMS Code').fill('999111');");
+  assert.ok(!injected.includes('999111'), 'the stale recorded code is removed from the executed script');
+  assert.ok(!/getByLabel\('SMS Code'\)\.fill/.test(injected), 'the recorded fill cannot replay over what the user typed');
+  assert.ok(injected.includes("fill('a@b.c')"), 'non-challenge steps are untouched');
+  assert.ok(/waitFor\(\{ state: 'hidden'/.test(injected), 'the run watches the page and resumes on its own');
+  assert.ok(injected.includes('tf.pause('), 'a manual fallback remains if the field never clears');
+  assert.ok(/\.catch\(async \(\) => \{ await tf\.pause\(/.test(injected), 'the manual prompt is only reached after auto-resume times out');
+  const segmented = injectAuthChallengePauses([0, 1, 2, 3, 4, 5]
+    .map((i) => `await page.getByLabel('Verification code digit ${i}').fill('${i}');`).join('\n'));
+  assert.strictEqual(segmented.match(/tf\.pause\(/g)?.length, 1, 'segmented code inputs collapse into a single gate');
+  const decoy = injectAuthChallengePauses("await page.getByLabel('Postal Code').fill('560001');");
+  assert.ok(decoy.includes("fill('560001')") && !decoy.includes('tf.pause('), 'postal/country code fields never gate a run');
+  assert.strictEqual(injectAuthChallengePauses(injected), injected, 'gating an already-gated script is a no-op');
+  const withSubmit = injectAuthChallengePauses("await page.getByRole('textbox', { name: 'Verification Code' }).fill('859641');\nawait page.getByRole('button', { name: 'Verify' }).click();");
+  assert.ok(/name: 'Verify' \}\)\.click\(\{ timeout: 5000 \}\)\.catch/.test(withSubmit), 'the recorded submit after a gate tolerates having already been clicked by hand');
+  assert.ok(withSubmit.includes('(Verification Code)'), 'the gate names the field, not its role');
+  const laterClick = injectAuthChallengePauses("await page.getByLabel('Name').fill('x');\nawait page.getByRole('button', { name: 'Save' }).click();");
+  assert.ok(/name: 'Save' \}\)\.click\(\);/.test(laterClick), 'clicks unrelated to a gate stay strict');
+  for (const label of ['OTP', '2FA code', 'Authenticator app code', 'One-time passcode', 'Enter MFA', 'Email verification code'])
+    assert.ok(isAuthChallengeText(`getByLabel('${label}')`), `${label} is recognised as an auth challenge`);
 
   const draft = (label: string, metadata: Record<string, unknown> = {}) => ({ ordinal: 0, type: 'fill' as const, locator: label, locatorStrategy: 'label' as const, fieldKind: 'text' as const, originalValue: null, readOnly: true, metadata: { label, ...metadata } });
   const external = proposeRecordingPauses("await page.goto('https://login.example.net');\nawait page.getByLabel('Account').fill('x');", [draft('Account')], 'https://example.test');

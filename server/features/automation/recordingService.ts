@@ -114,15 +114,7 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   });
   // Keep editable data independent from the immutable recording script. Re-finalizing a ready
   // recording is already a no-op, so replacing this derived model cannot erase user edits.
-  const parsedSteps = parseRecordingSteps(finalScript);
-  const steps = isPauseResumeEnabled()
-    ? proposeRecordingPauses(finalScript, parsedSteps, saved.appUrl, patch.metadata?.stepObservations)
-    : parsedSteps;
-  await RecordingSteps.replaceForRecording(saved.id, steps.map((step, ordinal) => ({
-    ...step,
-    id: `${saved.id}:step:${ordinal + 1}`,
-    recordingId: saved.id,
-  })));
+  await deriveRecordingSteps(saved, patch.metadata?.stepObservations);
   // Reflect the recording into Test Management as an Automated, script-linked test case. Isolated
   // so a case-write failure never blocks the recording from finalizing.
   // A recording that captured nothing produces no case: there is no flow to describe, so the case
@@ -340,12 +332,29 @@ export async function redoRecordingStepOverride(recordingId: string, stepId: str
   return changed;
 }
 
-export async function updateRecording(id: string, patch: { name?: string }) {
+export async function updateRecording(id: string, patch: { name?: string; script?: string }) {
   const rec = await Recordings.get(id);
   if (!rec) return null;
-  const saved = await Recordings.upsert({ ...rec, name: patch.name ?? rec.name });
+  const script = typeof patch.script === 'string' ? patch.script : undefined;
+  const saved = await Recordings.upsert({ ...rec, name: patch.name ?? rec.name, script: script ?? rec.script });
+  // An edited script invalidates the derived step model, so re-derive it (pause gates included)
+  // exactly as finalization does — otherwise data bindings would point at stale actions.
+  if (script !== undefined && script !== rec.script) await deriveRecordingSteps(saved);
   persist('recording updated');
   return saved;
+}
+
+/** Rebuild the editable step model from a recording's current script. */
+async function deriveRecordingSteps(rec: any, stepObservations?: Record<number, any>) {
+  const parsed = parseRecordingSteps(rec.script || '');
+  const steps = isPauseResumeEnabled()
+    ? proposeRecordingPauses(rec.script || '', parsed, rec.appUrl, stepObservations)
+    : parsed;
+  await RecordingSteps.replaceForRecording(rec.id, steps.map((step, ordinal) => ({
+    ...step,
+    id: `${rec.id}:step:${ordinal + 1}`,
+    recordingId: rec.id,
+  })));
 }
 
 export async function removeRecording(id: string) {

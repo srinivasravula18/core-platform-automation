@@ -325,7 +325,7 @@ export function registerAutomationRoutes(app: Express) {
   app.patch('/api/automation/recordings/:id', requireAuth, async (req: Request, res: Response) => {
     const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
-    const saved = await updateRecording(req.params.id, { name: req.body?.name });
+    const saved = await updateRecording(req.params.id, { name: req.body?.name, script: req.body?.script });
     res.json({ recording: saved });
   });
 

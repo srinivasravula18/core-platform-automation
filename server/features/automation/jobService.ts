@@ -24,6 +24,7 @@ import type { AgentFrame, JobStatus, JobTrigger } from './types';
 import { parseAtomicSteps } from './stepGrouping';
 import { closeOpenPausesForJob, recordPause } from './pauseService';
 import { isPauseResumeEnabled } from './flag';
+import { injectAuthChallengePauses } from './pauseDetection';
 
 const MAX_PAUSED_PER_AGENT = 3;
 export const MIN_PAUSE_AGENT_VERSION = '1.0.2';
@@ -96,7 +97,10 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
   const paused = (await AutomationJobs.list()).filter((item) => item.agentId === job.agentId && item.status === 'awaiting_user').length;
   if (paused >= MAX_PAUSED_PER_AGENT) return false;
   const rec = job.recordingId ? await Recordings.get(job.recordingId) : null;
-  const script = (job as any).script || rec?.script || '';
+  const authored = (job as any).script || rec?.script || '';
+  // Gate OTP/MFA fills on the dispatched copy only. Catches hand-edited and agent-authored scripts
+  // that never went through recording-step detection; the stored script is left untouched.
+  const script = isPauseResumeEnabled() ? injectAuthChallengePauses(authored) : authored;
   if (isPauseResumeEnabled() && /\btf\.pause\s*\(/.test(script)) {
     const agent = await Agents.get(job.agentId);
     if (!agentSupportsPauseResume(String(agent?.version || ''))) {
@@ -118,7 +122,8 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
       // Manual runs are always headed (a window opens on the agent so the user can watch). Derive it
       // from the persisted trigger so the flag survives a server restart or a re-dispatch on reconnect
       // — the in-memory jobRunOptions below is only a same-process fast path, not the source of truth.
-      headed: jobRunOptions.get(job.id)?.headed ?? (job.trigger === 'manual'),
+      // A gate the user must satisfy in the browser is unanswerable headless, whatever triggered the run.
+      headed: jobRunOptions.get(job.id)?.headed ?? (job.trigger === 'manual' || /"requiresHeaded":\s*true/.test(script)),
       pauseResume: isPauseResumeEnabled(),
     },
   });

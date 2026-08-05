@@ -56,11 +56,16 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const [startingRun, setStartingRun] = useState(false);
   const [savedScript, setSavedScript] = useState('');
   const [scriptDraft, setScriptDraft] = useState('');
-  const [editingScript, setEditingScript] = useState(false);
+  // The finished script opens ready to edit — reviewing and correcting it is the normal next step.
+  const [editingScript, setEditingScript] = useState(true);
   const [savingScript, setSavingScript] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
 
-  useEffect(() => { setSavedScript(script); setScriptDraft(script); }, [script]);
+  // A late streamed chunk must not wipe an edit in progress; only a clean draft follows the script.
+  useEffect(() => {
+    setSavedScript(script);
+    setScriptDraft((draft) => (draft === savedScript ? script : draft));
+  }, [script]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
 
   const useCurrentLocation = async () => {
@@ -116,22 +121,38 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     }
   };
 
-  const saveScript = async () => {
-    if (!caseId || !scriptDraft.trim() || savingScript) return;
-    setSavingScript(true);
-    try {
+  // Persist an edited script to the recording (always) and to the linked case script (when one exists),
+  // so edits survive whether or not the recording produced a test case. Returns false on failure.
+  const persistScript = async (): Promise<boolean> => {
+    if (!recordingId || !scriptDraft.trim()) return true;
+    if (scriptDraft === savedScript) return true;
+    const recording = await fetch(`/api/automation/recordings/${recordingId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: scriptDraft }),
+    });
+    if (!recording.ok) throw new Error((await recording.json().catch(() => ({}))).error || 'Could not save the script.');
+    if (caseId) {
       const scripts = await fetch('/api/scripts').then((response) => response.json());
       const linked = Array.isArray(scripts) ? scripts.find((item) => String(item.caseId || '') === caseId) : null;
-      if (!linked?.id) throw new Error('The generated script could not be found.');
-      const response = await fetch(`/api/scripts/${linked.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: scriptDraft }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || 'Could not save the script.');
-      setSavedScript(scriptDraft);
-      setEditingScript(false);
+      if (linked?.id) {
+        const response = await fetch(`/api/scripts/${linked.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: scriptDraft }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not save the script.');
+      }
+    }
+    setSavedScript(scriptDraft);
+    return true;
+  };
+
+  const saveScript = async () => {
+    if (!scriptDraft.trim() || savingScript) return;
+    setSavingScript(true);
+    try {
+      await persistScript();
       showToast('Script saved.', { tone: 'success' });
     } catch (error: any) {
       showToast(error?.message || 'Could not save the script.', { tone: 'error' });
@@ -144,6 +165,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     if (!recordingId || savingRecording) return;
     setSavingRecording(true);
     try {
+      await persistScript(); // an unsaved edit must never be silently dropped by the footer Save
       const response = await fetch(`/api/automation/recordings/${recordingId}`);
       const body = await response.json().catch(() => ({}));
       const recording = body.recording;
@@ -287,7 +309,8 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
         editing={editingScript}
         draft={scriptDraft}
         onDraftChange={setScriptDraft}
-        actions={!empty && caseId ? (editingScript ? <>
+        actions={!empty ? (editingScript ? <>
+          {scriptDraft !== savedScript && <span className="text-xs text-[var(--text-muted)]">Unsaved changes</span>}
           <button type="button" onClick={() => { setScriptDraft(savedScript); setEditingScript(false); }} disabled={savingScript} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
           <button type="button" onClick={() => void saveScript()} disabled={savingScript || !scriptDraft.trim()} className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{savingScript ? 'Saving…' : 'Save'}</button>
         </> : <button type="button" onClick={() => setEditingScript(true)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"><Pencil className="h-3.5 w-3.5" /> Edit</button>) : undefined}

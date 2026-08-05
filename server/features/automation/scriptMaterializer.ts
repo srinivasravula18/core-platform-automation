@@ -8,6 +8,16 @@ const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'select', 'setIn
 type Replacement = { start: number; end: number; text: string };
 type EditableCall = { call: ts.CallExpression; valueArgument: number };
 
+/** The enclosing statement, so a pause replaces `await x.fill(…)` whole rather than nesting inside it. */
+function statementOf(node: ts.Node): ts.Node {
+  let current: ts.Node = node;
+  while (current.parent) {
+    if (ts.isExpressionStatement(current)) return current;
+    current = current.parent;
+  }
+  return node;
+}
+
 /** Compile the immutable action locations once, then materialize any number of dataset rows. */
 export function createScriptMaterializer(script: string, steps: any[], mappings: any[], columns: any[], runToken?: string) {
   const source = ts.createSourceFile('recording.spec.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -37,10 +47,15 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
         if (!editable || !call || !ts.isPropertyAccessExpression(call.expression)) throw new Error(`Could not materialize pause for ${step.metadata?.label || step.locator}.`);
         const expression = `await tf.pause(${JSON.stringify(pause)})`;
         const argument = call.arguments[editable.valueArgument];
+        const statement = statementOf(call);
         if (pause.kind === 'input' && argument && !['check', 'uncheck'].includes(call.expression.name.text)) {
           replacements.push({ start: argument.getStart(source), end: argument.getEnd(), text: expression });
+        } else if (pause.kind === 'manual_action') {
+          // The user performs this in the browser, so the recorded action must not replay over it.
+          replacements.push({ start: statement.getStart(source), end: statement.getEnd(), text: `${expression};` });
         } else {
-          replacements.push({ start: call.getStart(source), end: call.getStart(source), text: `${expression};\n  ` });
+          // Insert at the statement, not the call: inserting inside `await …` yields `await await …`.
+          replacements.push({ start: statement.getStart(source), end: statement.getStart(source), text: `${expression};\n  ` });
         }
         continue;
       }
