@@ -161,6 +161,7 @@ export function useAgentEvents(onEvent: (evt: AutomationEvent) => void): void {
 export interface RecordingCaseMeta {
   testingType?: string; testingTypes?: string[]; priority?: string; folderId?: string;
   testPlanIds?: string[]; testSuiteIds?: string[];
+  description?: string; preconditions?: string;
 }
 export interface StartRecordingInput {
   name: string; appUrl: string; browser: string; environment: string; agentId: string; caseMeta?: RecordingCaseMeta;

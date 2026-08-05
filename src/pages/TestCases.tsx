@@ -843,6 +843,14 @@ export default function TestCases() {
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
                 <input type="text" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g., Login → List view" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
               </div>
+              <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
+                <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Short summary of what this case covers…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Pre Conditions</label>
+                <textarea value={formData.preconditions} onChange={(e) => setFormData({ ...formData, preconditions: e.target.value })} placeholder="State that must be true before running this case (e.g. user is logged in as Admin, an app exists)…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20 resize-y" />
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <FolderSelect
                   value={formData.folderId}
@@ -874,7 +882,7 @@ export default function TestCases() {
                 appUrl={automationUrl}
                 selectedEnvironment={automationEnvironment}
                 onEnvironmentChange={setAutomationEnvironment}
-                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
+                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds, description: formData.description, preconditions: formData.preconditions }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
                 footerTarget={automationFooterTarget}
               />}

@@ -37,6 +37,8 @@ export interface RecordingCaseMeta {
   folderId?: string;
   testPlanIds?: string[];
   testSuiteIds?: string[];
+  description?: string;
+  preconditions?: string;
 }
 
 function persist(reason: string) {
@@ -197,7 +199,9 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
   const caseRow = {
     id: caseId,
     title: caseTitle,
-    description: `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
+    // Author-supplied description wins; fall back to naming what was recorded.
+    description: String(meta.description || '').trim() || `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
+    preconditions: String(meta.preconditions || '').trim(),
     // Stage 1 (scriptToSteps) yields clean, correctly-labelled, secret-masked steps; Stage 2
     // (humanizeRecordedSteps) rewrites them into a natural, intent-level manual case with real
     // expected results — falling back to the Stage-1 steps if no AI provider is available.
