@@ -27,6 +27,7 @@ import { nextArtifactId } from '../../shared/artifactIds';
 import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
 import { normalizePauseRequest, type PauseRequest } from '../../../core/shared/pause';
 import { proposeRecordingPauses } from './pauseDetection';
+import { specFilenameFromTitle } from '../agent/workflow/specFilename';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
 // Test Case created at finalize is classified the same as a manually-authored one.
@@ -229,7 +230,9 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
   await Scripts.upsert({
     id: scriptId,
     name: scriptName,
-    filename: `${scriptId.toLowerCase()}.spec.ts`,
+    // Derived from the (already project-unique) script name rather than the internal id, so the
+    // artifact reads as "new-app-creation.spec.ts" instead of "scr-6999qdcq-1.spec.ts".
+    filename: specFilenameFromTitle(scriptName, scriptId),
     title: scriptName,
     code: finalScript,
     language: 'typescript',

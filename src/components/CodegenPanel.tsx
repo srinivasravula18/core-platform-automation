@@ -60,6 +60,13 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const [editingScript, setEditingScript] = useState(true);
   const [savingScript, setSavingScript] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
+  // Spec file name for the case's linked script; editable once the recording has produced one.
+  const [specName, setSpecName] = useState('');
+  const [savedSpecName, setSavedSpecName] = useState('');
+  const normalizeSpecName = (value: string) => {
+    const base = String(value || '').trim().replace(/\.spec\.ts$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+    return base ? `${base}.spec.ts` : '';
+  };
 
   // A late streamed chunk must not wipe an edit in progress; only a clean draft follows the script.
   useEffect(() => {
@@ -67,6 +74,16 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     setScriptDraft((draft) => (draft === savedScript ? script : draft));
   }, [script]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
+  // Once the recording produced a case, surface its script's file name so it can be renamed here.
+  useEffect(() => {
+    if (!caseId) return;
+    let cancelled = false;
+    void fetch('/api/scripts').then((r) => r.json()).then((rows) => {
+      const linked = Array.isArray(rows) ? rows.find((item: any) => String(item.caseId || '') === caseId) : null;
+      if (!cancelled && linked?.filename) { setSpecName(linked.filename); setSavedSpecName(linked.filename); }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [caseId]);
 
   const useCurrentLocation = async () => {
     setLocating(true);
@@ -125,7 +142,8 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   // so edits survive whether or not the recording produced a test case. Returns false on failure.
   const persistScript = async (): Promise<boolean> => {
     if (!recordingId || !scriptDraft.trim()) return true;
-    if (scriptDraft === savedScript) return true;
+    const renameOnly = scriptDraft === savedScript && normalizeSpecName(specName) !== savedSpecName && Boolean(caseId);
+    if (scriptDraft === savedScript && !renameOnly) return true;
     const recording = await fetch(`/api/automation/recordings/${recordingId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -136,15 +154,17 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
       const scripts = await fetch('/api/scripts').then((response) => response.json());
       const linked = Array.isArray(scripts) ? scripts.find((item) => String(item.caseId || '') === caseId) : null;
       if (linked?.id) {
+        const renamed = normalizeSpecName(specName);
         const response = await fetch(`/api/scripts/${linked.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: scriptDraft }),
+          body: JSON.stringify({ code: scriptDraft, ...(renamed && renamed !== savedSpecName ? { filename: renamed } : {}) }),
         });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not save the script.');
       }
     }
     setSavedScript(scriptDraft);
+    setSavedSpecName(normalizeSpecName(specName) || savedSpecName);
     return true;
   };
 
@@ -310,6 +330,18 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
       ) : (
         <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-500">
           <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
+        </div>
+      )}
+      {caseId && savedSpecName && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Script file name</label>
+          <input
+            value={specName}
+            onChange={(event) => setSpecName(event.target.value)}
+            onBlur={() => setSpecName((value) => normalizeSpecName(value) || savedSpecName)}
+            placeholder="login-and-create-account.spec.ts"
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+          />
         </div>
       )}
       <ScriptPane

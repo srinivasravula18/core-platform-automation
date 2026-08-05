@@ -179,6 +179,13 @@ export default function TestCases() {
     setIsEditingScript(false);
   };
 
+  const [filenameDraft, setFilenameDraft] = useState('');
+  // Keep the extension the runner expects; the user only edits the base name.
+  const normalizeSpecName = (value: string) => {
+    const base = String(value || '').trim().replace(/\.spec\.ts$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+    return `${base || 'case'}.spec.ts`;
+  };
+
   const saveScript = async () => {
     if (!scriptViewer || isSavingScript) return;
     if (!scriptDraft.trim()) {
@@ -190,12 +197,13 @@ export default function TestCases() {
       const response = await fetch(`/api/scripts/${scriptViewer.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: scriptDraft }),
+        body: JSON.stringify({ code: scriptDraft, filename: normalizeSpecName(filenameDraft || scriptViewer.filename) }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'Failed to save script.');
-      setScripts((current) => current.map((script) => script.id === scriptViewer.id ? { ...script, code: scriptDraft } : script));
-      setScriptViewer({ ...scriptViewer, code: scriptDraft });
+      const filename = normalizeSpecName(filenameDraft || scriptViewer.filename);
+      setScripts((current) => current.map((script) => script.id === scriptViewer.id ? { ...script, code: scriptDraft, filename } : script));
+      setScriptViewer({ ...scriptViewer, code: scriptDraft, filename });
       setIsEditingScript(false);
     } catch (error: any) {
       void showAlert(error.message || 'Failed to save script.');
@@ -1134,12 +1142,12 @@ export default function TestCases() {
             </button>
             {isEditingScript ? (
               <>
-                <button disabled={isSavingScript} onClick={() => { setScriptDraft(scriptViewer?.code || ''); setIsEditingScript(false); }} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
+                <button disabled={isSavingScript} onClick={() => { setScriptDraft(scriptViewer?.code || ''); setFilenameDraft(scriptViewer?.filename || ''); setIsEditingScript(false); }} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
                 <button disabled={isSavingScript || !scriptDraft.trim()} onClick={() => void saveScript()} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50">{isSavingScript ? 'Saving…' : 'Save'}</button>
               </>
             ) : (
               <>
-                <button onClick={() => setIsEditingScript(true)} className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium hover:border-[var(--accent)]">Edit</button>
+                <button onClick={() => { setFilenameDraft(scriptViewer?.filename || ''); setIsEditingScript(true); }} className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium hover:border-[var(--accent)]">Edit</button>
                 <button onClick={closeScript} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">Close</button>
               </>
             )}
@@ -1149,6 +1157,18 @@ export default function TestCases() {
         {scriptViewer && (
           <div>
             <div className="mb-2 text-sm text-[var(--text-muted)]">Generated Playwright script for <span className="font-medium text-[var(--text-primary)]">{scriptViewer.title}</span></div>
+            {isEditingScript && (
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">File name</label>
+                <input
+                  value={filenameDraft}
+                  onChange={(event) => setFilenameDraft(event.target.value)}
+                  onBlur={() => setFilenameDraft((value) => normalizeSpecName(value))}
+                  placeholder="login-and-create-account.spec.ts"
+                  className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                />
+              </div>
+            )}
             {isEditingScript ? (
               <textarea
                 aria-label={`Edit ${scriptViewer.filename}`}
