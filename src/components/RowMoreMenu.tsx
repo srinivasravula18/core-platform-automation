@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 
 export interface RowMoreItem {
@@ -15,13 +15,31 @@ export interface RowMoreItem {
  */
 export function RowMoreMenu({ items, title = 'More actions', dropUp = false }: { items: RowMoreItem[]; title?: string; dropUp?: boolean }) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
   if (!items.length) return null;
+
   return (
     <div className="relative inline-flex">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
         title={title}
-        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+        aria-label={title}
+        aria-expanded={open}
+        aria-haspopup="true"
+        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors outline-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
       >
         <MoreHorizontal className="w-4 h-4" />
       </button>
@@ -36,7 +54,7 @@ export function RowMoreMenu({ items, title = 'More actions', dropUp = false }: {
               <button
                 key={item.label}
                 onClick={() => { setOpen(false); item.onClick(); }}
-                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] ${item.danger ? 'text-red-400 hover:bg-red-500/10' : 'text-[var(--text-primary)]'}`}
+                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] transition-colors outline-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] ${item.danger ? 'text-red-400 hover:bg-red-500/10' : 'text-[var(--text-primary)]'}`}
               >
                 {item.label}
               </button>
