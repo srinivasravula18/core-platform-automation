@@ -114,7 +114,10 @@ export default function TestRuns() {
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
   const [newRunTags, setNewRunTags] = useState<string[]>([]);
-  const [newRunStatus, setNewRunStatus] = useState<(typeof MANUAL_RUN_STATUS_OPTIONS)[number]>('Not Started');
+  // Not restricted to MANUAL_RUN_STATUS_OPTIONS: a run can legitimately hold a status the editor does
+  // not offer (Closed, Cancelled, "Completed — Pending Review", Review Required…). Coercing those to a
+  // default made Save overwrite the real status, so the current value is carried through verbatim.
+  const [newRunStatus, setNewRunStatus] = useState<string>('Not Started');
   const [newRunMode, setNewRunMode] = useState<'manual' | 'automated'>('manual');
   const [newRunConfiguration, setNewRunConfiguration] = useState('');
   const [newRunPriority, setNewRunPriority] = useState('');
@@ -325,7 +328,7 @@ export default function TestRuns() {
     setNewRunPlanId(run.testPlanId || '');
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
-    setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
+    setNewRunStatus(String(run.status || 'Not Started'));
     setNewRunMode(run.mode === 'manual' ? 'manual' : 'automated');
     setNewRunConfiguration('');
     setNewRunPriority('');
@@ -1137,7 +1140,9 @@ export default function TestRuns() {
               <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
             <label className="block text-xs font-medium text-[var(--text-muted)]">Status
-              <select value={newRunStatus} onChange={(e) => setNewRunStatus(e.target.value as (typeof MANUAL_RUN_STATUS_OPTIONS)[number])} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+              <select value={newRunStatus} onChange={(e) => setNewRunStatus(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+                {/* An execution-owned status the editor doesn't offer stays selectable so saving keeps it. */}
+                {!MANUAL_RUN_STATUS_OPTIONS.includes(newRunStatus as any) && <option value={newRunStatus}>{newRunStatus}</option>}
                 {MANUAL_RUN_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
               </select>
             </label>
