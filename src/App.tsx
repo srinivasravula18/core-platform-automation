@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -32,7 +32,6 @@ import Requirements from '@/src/pages/Requirements';
 import Traceability from '@/src/pages/Traceability';
 import RecordPlay from '@/src/pages/RecordPlay';
 import LocalAgent from '@/src/pages/automation/LocalAgent';
-import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
 import Schedules from '@/src/pages/automation/Schedules';
 import DataBindings from '@/src/pages/automation/DataBindings';
 
@@ -45,7 +44,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     ...(remoteAgent ? [
       // Record Test + Executions folded into Test Management (Test Cases → New Case → Automation, and
       // Test Runs). Their routes below redirect there for any lingering bookmarks/links.
-      { name: 'Automation', href: '/automation', icon: Gauge },
       { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
       { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
       { name: 'Automation Data', href: '/automation/data', icon: Database },
@@ -595,8 +593,8 @@ export default function App() {
           <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/record-play" element={<RecordPlay />} />
-          <Route path="/automation" element={<AutomationDashboard />} />
           {/* Folded into Test Management — redirect old automation URLs to their new homes. */}
+          <Route path="/automation" element={<Navigate to="/automation/agent" replace />} />
           <Route path="/automation/record" element={<Navigate to="/cases" replace />} />
           <Route path="/automation/executions" element={<Navigate to="/runs" replace />} />
           <Route path="/automation/schedules" element={<Schedules />} />
