@@ -122,16 +122,26 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   // Management that reads like a real case. The recording itself is still saved.
   const empty = !recordingHasInteractions(finalScript);
   let caseId = '';
+  let caseError = '';
   if (!empty) {
-    try { caseId = await reflectRecordingAsCase(saved, finalScript); } catch { /* recording still saved */ }
+    // Never swallow this silently: a failure here leaves a saved recording with no case or script,
+    // which looks to the user like the recording captured nothing.
+    try {
+      caseId = await reflectRecordingAsCase(saved, finalScript);
+    } catch (error: any) {
+      caseError = error?.message || 'Could not create the test case for this recording.';
+      console.error('[recording] case creation failed', { recordingId, error: caseError });
+    }
   }
   persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty, caseError } });
 }
 
 /** True when the script contains at least one recorded interaction (navigation, click, input, assertion). */
 export function recordingHasInteractions(script: string): boolean {
-  return parseAtomicSteps(String(script || '')).length > 0;
+  // A navigation on its own is not a recorded flow — codegen emits the opening `goto` before the user
+  // does anything, so counting it would turn every started-and-abandoned recording into a test case.
+  return parseAtomicSteps(String(script || '')).some((step) => step.kind !== 'nav');
 }
 
 // Best-effort parse of a Playwright codegen spec into human-readable case steps so the created
@@ -156,6 +166,24 @@ export function scriptToSteps(script: string): Array<{ action: string; expected:
 // Create (or update, if the recording already produced one) the linked Automated test case + its
 // Playwright script row. Idempotent via metadata.caseId so record.done and the stop fallback can't
 // double-create. Returns the case id.
+/**
+ * Recording names repeat constantly ("keystone" recorded five times). The project-wide title guard
+ * rejects the duplicate, which previously lost the whole case+script for that recording — so pick the
+ * next free "<name> (n)" instead of failing.
+ */
+async function availableTitle(rows: any[], column: 'title' | 'name', base: string, selfId: string, rec: any): Promise<string> {
+  const scoped = rows.filter((row: any) => String(row.id) !== selfId && !row.deletedAt
+    && String(row.projectId || '') === String(rec.projectId || '')
+    && String(row.ownerId || '') === String(rec.ownerId || ''));
+  const taken = new Set(scoped.map((row: any) => String(row[column] || '').trim().toLocaleLowerCase()));
+  if (!taken.has(base.trim().toLocaleLowerCase())) return base;
+  for (let n = 2; n < 500; n++) {
+    const candidate = `${base} (${n})`;
+    if (!taken.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  return `${base} (${selfId.slice(-6)})`;
+}
+
 async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<string> {
   const meta: RecordingCaseMeta = rec.metadata?.caseMeta || {};
   const existingCaseId: string = rec.metadata?.caseId || '';
@@ -165,9 +193,10 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     targetUrl: rec.appUrl,
     sourceText: title,
   });
+  const caseTitle = await availableTitle((await Cases.list()) as any[], 'title', title, caseId, rec);
   const caseRow = {
     id: caseId,
-    title,
+    title: caseTitle,
     description: `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
     // Stage 1 (scriptToSteps) yields clean, correctly-labelled, secret-masked steps; Stage 2
     // (humanizeRecordedSteps) rewrites them into a natural, intent-level manual case with real
@@ -192,11 +221,12 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
   // Link the hardened script to the case via the real scripts.case_id FK (title + caseId), so the
   // Test Cases viewer resolves it directly and Test Runs (Phase 2) can execute it.
   const scriptId = rec.metadata?.scriptId || `SCR-${String(rec.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}-1`;
+  const scriptName = await availableTitle((await Scripts.list()) as any[], 'name', title, scriptId, rec);
   await Scripts.upsert({
     id: scriptId,
-    name: title,
+    name: scriptName,
     filename: `${scriptId.toLowerCase()}.spec.ts`,
-    title,
+    title: scriptName,
     code: finalScript,
     language: 'typescript',
     framework: 'playwright',

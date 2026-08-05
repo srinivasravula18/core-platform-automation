@@ -1272,13 +1272,21 @@ export const Cases = {
     }
     return mapCase(row);
   },
+  // Deleting a case also retires its generated script. An orphaned script keeps holding the
+  // project-wide unique name, which then blocks the next recording of the same flow from ever
+  // creating its script row.
   async remove(id: string): Promise<boolean> {
     if (!isPgEnabled()) {
       const before = db.cases.length;
       (db as any).cases = db.cases.filter((c: any) => c.id !== id);
+      (db as any).scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
       return db.cases.length < before;
     }
     const res = await query('UPDATE cases SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
+    if (res.length) {
+      await query('UPDATE scripts SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE case_id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
+      db.scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
+    }
     return res.length > 0;
   },
   async bulkUpsert(cases: any[]): Promise<any[]> {

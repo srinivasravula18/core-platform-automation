@@ -172,8 +172,17 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
       if (!response.ok || !recording) throw new Error(body.error || 'Could not verify the recording.');
       if (recording.status !== 'ready') throw new Error('The complete script is still being saved. Try again in a moment.');
       if (!empty && !String(recording.script || '').trim()) throw new Error('The recorded script is empty and was not saved.');
+      // The recording flips to 'ready' before its test case is written (case creation runs the AI
+      // step-humanizer, which can take seconds). Closing now would refetch a list that does not yet
+      // contain the case, so wait for the id the server writes back onto the recording.
+      let linkedCaseId = String(recording.metadata?.caseId || caseId || '');
+      for (let attempt = 0; !empty && !linkedCaseId && attempt < 20; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const polled = await fetch(`/api/automation/recordings/${recordingId}`).then((r) => r.json()).catch(() => ({}));
+        linkedCaseId = String(polled?.recording?.metadata?.caseId || '');
+      }
       showToast('Recording and complete script saved.', { tone: 'success' });
-      onDone(String(recording.metadata?.caseId || caseId || ''));
+      onDone(linkedCaseId);
     } catch (error: any) {
       showToast(error?.message || 'Could not save the recording.', { tone: 'error' });
     } finally {
