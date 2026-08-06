@@ -3236,6 +3236,7 @@ function mapSchedule(r: any) {
     id: r.id,
     recordingId: r.recording_id,
     agentId: r.agent_id,
+    title: r.title || '',
     kind: r.kind,
     cron: r.cron,
     timezone: r.timezone,
@@ -3279,15 +3280,15 @@ export const AutomationSchedules = {
     }
     const id = s.id || uid('SCHED');
     const row = await queryOne(
-      `INSERT INTO automation_schedules (id, project_id, app_id, owner_id, recording_id, agent_id, kind, cron, timezone, webhook_token_hash, enabled, next_run_at, last_run_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz,$13::timestamptz, COALESCE($14::timestamptz, now()), now())
+      `INSERT INTO automation_schedules (id, project_id, app_id, owner_id, recording_id, agent_id, title, kind, cron, timezone, webhook_token_hash, enabled, next_run_at, last_run_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14::timestamptz, COALESCE($15::timestamptz, now()), now())
        ON CONFLICT (id) DO UPDATE SET
-         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, kind=EXCLUDED.kind, cron=EXCLUDED.cron,
+         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, title=EXCLUDED.title, kind=EXCLUDED.kind, cron=EXCLUDED.cron,
          timezone=EXCLUDED.timezone, webhook_token_hash=EXCLUDED.webhook_token_hash, enabled=EXCLUDED.enabled,
          next_run_at=EXCLUDED.next_run_at, last_run_at=EXCLUDED.last_run_at, updated_at=now()
        RETURNING *`,
       [id, s.projectId || null, s.appId || null, s.ownerId || null, s.recordingId || null, s.agentId || null,
-       s.kind || 'daily', s.cron || '', s.timezone || 'UTC', s.webhookTokenHash || '',
+       s.title || '', s.kind || 'daily', s.cron || '', s.timezone || 'UTC', s.webhookTokenHash || '',
        s.enabled !== false, s.nextRunAt || null, s.lastRunAt || null, s.createdAt || null],
     );
     return mapSchedule(row);

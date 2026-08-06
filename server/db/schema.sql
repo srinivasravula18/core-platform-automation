@@ -1179,6 +1179,7 @@ CREATE TABLE IF NOT EXISTS automation_schedules (
 );
 CREATE INDEX IF NOT EXISTS automation_schedules_owner_idx ON automation_schedules(owner_id);
 CREATE INDEX IF NOT EXISTS automation_schedules_next_run_idx ON automation_schedules(next_run_at) WHERE enabled;
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
 
 -- Binary artifacts uploaded by the agent after a run (video, trace.zip, screenshots, HTML report, junit).
 CREATE TABLE IF NOT EXISTS automation_artifacts (

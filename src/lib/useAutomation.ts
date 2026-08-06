@@ -44,7 +44,7 @@ export interface JobPause {
 }
 
 export interface Schedule {
-  id: string; recordingId: string; agentId: string; kind: string; cron: string; timezone: string;
+  id: string; recordingId: string; agentId: string; title: string; kind: string; cron: string; timezone: string;
   enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
 }
 
