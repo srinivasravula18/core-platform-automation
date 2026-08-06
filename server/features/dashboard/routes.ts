@@ -29,6 +29,7 @@ function buildStatsChartData(runs: any[]) {
       passed: 0,
       failed: 0,
       blocked: 0,
+      untested: 0,
     };
   });
 
@@ -42,8 +43,10 @@ function buildStatsChartData(runs: any[]) {
     chartRow.passed += Number(run?.passed || 0);
     chartRow.failed += Number(run?.failed || 0);
     const blockedCount = Number(run?.blocked || 0);
-    const inferredBlocked = Number(run?.totalExecutions || 0) - Number(run?.passed || 0) - Number(run?.failed || 0) - blockedCount;
-    chartRow.blocked += Math.max(0, blockedCount + inferredBlocked);
+    const untestedCount = Number(run?.totalExecutions || 0) - Number(run?.passed || 0) - Number(run?.failed || 0) - blockedCount;
+    // Keep an explicitly reported blocked result distinct from cases that did not run.
+    chartRow.blocked += Math.max(0, blockedCount);
+    chartRow.untested += Math.max(0, untestedCount);
   });
 
   return days.map(({ key, ...rest }) => rest);

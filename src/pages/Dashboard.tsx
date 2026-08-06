@@ -31,6 +31,27 @@ function activityOutcome(act: any): string {
 
 const SEVERITY_COLOR: Record<string, string> = { Critical: 'bg-red-600', High: 'bg-red-500', Medium: 'bg-amber-500', Low: 'bg-emerald-500' };
 
+/** Render every execution outcome, including zero-count untested cases. */
+function ExecutionTrendTooltip({ active, label, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const values = payload.reduce((result: Record<string, number>, item: any) => {
+    result[item.dataKey] = Number(item.value || 0);
+    return result;
+  }, {});
+  const outcomes = [
+    ['blocked', '#f59e0b'],
+    ['failed', '#ef4444'],
+    ['passed', 'var(--accent)'],
+    ['untested', '#94a3b8'],
+  ];
+  return <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 shadow-sm">
+    <div className="mb-2 text-sm font-medium text-[var(--text-primary)]">{label}</div>
+    {outcomes.map(([name, color]) => <div key={name} className="text-sm" style={{ color }}>
+      {name} : {values[name] || 0}
+    </div>)}
+  </div>;
+}
+
 function formatCountdown(iso?: string | null, now = Date.now()): string {
   if (!iso) return '';
   const diff = new Date(iso).getTime() - now;
@@ -302,10 +323,11 @@ export default function Dashboard() {
               <BarChart data={stats?.chartData || []} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                 <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border)', borderRadius: '8px' }} />
+                <Tooltip cursor={{ fill: 'transparent' }} content={<ExecutionTrendTooltip />} />
                 <Bar dataKey="passed" stackId="a" fill="var(--accent)" radius={[0,0,4,4]} />
                 <Bar dataKey="failed" stackId="a" fill="#ef4444" />
-                <Bar dataKey="blocked" stackId="a" fill="#f59e0b" radius={[4,4,0,0]} />
+                <Bar dataKey="blocked" stackId="a" fill="#f59e0b" />
+                <Bar dataKey="untested" stackId="a" fill="#94a3b8" radius={[4,4,0,0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
