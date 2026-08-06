@@ -24,7 +24,7 @@ export interface Recording {
   id: string; name: string; appUrl: string; browser: string; environment: string;
   status: 'draft' | 'recording' | 'ready'; script: string; agentId: string | null;
   stats: Record<string, number>; createdAt: string; completedAt: string | null;
-  metadata?: { browserPermissions?: BrowserPermissionSettings; [key: string]: any };
+  metadata?: { browserPermissions?: BrowserPermissionSettings; caseId?: string; scriptId?: string; [key: string]: any };
 }
 
 export interface Job {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil } from 'lucide-react';
+import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil, Eye } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
@@ -91,6 +91,10 @@ export default function Schedules() {
   const { recordings } = useRecordings();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Schedule | null>(null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+
+  const selectedSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId) || null;
+  const selectedRecording = selectedSchedule ? recordings.find((recording) => recording.id === selectedSchedule.recordingId) || null : null;
 
   const nameFor = useMemo(() => {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
@@ -143,18 +147,22 @@ export default function Schedules() {
             </thead>
             <tbody>
               {schedules.map((s) => (
-                <tr key={s.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)]">
-                  <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">{nameFor(s.recordingId)}</td>
+                <tr key={s.id} onClick={() => setSelectedScheduleId(s.id)} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
+                  <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">
+                    <button type="button" onClick={() => setSelectedScheduleId(s.id)} className="inline-flex items-center gap-1.5 text-left hover:text-[var(--accent)]" title="Open scheduled test">
+                      {nameFor(s.recordingId)} <Eye className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
                   <td className="px-4 py-2.5">
-                    <button onClick={() => toggle(s.id, s.enabled)} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
+                    <button onClick={(event) => { event.stopPropagation(); void toggle(s.id, s.enabled); }} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
                       <span className={`h-4 w-4 rounded-full bg-white transition-transform ${s.enabled ? 'translate-x-4' : ''}`} />
                     </button>
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => setEditing(s)} className="mr-2 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)]" title="Edit schedule"><Pencil className="h-3.5 w-3.5" /></button>
-                    <button onClick={() => remove(s.id)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                    <button onClick={(event) => { event.stopPropagation(); setEditing(s); }} className="mr-2 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)]" title="Edit schedule"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={(event) => { event.stopPropagation(); void remove(s.id); }} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                   </td>
                 </tr>
               ))}
@@ -165,8 +173,25 @@ export default function Schedules() {
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} />
       {editing && <EditScheduleModal schedule={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
+      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
+}
+
+function ScheduleRecordingModal({ schedule, recording, onClose }: { schedule: Schedule | null; recording: any | null; onClose: () => void }) {
+  return <Modal isOpen={!!schedule} onClose={onClose} title="Scheduled test" size="xl"
+    footer={<div className="flex justify-end"><button type="button" onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Close</button></div>}>
+    {!schedule ? null : <div className="space-y-4">
+      <div><div className="text-lg font-medium text-[var(--text-primary)]">{recording?.name || schedule.recordingId}</div><p className="mt-1 text-sm text-[var(--text-muted)]">This recording runs when the schedule fires.</p></div>
+      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Next run</dt><dd className="mt-1 text-[var(--text-primary)]">{fmt(schedule.nextRunAt)}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Schedule</dt><dd className="mt-1 font-mono text-[var(--text-primary)]">{schedule.cron || schedule.kind}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Target URL</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Test case</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
+      </dl>
+      {recording?.script ? <pre className="max-h-80 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{recording.script}</code></pre> : <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">The recording is no longer available.</div>}
+    </div>}
+  </Modal>;
 }
 
 function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule; onClose: () => void; onSaved: () => void }) {
