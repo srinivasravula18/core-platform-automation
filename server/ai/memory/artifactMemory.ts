@@ -4,7 +4,7 @@ import { isPostgresEnabled, query, queryOne } from '../../db/pool';
 import { db } from '../../shared/storage';
 import { readCodeFileInScope } from '../../features/projects/codeSearch';
 import { loadSummarySegments } from './conversationSummary';
-import type { ToolContext, ToolVerification } from '../tools/types';
+import type { ToolContext } from '../tools/types';
 
 const SECRET_KEY = /password|passwd|secret|token|cookie|authorization|storage.?state/i;
 const EVIDENTIARY_TOOL = /search|read|inspect|explore|query|fetch|execute|run|metadata|schema|selector|coverage|evidence/i;
@@ -41,12 +41,9 @@ export async function rememberToolResult(input: {
   toolName: string;
   arguments: Record<string, unknown>;
   result: unknown;
-  verification?: ToolVerification;
 }) {
-  if (!input.conversationId || (!isEvidentiaryTool(input.toolName) && !input.verification)) return null;
-  const body = sanitize(input.verification?.ok
-    ? { completed: true, verification: input.verification.status, entityIds: input.verification.entityIds || [] }
-    : input.result);
+  if (!input.conversationId || !isEvidentiaryTool(input.toolName)) return null;
+  const body = sanitize(input.result);
   const serialized = JSON.stringify(body);
   const contentHash = hash(serialized);
   const targetKey = String(input.arguments.path || input.arguments.url || input.arguments.id || input.arguments.query || '').slice(0, 500);

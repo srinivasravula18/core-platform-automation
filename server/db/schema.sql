@@ -348,10 +348,6 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS credential_role TEXT DEFAULT '';
 -- automated execute path is unchanged. A manual run never requires linked scripts.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'automated';
 
--- Declared on the run (not just inferred from agent availability at execute time): an automated run
--- is headed (visible browser on a connected local agent) or headless (server-side). Empty for manual runs.
-ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT '';
-
 -- Per-case result rows for a manual run (Azure Test-Plans "test point → step results" model). Keeps
 -- per-case outcome/comment/analysis/timing out of the flat runs.steps blob (which stays for automated
 -- back-compat), and holds step-level results as a typed JSONB sub-array. revision_no freezes the exact

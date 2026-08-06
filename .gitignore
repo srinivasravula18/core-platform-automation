@@ -52,10 +52,8 @@ scripts/**/*.log
 scripts/**/cases-json/
 scripts/**/*-json/
 
-# Claude Code local workspace — ignore everything except shared skills and agents
-.claude/*
-!.claude/skills/
-!.claude/agents/
+# Claude Code local workspace
+.claude/
 .testflow-run-memory.json
 
 **/json.bak-project-cleanup/

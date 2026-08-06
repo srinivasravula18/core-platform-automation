@@ -19,33 +19,30 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import type { AgentTool, ToolContext } from './types';
 import { resolveCredentials, getWebsite } from '../../features/credentials/credentialsService';
-import { resolveAppApiContract, resolveAppLoginPath, fillApiPath, type AppApiContract } from './apiContract';
+import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
 
 /* ─── Connection helpers ─────────────────────────────────────────────────── */
 
-export interface AppConn { baseUrl: string; username: string; password: string }
+interface AppConn { baseUrl: string; username: string; password: string }
 
 /** Per-call token cache keyed by baseUrl so multiple workspaces don't share a token. */
 const tokenCache = new Map<string, string>();
-const apiOrigin = (value: string): string => {
-  try { return new URL(value).origin; } catch { return value.replace(/\/$/, ''); }
-};
 
-export function resolveConnection(ctx?: ToolContext): AppConn {
+function resolveConnection(ctx?: ToolContext): AppConn {
   // 1. ctx.appId → Websites table (per-workspace)
   if (ctx?.appId) {
     const cred = resolveCredentials({
       websiteId: String(ctx.appId),
-      role: typeof ctx.credentialRole === 'string' ? ctx.credentialRole : undefined,
+      role: 'admin',
       ownerId: ctx.userId ? String(ctx.userId) : undefined,
     });
     if (cred?.baseUrl && cred?.username && cred?.password) {
-      return { baseUrl: apiOrigin(cred.baseUrl), username: cred.username, password: cred.password };
+      return { baseUrl: cred.baseUrl.replace(/\/$/, ''), username: cred.username, password: cred.password };
     }
     const site = getWebsite(String(ctx.appId));
     if (site?.baseUrl) {
       return {
-        baseUrl: apiOrigin(site.baseUrl),
+        baseUrl: site.baseUrl.replace(/\/$/, ''),
         username: process.env.TARGET_USERNAME || '',
         password: process.env.TARGET_PASSWORD || '',
       };
@@ -53,21 +50,20 @@ export function resolveConnection(ctx?: ToolContext): AppConn {
   }
   // 2. env vars
   return {
-    baseUrl: apiOrigin(process.env.TARGET_BASE_URL || ''),
+    baseUrl: (process.env.TARGET_BASE_URL || '').replace(/\/$/, ''),
     username: process.env.TARGET_USERNAME || '',
     password: process.env.TARGET_PASSWORD || '',
   };
 }
 
-export async function getToken(conn: AppConn, forceRefresh = false): Promise<string> {
+async function getToken(conn: AppConn, forceRefresh = false): Promise<string> {
   const staticToken = String(process.env.TARGET_TOKEN || '').trim();
   if (staticToken) return staticToken;
 
   const cached = tokenCache.get(conn.baseUrl);
   if (cached && !forceRefresh) return cached;
 
-  const loginPath = await resolveAppLoginPath(conn.baseUrl) || '/api/auth/login';
-  const res = await fetch(`${conn.baseUrl}${loginPath}`, {
+  const res = await fetch(`${conn.baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: conn.username, password: conn.password }),
@@ -79,7 +75,7 @@ export async function getToken(conn: AppConn, forceRefresh = false): Promise<str
   return token;
 }
 
-export async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolContext): Promise<unknown> {
+async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolContext): Promise<unknown> {
   const conn = resolveConnection(ctx);
   const call = async (token: string) => {
     return fetch(`${conn.baseUrl}${path}`, {
@@ -109,7 +105,7 @@ const cpRequest = (method: string, path: string, ctx?: ToolContext) => cpFetch(m
 const cpRequestPost = (path: string, body: unknown, ctx?: ToolContext) => cpFetch('POST', path, body, ctx);
 
 /** Resolve the app's API contract (endpoint templates) from its OWN OpenAPI — no path literals. */
-export async function metaContract(ctx?: ToolContext): Promise<AppApiContract> {
+async function metaContract(ctx?: ToolContext): Promise<AppApiContract> {
   const conn = resolveConnection(ctx);
   if (!conn.baseUrl) return {};
   let token: string | undefined;
@@ -253,35 +249,6 @@ export const getObjectFieldsTool: AgentTool = {
   },
 };
 
-export const getObjectAccessTool: AgentTool = {
-  spec: {
-    name: 'get_object_access',
-    description: 'Read the selected target credential user\'s effective access flags for an object. Use before claiming create/update access is available.',
-    parameters: {
-      type: 'object',
-      properties: {
-        object_api_name: { type: 'string' },
-        app_id: { type: 'string' },
-      },
-      required: ['object_api_name', 'app_id'],
-    },
-  },
-  capability: { effect: 'read', permissions: ['agent:read'] },
-  async execute(args, ctx) {
-    const appId = String(args.app_id || '').trim();
-    const apiName = String(args.object_api_name || '').trim();
-    if (!appId || !apiName) return { error: 'app_id and object_api_name are required' };
-    try {
-      return {
-        object: apiName,
-        access: await cpRequest('GET', await metaPath('objectAccess', { appId, object: apiName }, ctx), ctx),
-      };
-    } catch (err: any) {
-      return { error: err?.message ?? String(err), access: null };
-    }
-  },
-};
-
 /* ─── Tool: query_sample_records ─────────────────────────────────────────── */
 
 export const querySampleRecordsTool: AgentTool = {
@@ -375,7 +342,6 @@ export const createRecordTool: AgentTool = {
       required: ['app_id', 'object_api_name', 'values'],
     },
   },
-  capability: { effect: 'write', permissions: ['agent:execute'] },
   async execute(args, ctx) {
     try {
       const appId = String(args.app_id || '').trim();
@@ -475,7 +441,6 @@ export function corePlatformMetaConfigured(): boolean {
 export const corePlatformMetaTools: AgentTool[] = [
   searchRelevantObjectsTool,
   getObjectFieldsTool,
-  getObjectAccessTool,
   querySampleRecordsTool,
   countRecordsTool,
   createRecordTool,

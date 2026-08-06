@@ -147,13 +147,7 @@ export function reportTypeLabel(report: any, context: ReportContext = {}): strin
   if (report.testingTypes || report.testingType) return normalizeTestCaseTypes(report).join(', ');
   if (TESTING_TYPES.includes(report.suiteName)) return report.suiteName;
   const mode = String(context.run?.mode || '').trim();
-  if (mode) return mode.charAt(0).toUpperCase() + mode.slice(1);
-  // Record & Play / scheduled / agent runs set triggerType but not always `mode` — fall back to it
-  // rather than showing a bare '-' for otherwise-known run types.
-  const trigger = String(context.run?.triggerType || '').trim();
-  if (trigger === 'manual') return 'Manual';
-  if (trigger === 'automation' || trigger === 'agent' || trigger === 'schedule') return 'Automated';
-  return '—';
+  return mode ? mode.charAt(0).toUpperCase() + mode.slice(1) : '—';
 }
 
 export function toReportHTML(report: any, context: ReportContext = {}): string {

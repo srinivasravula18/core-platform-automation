@@ -28,13 +28,10 @@ export interface Recording {
 }
 
 export interface Job {
-  id: string; recordingId: string; agentId: string; trigger: string; status: string; scheduleId?: string | null;
+  id: string; recordingId: string; agentId: string; trigger: string; status: string;
   queuedAt: string; startedAt: string | null; finishedAt: string | null; exitCode: number | null;
   summary: Record<string, any>; error: string;
 }
-
-/** Jobs still in flight — used to find the run currently backing a schedule/recording. */
-export const ACTIVE_JOB_STATUSES = ['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'];
 
 export interface JobPause {
   id: string; jobId: string; pauseId: string; attempt: number; kind: 'input' | 'manual_action';

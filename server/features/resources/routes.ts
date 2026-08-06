@@ -26,7 +26,7 @@ import { isManualOutcome, rollupCaseOutcome, computeRunRollup, caseHasScript } f
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
-import { isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../../../core/shared/testRunStatus';
+import { isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -260,9 +260,9 @@ function manualRunStatus(value: unknown): string | null {
 }
 
 // ----- Manual step runner (Phase B1) -----
-// Permanently on, no env flag. Additive endpoints stay inert unless a run is created with mode='manual'.
+// Escape hatch, default ON: additive endpoints are inert unless a run is created with mode='manual'.
 function manualRunnerEnabled(): boolean {
-  return true;
+  return String(process.env.MANUAL_RUNNER_V1 ?? 'true').trim().toLowerCase() !== 'false';
 }
 
 // Roll run-level aggregate onto a shallow run copy from its per-case results. Also derives the run's
@@ -621,7 +621,6 @@ export function registerResourceRoutes(app: Express) {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
     if (isRunningRun(run)) return res.status(409).json({ error: 'A running test run cannot be edited.' });
-    if (isClosedTestRun(run)) return res.status(409).json({ error: 'A closed test run cannot be edited.' });
     let caseIds = uniqueStrings(run.caseIds);
     if ('caseIds' in req.body) {
       const requestedCaseIds = uniqueStrings(req.body.caseIds);
@@ -640,8 +639,6 @@ export function registerResourceRoutes(app: Express) {
     if (!name) return res.status(400).json({ error: 'Run name is required.' });
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
-    const mode = req.body?.mode === 'manual' ? 'manual' : req.body?.mode === 'automated' ? 'automated' : run.mode;
-    const executionMode = mode === 'automated' ? (req.body?.executionMode === 'headed' ? 'headed' : 'headless') : '';
     const updated = await Runs.upsert({
       ...run,
       name,
@@ -653,8 +650,6 @@ export function registerResourceRoutes(app: Express) {
       targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
       folderId: resolvedFolderId,
       status,
-      mode,
-      executionMode,
       caseIds,
     });
     if (!isPgEnabled()) persistDataInBackground('updated run');
@@ -1858,7 +1853,6 @@ Rules:
       id: runId,
       name,
       mode: runMode,
-      executionMode: runMode === 'automated' && req.body?.executionMode === 'headed' ? 'headed' : runMode === 'automated' ? 'headless' : '',
       definition: req.body?.definition || {},
       suiteName,
       // Prefer an explicitly-chosen plan; else fall back to the first plan resolved from the selection.

@@ -312,7 +312,6 @@ function mapRun(r: any) {
     websiteId: r.website_id || '',
     credentialRole: r.credential_role || '',
     mode: r.mode || 'automated',
-    executionMode: r.execution_mode || '',
     definition: r.definition || {},
     folderId: r.folder_id,
     casePins: r.case_pins || [],
@@ -1530,8 +1529,8 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, mode, execution_mode, definition, case_pins, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, $30, $31, $32::jsonb, $33::jsonb, $34, now(), now())
+      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, mode, definition, case_pins, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, $30, $31::jsonb, $32::jsonb, $33, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
@@ -1544,7 +1543,7 @@ export const Runs = {
          source_run_id=EXCLUDED.source_run_id,
          assigned_to=EXCLUDED.assigned_to, tags=EXCLUDED.tags, state=EXCLUDED.state,
          website_id=EXCLUDED.website_id, credential_role=EXCLUDED.credential_role,
-         mode=EXCLUDED.mode, execution_mode=EXCLUDED.execution_mode, definition=EXCLUDED.definition, case_pins=EXCLUDED.case_pins,
+         mode=EXCLUDED.mode, definition=EXCLUDED.definition, case_pins=EXCLUDED.case_pins,
          project_id=COALESCE(EXCLUDED.project_id, runs.project_id),
          updated_at=now()
        RETURNING *`,
@@ -1561,7 +1560,7 @@ export const Runs = {
         r.date || null,
         r.assignedTo || '', r.tags || [], r.state || '',
         r.websiteId || '', r.credentialRole || '',
-        r.mode || 'automated', r.executionMode || '', JSON.stringify(r.definition || {}),
+        r.mode || 'automated', JSON.stringify(r.definition || {}),
         JSON.stringify(r.casePins || []), r.projectId || null,
       ],
     );

@@ -2,13 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { latestBlackboard } from '../features/agent/blackboard';
 import { loadRunMemories } from './memory/runMemory';
-import { redactSecrets } from './memory/artifactMemory';
 
 const TRACE_FILE_PATH = path.resolve(process.cwd(), '.testflow-traces.jsonl');
-const bounded = (value: unknown, limit = 4_000): any => {
-  const text = JSON.stringify(redactSecrets(value)) ?? 'null';
-  return text.length <= limit ? JSON.parse(text) : `${text.slice(0, limit)}…[truncated]`;
-};
 
 export interface ExecutionTraceStep {
   stepNumber: number;
@@ -56,15 +51,8 @@ export async function logExecutionTrace(step: Omit<ExecutionTraceStep, 'timestam
 
     const fullStep: ExecutionTraceStep = {
       ...step,
-      toolInputs: bounded(step.toolInputs),
-      toolOutputs: bounded(step.toolOutputs),
-      contextReceived: bounded(step.contextReceived),
-      contextPassed: bounded(step.contextPassed),
-      blackboardContents: bounded(blackboard),
-      memoryOrRegistryState: bounded(memoryState),
-      assumptionsMade: String(step.assumptionsMade || '').slice(0, 1_000),
-      whyNextToolSelected: String(step.whyNextToolSelected || '').slice(0, 1_000),
-      finalPromptSent: String(step.finalPromptSent || '').slice(0, 1_000),
+      blackboardContents: blackboard,
+      memoryOrRegistryState: memoryState,
       timestamp: new Date().toISOString()
     };
 
@@ -80,6 +68,23 @@ export async function logExecutionTrace(step: Omit<ExecutionTraceStep, 'timestam
  * for the 'finalPromptSent' field.
  */
 export function serializePrompt(system: string, messages: any[]): string {
-  const roles = messages.map((message) => String(message?.role || 'unknown')).join(',');
-  return `[prompt metadata] systemChars=${system.length} messages=${messages.length} roles=${roles}`.slice(0, 1_000);
+  try {
+    let out = `[SYSTEM]\n${system}\n\n`;
+    for (const msg of messages) {
+      out += `[${(msg.role || 'unknown').toUpperCase()}]\n`;
+      if (msg.content) {
+        out += `${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}\n`;
+      }
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        out += `Tool Calls: ${JSON.stringify(msg.toolCalls)}\n`;
+      }
+      if (msg.toolCallId) {
+        out += `Tool Call Result for ${msg.toolName} (${msg.toolCallId})\n`;
+      }
+      out += '\n';
+    }
+    return out.trim();
+  } catch {
+    return 'Failed to serialize prompt';
+  }
 }

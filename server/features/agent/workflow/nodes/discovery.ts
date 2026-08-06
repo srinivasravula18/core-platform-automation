@@ -28,9 +28,6 @@ export interface RunDiscoveryNodeInput {
   auth?: { storageStatePath?: string; sessionStorageState?: { origin: string; items: Record<string, string> } };
   /** Prior same-mission selectors are hints only; every one is revalidated on the live page before reuse. */
   priorElements?: VerifiedElement[];
-  /** Goal terms (object nouns from the prompt) — steer discovery toward the object the goal names instead of
-   * scraping only the landing page. Empty ⇒ legacy goal-blind behaviour. */
-  goalTerms?: string[];
 }
 
 export interface DiscoveryPageSummary {
@@ -154,60 +151,6 @@ async function markOpenFormOverlay(page: any): Promise<string | null> {
   return found ? '[data-tf-form-scope="1"]' : null;
 }
 
-/** Goal-aware discovery — ON by default; GOAL_AWARE_DISCOVERY_V1=0/false/off reverts to the goal-blind
- * single-page scrape. App-agnostic: it only matches captured control labels against the goal's OWN terms. */
-function isGoalAwareDiscoveryEnabled(): boolean {
-  const raw = String(process.env.GOAL_AWARE_DISCOVERY_V1 ?? '').trim().toLowerCase();
-  return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
-}
-
-/** Object-affinity: how many goal terms appear (as substrings) in a control's accessible name. */
-function goalAffinity(name: string | null | undefined, goalTerms: string[]): number {
-  const n = String(name || '').toLowerCase();
-  if (!n) return 0;
-  let score = 0;
-  for (const t of goalTerms) if (t.length >= 3 && n.includes(t)) score += 1;
-  return score;
-}
-
-/** A verified create/edit opener (a control whose click reveals a create/edit FORM). */
-const isCreateOpener = (e: VerifiedElement): boolean =>
-  e.status === 'verified' && !!e.interactive && !!e.resolved_selector
-  && ['button', 'link', 'menuitem'].includes(String(e.role || ''))
-  && FORM_OPENER_LABEL.test(String(e.name || '').trim());
-
-/**
- * Reach the object the goal names when its create form is NOT on the landing page (e.g. Admin "Roles"/"Tabs"/
- * "Fields" live behind a nav item). Fires ONLY when the base capture exposes NO create opener at all — so a
- * page that already reaches its create form (the working case) is never perturbed. Clicks the highest
- * goal-affinity nav control, re-captures, and appends the newly-revealed controls; restores on failure.
- */
-async function navigateToGoalObject(page: any, elements: VerifiedElement[], goalTerms: string[], targetUrl: string, maxElements?: number): Promise<void> {
-  if (!goalTerms.length || elements.some(isCreateOpener)) return; // create form already reachable — don't move
-  const navRoles = new Set(['link', 'menuitem', 'tab', 'button', 'row', 'treeitem']);
-  const best = elements
-    .filter((e) => e.status === 'verified' && e.interactive && e.resolved_selector && navRoles.has(String(e.role || '')) && !isCreateOpener(e))
-    .map((e) => ({ e, score: goalAffinity(e.name, goalTerms) }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)[0];
-  if (!best) return;
-  const beforeUrl = String(page.url?.() || '');
-  const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
-  try {
-    await page.locator(best.e.resolved_selector as string).first().click({ timeout: 5000 });
-    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
-    await page.waitForTimeout(700);
-    for (const el of await captureVerifiedElementsForOpenPage(page, { maxElements })) {
-      if (el.status !== 'verified' || !el.resolved_selector || seen.has(el.resolved_selector)) continue;
-      seen.add(el.resolved_selector);
-      elements.push(el);
-    }
-    // Leave the page HERE (on the object's list) so exploreFormState can open its create form; it restores after.
-  } catch {
-    if (String(page.url?.() || '') !== beforeUrl) await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => undefined);
-  }
-}
-
 /**
  * Open the create/edit FORM and fold its fields + Save/Cancel controls into the catalog. The base capture
  * (and the inline disclosure sweep) only see the list at rest; on apps where "New" navigates to a full-page
@@ -216,12 +159,11 @@ async function navigateToGoalObject(page: any, elements: VerifiedElement[], goal
  * (inline panel OR new route), then RESTORES the list state (re-navigates if the URL changed) so the rest of
  * the catalog stays valid. Read-mostly: it never clicks Save/Delete — the real submit happens at execution.
  */
-async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, goalTerms: string[] = [], maxElements?: number): Promise<BehaviorObservation | null> {
+async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, maxElements?: number): Promise<BehaviorObservation | null> {
   const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
-  // Prefer the create opener that matches the goal (e.g. "New Role" for a Role goal); tie/none ⇒ the first
-  // opener (legacy behaviour). Stable sort keeps document order among equal-affinity openers.
-  const opener = elements.filter(isCreateOpener)
-    .sort((a, b) => goalAffinity(b.name, goalTerms) - goalAffinity(a.name, goalTerms))[0];
+  const opener = elements.find((e) => e.status === 'verified' && e.interactive && e.resolved_selector
+    && ['button', 'link', 'menuitem'].includes(String(e.role || ''))
+    && FORM_OPENER_LABEL.test(String(e.name || '').trim()));
   if (!opener) return null;
   let behavior: BehaviorObservation | null = null;
   const beforeUrl = String(page.url?.() || '');
@@ -318,14 +260,9 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         const elements = await captureVerifiedElementsForOpenPage(page, { maxElements: input.maxElements });
         await revalidatePriorElements(page, elements, input.priorElements);
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
-        // Goal-aware step (flag-gated, additive): if the landing page exposes no create form, navigate to the
-        // object the goal names first so its create modal is captured — the fix for "authoring blocked / timeout
-        // on an unreachable control". Empty goalTerms (flag off) ⇒ this no-ops and behaviour is unchanged.
-        const goalTerms = isGoalAwareDiscoveryEnabled() && Array.isArray(input.goalTerms) ? input.goalTerms : [];
-        if (goalTerms.length) await navigateToGoalObject(page, elements, goalTerms, targetUrl, input.maxElements);
         // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
         // Also returns the observed form behaviour (BEHAVIOR_ORACLE_V1) probed while the form was open.
-        const behavior = await exploreFormState(page, elements, targetUrl, goalTerms, input.maxElements);
+        const behavior = await exploreFormState(page, elements, targetUrl, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.
         const artifacts = sessionArtifacts(sessionId);

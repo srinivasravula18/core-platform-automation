@@ -77,23 +77,6 @@ function formatRunDuration(run: any, now: number): string {
   return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
 }
 
-// The estimate is stored as a plain "1h 30m" style string (same vocabulary formatRunDuration renders),
-// so the Hours/Minutes inputs round-trip through it instead of owning a separate representation.
-function parseDurationEstimate(text: string): { hours: number; minutes: number } {
-  const str = String(text || '');
-  const h = /(\d+)\s*h/i.exec(str);
-  const m = /(\d+)\s*m/i.exec(str);
-  return { hours: h ? Number(h[1]) : 0, minutes: m ? Number(m[1]) : 0 };
-}
-function formatDurationEstimate(hours: number, minutes: number): string {
-  const h = Math.max(0, Math.floor(hours) || 0);
-  const m = Math.max(0, Math.min(59, Math.floor(minutes) || 0));
-  if (!h && !m) return '';
-  if (!h) return `${m}m`;
-  if (!m) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
 function runStartedAt(run: any): string {
   const value = run?.startedAt || run?.triggerMeta?.manualExecution?.startedAt;
   return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
@@ -129,12 +112,7 @@ export default function TestRuns() {
   const [newRunName, setNewRunName] = useState('');
   const [newRunRequester, setNewRunRequester] = useState('');
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
-  const [newRunEstimatedHours, setNewRunEstimatedHours] = useState(0);
-  const [newRunEstimatedMinutes, setNewRunEstimatedMinutes] = useState(0);
   const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
-  // Run Type: Manual vs Automated, and — for Automated — headed (visible local agent) vs headless.
-  const [newRunMode, setNewRunMode] = useState<'manual' | 'automated'>('automated');
-  const [newRunExecutionMode, setNewRunExecutionMode] = useState<'headed' | 'headless'>('headless');
   // #3/#4/#5 — pick cases, map to a Test Plan, and set Assign To / Tags / State.
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
@@ -325,11 +303,7 @@ export default function TestRuns() {
     setNewRunName('');
     setNewRunRequester('');
     setNewRunExecutionTime('');
-    setNewRunEstimatedHours(0);
-    setNewRunEstimatedMinutes(0);
     setNewRunTargetUrl('');
-    setNewRunMode('automated');
-    setNewRunExecutionMode('headless');
     setNewRunPlanId('');
     setNewRunAssignedTo('');
     setNewRunTags([]);
@@ -344,12 +318,7 @@ export default function TestRuns() {
     setNewRunName(run.name || '');
     setNewRunRequester(run.requestedBy || '');
     setNewRunExecutionTime(run.executionTime || '');
-    const estimate = parseDurationEstimate(run.executionTime || '');
-    setNewRunEstimatedHours(estimate.hours);
-    setNewRunEstimatedMinutes(estimate.minutes);
     setNewRunTargetUrl(run.targetUrl || '');
-    setNewRunMode(run.mode === 'manual' ? 'manual' : 'automated');
-    setNewRunExecutionMode(run.executionMode === 'headed' ? 'headed' : 'headless');
     setNewRunPlanId(run.testPlanId || '');
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
@@ -365,19 +334,17 @@ export default function TestRuns() {
     const caseIds = [...newRunCaseIds] as string[];
     // A run executes the cases it selects, so a selection is required.
     if (!editingRunId && !caseIds.length) { void showAlert('Select at least one test case.'); return; }
-    // Run type used to be derived server-side from the selected cases alone (a Manual case yielded a
-    // manual run); the form now sends an explicit mode, which the server still falls back from when
-    // one isn't given (other entry points — Test Cases, suites, plans — don't send it).
-    const executionMode = newRunMode === 'automated' ? newRunExecutionMode : '';
+    // Run type is derived server-side from the selected cases (a Manual case yields a manual run), so
+    // every entry point — this modal, Test Cases, suites, plans — agrees without sending a mode.
     let url: string;
     let body: any;
     if (editingRunId) {
       url = `/api/runs/${encodeURIComponent(editingRunId)}`;
-      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId, mode: newRunMode, executionMode };
+      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId };
       body.caseIds = caseIds;
     } else {
       url = '/api/runs/from-selection';
-      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, executionMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
+      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
     }
     setSavingRun(true);
     try {
@@ -444,12 +411,10 @@ export default function TestRuns() {
         },
       } : item));
       try {
-        // A run declared Headless must stay server-side even when a local agent is online; Headed (or
-        // an older run that never declared a mode) keeps the existing "prefer local agent" behavior.
         const response = await fetch(`/api/runs/${run.id}/execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ preferLocalAgent: run.executionMode !== 'headless' }),
+          body: JSON.stringify({ preferLocalAgent: true }),
         });
         const responseText = await response.text();
         let data: any = {};
@@ -609,8 +574,8 @@ export default function TestRuns() {
                 {can('runs:update') && (
                 <button
                   onClick={() => openEditModal(selectedRun)}
-                  disabled={selectedIsRunning || isClosedTestRun(selectedRun)}
-                  title={isClosedTestRun(selectedRun) ? 'A closed test run cannot be edited' : selectedIsRunning ? 'A running test run cannot be edited' : 'Edit test run'}
+                  disabled={selectedIsRunning}
+                  title={selectedIsRunning ? 'A running test run cannot be edited' : 'Edit test run'}
                   className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Pencil className="h-4 w-4" /> Edit
@@ -1150,24 +1115,6 @@ export default function TestRuns() {
             </select>
           </label>
 
-          {/* Type: Manual vs Automated, and — for Automated — headed vs headless. */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Type<RequiredMark />
-              <select value={newRunMode} onChange={(e) => setNewRunMode(e.target.value as 'manual' | 'automated')} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
-                <option value="automated">Automated</option>
-                <option value="manual">Manual</option>
-              </select>
-            </label>
-            {newRunMode === 'automated' ? (
-              <label className="block text-xs font-medium text-[var(--text-muted)]">Execution Mode
-                <select value={newRunExecutionMode} onChange={(e) => setNewRunExecutionMode(e.target.value as 'headed' | 'headless')} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
-                  <option value="headless">Headless (runs on the server, no visible browser)</option>
-                  <option value="headed">Headed (visible browser on a connected local agent)</option>
-                </select>
-              </label>
-            ) : <div />}
-          </div>
-
           {/* Assign To + Status */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Assign To
@@ -1191,31 +1138,9 @@ export default function TestRuns() {
             <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL
               <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration</label>
-              <div className="mt-1 flex items-center gap-2">
-                <input
-                  type="number" min={0} value={newRunEstimatedHours}
-                  onChange={(e) => {
-                    const hours = Math.max(0, Number(e.target.value) || 0);
-                    setNewRunEstimatedHours(hours);
-                    setNewRunExecutionTime(formatDurationEstimate(hours, newRunEstimatedMinutes));
-                  }}
-                  className="w-20 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]"
-                />
-                <span className="text-xs text-[var(--text-muted)]">hours</span>
-                <input
-                  type="number" min={0} max={59} value={newRunEstimatedMinutes}
-                  onChange={(e) => {
-                    const minutes = Math.max(0, Math.min(59, Number(e.target.value) || 0));
-                    setNewRunEstimatedMinutes(minutes);
-                    setNewRunExecutionTime(formatDurationEstimate(newRunEstimatedHours, minutes));
-                  }}
-                  className="w-20 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]"
-                />
-                <span className="text-xs text-[var(--text-muted)]">minutes</span>
-              </div>
-            </div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration
+              <input type="time" value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
           </div>
 
           {/* Tags on their own full-width row so a long tag list never unbalances the form. */}
@@ -1380,7 +1305,6 @@ export default function TestRuns() {
                 const execution = runExecutionState(run);
                 const progress = runProgress[run.id] || execution.label;
                 const running = execution.running || Boolean(runProgress[run.id]);
-                const closed = isClosedTestRun(run);
                 return (
                   <tr
                     key={run.id}
@@ -1417,7 +1341,7 @@ export default function TestRuns() {
                     </td>
                     <td className="px-4 py-4">
                       <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', run.mode === 'manual' ? 'bg-sky-500/15 text-sky-400' : 'bg-violet-500/15 text-violet-400')}>
-                        {run.mode === 'manual' ? 'Manual' : `Automated · ${run.executionMode === 'headed' ? 'Headed' : 'Headless'}`}
+                        {run.mode === 'manual' ? 'Manual' : 'Automated'}
                       </span>
                     </td>
                     <td className="overflow-hidden px-4 py-4">
@@ -1473,7 +1397,7 @@ export default function TestRuns() {
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-1">
                         {can('runs:update') && (
-                        <button onClick={(e) => { e.stopPropagation(); openEditModal(run); }} disabled={running || closed} title={closed ? 'A closed test run cannot be edited' : running ? 'A running test run cannot be edited' : 'Edit test run'} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
+                        <button onClick={(e) => { e.stopPropagation(); openEditModal(run); }} disabled={running} title={running ? 'A running test run cannot be edited' : 'Edit test run'} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
                           <Pencil className="w-4 h-4" />
                         </button>
                         )}
