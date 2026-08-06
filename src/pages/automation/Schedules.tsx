@@ -349,7 +349,7 @@ function TimezoneSelect({ value, onChange }: { value: string; onChange: (tz: str
     };
   }, [open, placeMenu]);
 
-  const labelOf = (tz: string) => tz === detected ? `${timezoneLabel(tz)} — detected` : timezoneLabel(tz);
+  const labelOf = (tz: string) => tz === detected ? `${timezoneLabel(tz)} — auto detected` : timezoneLabel(tz);
   const filtered = options.filter((tz) => {
     const q = query.trim().toLowerCase();
     return !q || labelOf(tz).toLowerCase().includes(q) || tz.toLowerCase().includes(q);
