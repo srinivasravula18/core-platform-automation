@@ -1024,14 +1024,16 @@ function ProvidersSection() {
     if (!res.ok) load();
   };
 
-  const test = async (provider: Provider) => {
+  const test = async (provider: Provider): Promise<SaveStatus> => {
     setStatus({ type: 'idle', message: '' });
-    const res = await fetch(`/api/ai/providers/${provider}/test`, { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} connection OK (${data.model || 'default model'})` });
-    } else {
-      setStatus({ type: 'error', message: `${PROVIDER_LABELS[provider]}: ${data.error || 'unreachable'}` });
+    try {
+      const res = await fetch(`/api/ai/providers/${provider}/test`, { method: 'POST' });
+      const data = await res.json();
+      return data.ok
+        ? { type: 'success', message: `Connected · ${data.model || 'default model'}` }
+        : { type: 'error', message: `Failed · ${data.error || 'unreachable'}` };
+    } catch (error) {
+      return { type: 'error', message: `Failed · ${error instanceof Error ? error.message : 'unreachable'}` };
     }
   };
 
@@ -1129,12 +1131,14 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   onSetAuthMode: (authMode: ProviderInfo['authMode']) => void;
   onSetModel: (model: string) => void;
   onClearKey: () => void;
-  onTest: () => void;
+  onTest: () => Promise<SaveStatus>;
   onSetDefault: (model: string) => void;
   isDefault: boolean;
 }>) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<SaveStatus>({ type: 'idle', message: '' });
   const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
   const accountCliSupported = provider.name === 'openai' || provider.name === 'anthropic';
   const showAccountMode = provider.accountCliAllowed && accountCliSupported;
@@ -1184,15 +1188,33 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           </button>
           <button
             type="button"
-            onClick={onTest}
+            onClick={async () => {
+              setTesting(true);
+              setTestResult({ type: 'idle', message: '' });
+              setTestResult(await onTest());
+              setTesting(false);
+            }}
             // The connection check tests the configured credential, not whether the
             // provider is toggled on — so it's available as soon as a key is saved
             // (or account auth is available), even if the provider is currently Off.
-            disabled={!canTest}
-            title={!canTest ? testUnavailableReason : 'Run a connection check'}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
+            disabled={!canTest || testing}
+            title={!canTest ? testUnavailableReason : testResult.message || 'Run a connection check'}
+            className={`inline-flex max-w-72 cursor-pointer items-center gap-1 rounded-md border bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 ${
+              testResult.type === 'success'
+                ? 'border-emerald-500/40 text-emerald-500'
+                : testResult.type === 'error'
+                  ? 'border-red-500/40 text-red-500'
+                  : 'border-[var(--border)]'
+            }`}
           >
-            <Activity className="h-3 w-3" /> Test
+            {testing
+              ? <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+              : testResult.type === 'success'
+                ? <CheckCircle className="h-3 w-3 shrink-0" />
+                : testResult.type === 'error'
+                  ? <AlertCircle className="h-3 w-3 shrink-0" />
+                  : <Activity className="h-3 w-3 shrink-0" />}
+            <span className="truncate">{testing ? 'Testing…' : testResult.message || 'Test'}</span>
           </button>
           <button
             type="button"
