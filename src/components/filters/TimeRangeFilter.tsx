@@ -11,16 +11,16 @@ export interface TimeFilterValue {
 }
 
 const PRESETS: Array<{ key: TimeRangeKey; label: string }> = [
-  { key: 'all', label: 'Any time' },
+  { key: 'all', label: 'Any Time' },
   { key: 'today', label: 'Today' },
   { key: 'yesterday', label: 'Yesterday' },
-  { key: 'last7', label: 'Last 7 days' },
-  { key: 'last30', label: 'Last 30 days' },
+  { key: 'last7', label: 'Last 7 Days' },
+  { key: 'last30', label: 'Last 30 Days' },
 ];
 
 export function timeFilterLabel(v: TimeFilterValue): string {
   if (v.key === 'custom') return 'Custom range';
-  return PRESETS.find((p) => p.key === v.key)?.label || 'Any time';
+  return PRESETS.find((p) => p.key === v.key)?.label || 'Any Time';
 }
 
 /** True when `iso` passes the given filter value. Reusable predicate for a page's row filter. */
@@ -77,7 +77,7 @@ export function TimeRangeFilter({
               </button>
             ))}
             <div className="border-t border-[var(--border)] p-2">
-              <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Custom range</div>
+              <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Custom Range</div>
               <div className="grid grid-cols-1 items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
                 <input
                   type="date"

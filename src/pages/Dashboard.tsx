@@ -333,7 +333,7 @@ export default function Dashboard() {
                   activityInfoOpen ? "block" : "hidden group-hover:block group-focus-within:block",
                 )}
               >
-                <div className="mb-1 font-semibold text-[var(--text-primary)]">What Recent Activity shows</div>
+                <div className="mb-1 font-semibold text-[var(--text-primary)]">What Recent Activity Shows</div>
                 The latest changes to test cases, plans, suites, runs, defects, and reports for your current workspace. Each entry includes what changed, when it happened, who performed it, and an outcome when available. Select an entry to open the related record.
               </div>
             </div>

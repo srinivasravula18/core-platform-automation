@@ -264,6 +264,12 @@ function mapCase(r: any) {
     testingType: r.testing_type || 'Functional',
     testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
     captureEvidenceOnManualRun: r.capture_evidence_on_manual_run !== false,
+    defectIds: r.defect_ids || [],
+    assignedTo: r.assigned_to || '',
+    requestedBy: r.requested_by || '',
+    configuration: r.configuration || '',
+    targetUrl: r.target_url || '',
+    attachments: r.attachments || [],
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -743,6 +749,8 @@ function mapScript(r: any) {
     caseId: r.case_id,
     targetUrl: r.target_url,
     agentRunId: r.agent_run_id,
+    executionMode: r.execution_mode || r.executionMode || 'headless',
+    preferredAgentId: r.preferred_agent_id || r.preferredAgentId || '',
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -834,29 +842,35 @@ export const Scripts = {
     s = { ...s, name: await assertUniqueArtifactTitle({ table: 'scripts', column: 'name', label: 'script', records: db.scripts }, s, 'Untitled Script') };
     if (!isPgEnabled()) {
       const idx = db.scripts.findIndex((x: any) => x.id === s.id);
+      const prior = idx >= 0 ? db.scripts[idx] as any : null;
+      s.executionMode = s.executionMode === 'headed' || s.executionMode === 'headless' ? s.executionMode : prior?.executionMode || 'headless';
+      s.preferredAgentId = s.preferredAgentId === undefined ? prior?.preferredAgentId || '' : String(s.preferredAgentId || '');
       if (idx >= 0) db.scripts[idx] = stampJsonWrite(s, db.scripts[idx]);
       else db.scripts.unshift(stampJsonWrite(s, null));
       return s;
     }
     const id = s.id || uid('SCRIPT');
     // Capture the pre-upsert code so we can detect a real content change (versioning only).
-    const priorForVersion = isCaseVersioningEnabled()
-      ? await queryOne('SELECT code, language, framework, case_id FROM scripts WHERE id = $1', [id])
-      : null;
+    const prior = await queryOne('SELECT code, language, framework, case_id, execution_mode, preferred_agent_id FROM scripts WHERE id = $1', [id]);
+    const priorForVersion = isCaseVersioningEnabled() ? prior : null;
+    const executionMode = s.executionMode === 'headed' || s.executionMode === 'headless' ? s.executionMode : prior?.execution_mode || 'headless';
+    const preferredAgentId = s.preferredAgentId === undefined ? prior?.preferred_agent_id || null : String(s.preferredAgentId || '') || null;
     const row = await queryOne(
-      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), now())
+      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, project_id, execution_mode, preferred_agent_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, filename=EXCLUDED.filename, title=EXCLUDED.title,
          code=EXCLUDED.code, language=EXCLUDED.language, framework=EXCLUDED.framework,
          status=EXCLUDED.status, folder_id=EXCLUDED.folder_id, case_id=EXCLUDED.case_id,
-         target_url=EXCLUDED.target_url, agent_run_id=EXCLUDED.agent_run_id,
-         created_by=EXCLUDED.created_by, project_id=COALESCE(EXCLUDED.project_id, scripts.project_id), updated_at=now()
+          target_url=EXCLUDED.target_url, agent_run_id=EXCLUDED.agent_run_id,
+          created_by=EXCLUDED.created_by, project_id=COALESCE(EXCLUDED.project_id, scripts.project_id),
+          execution_mode=EXCLUDED.execution_mode, preferred_agent_id=EXCLUDED.preferred_agent_id, updated_at=now()
        RETURNING *`,
       [id, s.name || 'Untitled Script', s.filename || `${id}.ts`, s.title || '',
        s.code || '', s.language || 'typescript', s.framework || 'playwright',
        s.status || 'Generated', s.folderId || null, s.caseId || null,
-       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant', s.projectId || null],
+       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant', s.projectId || null,
+       executionMode, preferredAgentId],
     );
     await writeScopeCols('scripts', id, s);
     // Append an immutable revision snapshot on code change. Isolated so a history-write failure never fails the save.
@@ -1226,8 +1240,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, assigned_to, requested_by, configuration, target_url, attachments, defect_ids, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30::jsonb,$31,$32, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1238,6 +1252,7 @@ export const Cases = {
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
          testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
          test_suite_ids=EXCLUDED.test_suite_ids, capture_evidence_on_manual_run=EXCLUDED.capture_evidence_on_manual_run,
+         assigned_to=EXCLUDED.assigned_to, requested_by=EXCLUDED.requested_by, configuration=EXCLUDED.configuration, target_url=EXCLUDED.target_url, attachments=EXCLUDED.attachments, defect_ids=EXCLUDED.defect_ids,
          project_id=COALESCE(EXCLUDED.project_id, cases.project_id), updated_at=now()
        RETURNING *`,
       [
@@ -1249,7 +1264,8 @@ export const Cases = {
         c.sourceRunId || null, c.agentRunId || null,
         c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
         JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
-        c.captureEvidenceOnManualRun !== false, c.projectId || null,
+        c.captureEvidenceOnManualRun !== false,
+        c.assignedTo || '', c.requestedBy || '', c.configuration || '', c.targetUrl || '', JSON.stringify(c.attachments || []), Array.isArray(c.defectIds) ? c.defectIds : [], c.projectId || null,
       ],
     );
     await writeScopeCols('cases', id, c);
@@ -1260,13 +1276,21 @@ export const Cases = {
     }
     return mapCase(row);
   },
+  // Deleting a case also retires its generated script. An orphaned script keeps holding the
+  // project-wide unique name, which then blocks the next recording of the same flow from ever
+  // creating its script row.
   async remove(id: string): Promise<boolean> {
     if (!isPgEnabled()) {
       const before = db.cases.length;
       (db as any).cases = db.cases.filter((c: any) => c.id !== id);
+      (db as any).scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
       return db.cases.length < before;
     }
     const res = await query('UPDATE cases SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
+    if (res.length) {
+      await query('UPDATE scripts SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE case_id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
+      db.scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
+    }
     return res.length > 0;
   },
   async bulkUpsert(cases: any[]): Promise<any[]> {
@@ -1315,6 +1339,34 @@ export const CaseRevisions = {
     return mapCaseRevision(await queryOne('SELECT * FROM case_revisions WHERE case_id = $1 AND revision_no = $2', [caseId, revisionNo]));
   },
 };
+
+async function captureRunSourceVersions(run: any) {
+  const ids = (values: any[]) => Array.from(new Set(values.map((value) => String(value || '')).filter(Boolean)));
+  const planIds = ids([...(run.planIds || []), run.testPlanId]);
+  const suiteIds = ids([...(run.suiteIds || []), run.suiteId]);
+  const caseIds = ids([...(run.caseIds || []), run.testCaseId]);
+  const [plans, suites, cases] = await Promise.all([
+    Promise.all(planIds.map((id) => Plans.get(id))),
+    Promise.all(suiteIds.map((id) => Suites.get(id))),
+    Promise.all(caseIds.map((id) => Cases.get(id))),
+  ]);
+  const recordVersion = (item: any) => Number(item?.metadata?.version || item?.version || 1);
+  return {
+    capturedAt: new Date().toISOString(),
+    plans: plans.filter(Boolean).map((plan: any) => ({
+      id: plan.id, name: plan.name, version: recordVersion(plan),
+      snapshot: { name: plan.name, description: plan.description, status: plan.status, riskLevel: plan.riskLevel, tags: plan.tags, objectives: plan.objectives },
+    })),
+    suites: suites.filter(Boolean).map((suite: any) => ({
+      id: suite.id, name: suite.name, version: recordVersion(suite),
+      snapshot: { name: suite.name, description: suite.description, status: suite.status, priority: suite.priority, module: suite.module, tags: suite.tags },
+    })),
+    cases: cases.filter(Boolean).map((testCase: any) => ({
+      id: testCase.id, name: testCase.title, version: recordVersion(testCase), revision: testCase.currentRevision ?? null,
+      snapshot: { title: testCase.title, description: testCase.description, preconditions: testCase.preconditions, status: testCase.status, priority: testCase.priority, tags: testCase.tags, steps: testCase.steps },
+    })),
+  };
+}
 
 /* ---------- script revisions (append-only version history, mirrors CaseRevisions) ---------- */
 
@@ -1461,11 +1513,18 @@ export const Runs = {
     r = { ...r, name: await assertUniqueArtifactTitle({ table: 'runs', column: 'name', label: 'test run', records: db.runs }, r, 'Untitled Run') };
     if (!isPgEnabled()) {
       const idx = db.runs.findIndex((x: any) => x.id === r.id);
+      if (idx < 0 && !r.triggerMeta?.sourceVersions) {
+        r.triggerMeta = { ...(r.triggerMeta || {}), sourceVersions: await captureRunSourceVersions(r) };
+      }
       if (idx >= 0) db.runs[idx] = stampJsonWrite(r, db.runs[idx]);
       else db.runs.unshift(stampJsonWrite(r, null));
       return r;
     }
     const id = r.id || uid('RUN');
+    const existing = await queryOne<{ id: string }>('SELECT id FROM runs WHERE id = $1 AND deleted_at IS NULL', [id]);
+    if (!existing && !r.triggerMeta?.sourceVersions) {
+      r.triggerMeta = { ...(r.triggerMeta || {}), sourceVersions: await captureRunSourceVersions(r) };
+    }
     const stepsJson = JSON.stringify(r.steps || []);
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
@@ -1917,6 +1976,31 @@ function mapMessage(r: any) {
   return { ...payload, role: r.role, kind: r.kind || payload.kind || 'text', ...(payload.content === undefined && payload.text === undefined ? { text: r.content || '' } : {}) };
 }
 
+/** Identity of a stored turn/message for reconciliation: role + kind + its text. */
+function turnSignature(turn: any): string {
+  return `${turn?.role === 'assistant' ? 'assistant' : 'user'}|${String(turn?.kind || 'text')}|${messageContent(turn).slice(0, 400)}`;
+}
+
+/**
+ * Reconcile the console's rich `turns` snapshot with the append-only `chat_messages` log.
+ *
+ * Both stores describe the same conversation but are written by different paths (the console PUTs the
+ * whole snapshot; server chat paths append). Picking whichever was LONGER made the console render the
+ * append log wholesale — replaying every exchange the log had recorded more than once as a visible
+ * duplicate, which it then PUT back as the snapshot. Instead: keep the snapshot (rich cards intact) and
+ * append only the log's TAIL — what follows its last entry the snapshot recognizes. Everything before
+ * that point is the same conversation the console already shows, including a retried request's abandoned
+ * first answer, which is not a second exchange the user ever saw.
+ */
+export function reconcileConversationTurns(snapshot: any[], logged: any[]): any[] {
+  if (!snapshot.length) return logged;
+  const shown = new Set(snapshot.map(turnSignature));
+  let lastRecognized = -1;
+  logged.forEach((message, i) => { if (shown.has(turnSignature(message))) lastRecognized = i; });
+  const extra = logged.slice(lastRecognized + 1).filter((message) => !shown.has(turnSignature(message)));
+  return extra.length ? [...snapshot, ...extra] : snapshot;
+}
+
 function mapConversation(r: any, includeTurns = true) {
   if (!r) return null;
   return {
@@ -1973,10 +2057,10 @@ export const ChatConversations = {
     if (!r) return null;
     const messages = await query('SELECT role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
     // Two writers coexist: the console PUTs the FULL turn snapshot (rich cards) into turns JSONB, while
-    // server chat paths append plain text rows to chat_messages — return whichever holds more of the chat.
+    // server chat paths append rows to chat_messages — reconcile instead of picking the longer one.
     const snapshot = Array.isArray((r as any).turns) ? (r as any).turns : [];
     const mapped = messages.map(mapMessage);
-    return { ...mapConversation(r, true), turns: snapshot.length >= mapped.length ? snapshot : mapped };
+    return { ...mapConversation(r, true), turns: reconcileConversationTurns(snapshot, mapped) };
   },
   async listMessages(id: string): Promise<Array<{ seq: number; role: string; kind: string; content: string; payload: any }>> {
     if (!isPgEnabled()) {
@@ -2035,6 +2119,17 @@ export const ChatConversations = {
       );
       const next = await client.query('SELECT COALESCE(MAX(seq), 0)::bigint AS seq FROM chat_messages WHERE conversation_id = $1', [c.id]);
       let seq = Number(next.rows[0]?.seq || 0);
+      // Idempotent tail: a re-driven request (client resumed after navigating away) re-persists the SAME
+      // exchange, which then read back as a duplicated answer. Skip when the tail already holds it.
+      const tail = await client.query(
+        'SELECT role, kind, content FROM (SELECT role, kind, content, seq FROM chat_messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT $2) t ORDER BY seq',
+        [c.id, incoming.length],
+      );
+      const tailRows = tail.rows;
+      if (tailRows.length === incoming.length
+        && incoming.every((m, i) => tailRows[i].role === m.role && (tailRows[i].kind || 'text') === m.kind && tailRows[i].content === m.content)) {
+        return;
+      }
       for (const message of incoming) {
         seq += 1;
         await client.query(
@@ -2662,6 +2757,19 @@ export const RecordingSteps = {
     }]));
     return steps.map((s: any) => mapRecordingStep(s, byStep.get(s.id), historyByStep.get(s.id)));
   },
+  async setMetadata(recordingId: string, stepId: string, metadata: Record<string, unknown>): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const step = db.recordingSteps.find((item: any) => item.recordingId === recordingId && item.id === stepId);
+      if (!step) return false;
+      step.metadata = metadata;
+      step.updatedAt = new Date().toISOString();
+      return true;
+    }
+    return !!await queryOne(
+      'UPDATE automation_recording_steps SET metadata = $3::jsonb, updated_at = now() WHERE recording_id = $1 AND id = $2 RETURNING id',
+      [recordingId, stepId, JSON.stringify(metadata)],
+    );
+  },
   async addOverride(recordingId: string, stepId: string, value: string | boolean | null): Promise<any> {
     if (!isPgEnabled()) {
       const version = Math.max(0, ...db.recordingStepOverrides.filter((o: any) => o.stepId === stepId).map((o: any) => o.version)) + 1;
@@ -3054,6 +3162,70 @@ export const AutomationJobs = {
        j.script || '', j.batchId || null, j.datasetRowId || null, typeof j.rowNumber === 'number' ? j.rowNumber : null],
     );
     return mapJob(row);
+  },
+};
+
+function mapJobPause(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    pauseId: r.pause_id,
+    attempt: r.attempt,
+    kind: r.kind,
+    prompt: r.prompt,
+    hint: r.hint || '',
+    masked: r.masked,
+    requiresHeaded: r.requires_headed,
+    timeoutMs: r.timeout_ms,
+    onTimeout: r.on_timeout,
+    outcome: r.outcome,
+    openedAt: r.opened_at,
+    expiresAt: r.expires_at,
+    resolvedAt: r.resolved_at,
+    resolvedBy: r.resolved_by || '',
+    valueLength: r.value_length,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const AutomationJobPauses = {
+  async listByJob(jobId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).filter((pause) => pause.jobId === jobId);
+    return (await query('SELECT * FROM automation_job_pauses WHERE job_id = $1 ORDER BY opened_at ASC', [jobId])).map(mapJobPause);
+  },
+  async listOpen(jobId?: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).filter((pause) => pause.outcome === 'open' && (!jobId || pause.jobId === jobId));
+    const rows = jobId
+      ? await query("SELECT * FROM automation_job_pauses WHERE job_id = $1 AND outcome = 'open' ORDER BY opened_at ASC", [jobId])
+      : await query("SELECT * FROM automation_job_pauses WHERE outcome = 'open' ORDER BY opened_at ASC");
+    return rows.map(mapJobPause);
+  },
+  async getAttempt(jobId: string, pauseId: string, attempt: number): Promise<any | null> {
+    if (!isPgEnabled()) return (db.automationJobPauses as any[]).find((pause) => pause.jobId === jobId && pause.pauseId === pauseId && pause.attempt === attempt) || null;
+    return mapJobPause(await queryOne('SELECT * FROM automation_job_pauses WHERE job_id = $1 AND pause_id = $2 AND attempt = $3', [jobId, pauseId, attempt]));
+  },
+  async upsert(pause: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const index = (db.automationJobPauses as any[]).findIndex((item) => item.id === pause.id);
+      if (index >= 0) db.automationJobPauses[index] = { ...db.automationJobPauses[index], ...pause };
+      else db.automationJobPauses.push(pause);
+      return pause;
+    }
+    const id = pause.id || uid('PAUSE');
+    const row = await queryOne(
+      `INSERT INTO automation_job_pauses (id, job_id, pause_id, attempt, kind, prompt, hint, masked, requires_headed, timeout_ms, on_timeout, outcome, opened_at, expires_at, resolved_at, resolved_by, value_length)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14::timestamptz,$15::timestamptz,$16,$17)
+       ON CONFLICT (job_id, pause_id, attempt) DO UPDATE SET
+         outcome=EXCLUDED.outcome, resolved_at=EXCLUDED.resolved_at, resolved_by=EXCLUDED.resolved_by,
+         value_length=EXCLUDED.value_length, expires_at=EXCLUDED.expires_at, updated_at=now()
+       RETURNING *`,
+      [id, pause.jobId, pause.pauseId, pause.attempt || 1, pause.kind, pause.prompt, pause.hint || '', pause.masked !== false,
+       !!pause.requiresHeaded, pause.timeoutMs, pause.onTimeout || 'fail', pause.outcome || 'open', pause.openedAt,
+       pause.expiresAt, pause.resolvedAt || null, pause.resolvedBy || '', typeof pause.valueLength === 'number' ? pause.valueLength : null],
+    );
+    return mapJobPause(row);
   },
 };
 

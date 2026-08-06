@@ -138,8 +138,8 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
   const title = isEdit
     ? `Edit ${kind === 'project' ? 'project' : 'app'}`
     : kind === 'project'
-      ? 'New project'
-      : 'New app';
+      ? 'New Project'
+      : 'New App';
 
   const Icon = kind === 'project' ? FolderGit2 : FileCode2;
 
@@ -200,7 +200,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
         <div className="px-5 py-5 space-y-4 flex-1 min-h-0 overflow-y-auto">
           {kind === 'project' && step === 0 && (
             <>
-              {field('Project name', 'One project maps to one git repository.', (
+              {field('Project Name', 'One project maps to one git repository.', (
                 <input className={inputCls} value={pName} onChange={(e) => setPName(e.target.value)} placeholder="e.g. Core Platform" autoFocus />
               ))}
               {field('Description', 'Optional.', (
@@ -212,11 +212,11 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
           {kind === 'project' && step === 1 && (
             <>
               {allowLocal
-                ? field('Repository source', 'Where this project’s one codebase lives.', (
+                ? field('Repository Source', 'Where this project’s one codebase lives.', (
                     <div className="grid grid-cols-2 gap-2">
                       {([
-                        { v: 'local', label: 'Local folder', icon: HardDrive, hint: 'Already on this machine' },
-                        { v: 'remote', label: 'Remote URL', icon: GitBranch, hint: 'Connect a GitHub repo' },
+                        { v: 'local', label: 'Local Folder', icon: HardDrive, hint: 'Already on this machine' },
+                        { v: 'remote', label: 'Remote URL', icon: GitBranch, hint: 'Connect a GitHub Repo' },
                       ] as const).map((opt) => (
                         <button
                           key={opt.v}
@@ -239,7 +239,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                     <div className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
                       <GitBranch className="w-4 h-4 mt-0.5 text-[var(--accent)]" />
                       <div>
-                        <div className="text-xs font-medium text-[var(--text-primary)]">Remote git repository</div>
+                        <div className="text-xs font-medium text-[var(--text-primary)]">Remote Git Repository</div>
                         <div className="text-[10px] text-[var(--text-muted)]">
                           This is a production deployment — connect the project’s GitHub repo. Local folders aren’t available here.
                         </div>
@@ -247,7 +247,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                     </div>
                   )}
               {pRepoKind === 'local'
-                ? field('Local repo path', 'Absolute path to the repo folder on this machine.', (
+                ? field('Local Repo Path', 'Absolute path to the repo folder on this machine.', (
                     <input className={inputCls} value={pRepoPath} onChange={(e) => setPRepoPath(e.target.value)} placeholder="e.g. C:\\path\\to\\repo" />
                   ))
                 : field('Repository URL', 'HTTPS clone URL.', (
@@ -290,7 +290,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                     </>
                   ),
                 )}
-              {field('Default branch', undefined, (
+              {field('Default Branch', undefined, (
                 <input className={inputCls} value={pBranch} onChange={(e) => setPBranch(e.target.value)} placeholder="main" />
               ))}
             </>
@@ -301,7 +301,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
               rows={[
                 ['Name', pName],
                 ['Description', pDesc || '—'],
-                ['Source', pRepoKind === 'local' ? 'Local folder' : 'Remote URL'],
+                ['Source', pRepoKind === 'local' ? 'Local Folder' : 'Remote URL'],
                 [pRepoKind === 'local' ? 'Path' : 'URL', pRepoKind === 'local' ? pRepoPath : pRepoUrl],
                 ['Branch', pBranch || 'main'],
                 ...(pRepoKind === 'remote'
@@ -312,8 +312,8 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                         : pRepoToken.trim()
                           ? 'New token — will be saved & verified'
                           : hadToken
-                            ? 'Keep saved token'
-                            : 'None (public repo)',
+                            ? 'Keep Saved Token'
+                            : 'None (Public Repo)',
                     ] as [string, string]]
                   : []),
               ]}
@@ -322,7 +322,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
 
           {kind === 'app' && step === 0 && (
             <>
-              {field('App name', 'A testable surface inside the project’s codebase.', (
+              {field('App Name', 'A testable surface inside the project’s codebase.', (
                 <input className={inputCls} value={aName} onChange={(e) => setAName(e.target.value)} placeholder="e.g. Admin Console" autoFocus />
               ))}
               {field('Description', 'Optional.', (
@@ -346,7 +346,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                   ))}
                 </select>
               ))}
-              {field('OpenAPI spec path', 'Where the app publishes its OpenAPI/Swagger spec. The agent grounds tests from it.', (
+              {field('OpenAPI Spec Path', 'Where the app publishes its OpenAPI/Swagger spec. The agent grounds tests from it.', (
                 <input className={inputCls} value={aSpecPath} onChange={(e) => setASpecPath(e.target.value)} placeholder="/api/openapi.json" />
               ))}
             </>
@@ -354,7 +354,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
 
           {kind === 'app' && step === 2 && (
             <>
-              {field('Repo sub-path', 'Where this app lives in the project repo (blank = whole repo).', (
+              {field('Repo Sub-path', 'Where this app lives in the project repo (blank = whole repo).', (
                 <input className={inputCls} value={aSubpath} onChange={(e) => setASubpath(e.target.value)} placeholder="apps/admin" />
               ))}
               <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
@@ -397,7 +397,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
             {busy ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
             ) : step === steps.length - 1 ? (
-              <><Check className="w-4 h-4" /> {isEdit ? 'Save changes' : `Create ${kind}`}</>
+              <><Check className="w-4 h-4" /> {isEdit ? 'Save Changes' : `Create ${kind}`}</>
             ) : (
               <>Next <ChevronRight className="w-4 h-4" /></>
             )}

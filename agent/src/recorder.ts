@@ -11,8 +11,30 @@ import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import type { Logger } from 'pino';
 import { chromiumChannel } from './browsers.js';
+import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from './browserPermissions.js';
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const compiledLauncher = path.join(moduleDir, 'codegen.js');
+const codegenLauncher = fs.existsSync(compiledLauncher) ? [compiledLauncher] : ['--import', 'tsx', path.join(moduleDir, 'codegen.ts')];
+
+export function codegenArguments(workDir: string, outputPath: string, url: string, browser: string, rawPermissions?: BrowserPermissionSettings): string[] {
+  const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
+  const permissions = normalizeBrowserPermissionSettings(rawPermissions);
+  let origin = url;
+  try { origin = new URL(url).origin; } catch { /* isolate malformed URLs by their raw value */ }
+  const profileDir = path.join(workDir, 'codegen-profiles', Buffer.from(`${engine}:${origin}`).toString('base64url'));
+  fs.mkdirSync(profileDir, { recursive: true });
+  const channel = engine === 'chromium' ? chromiumChannel() : undefined;
+  return [...codegenLauncher, url, '--output', outputPath, '--browser', engine, '--user-data-dir', profileDir,
+    ...(permissions.permissions.length ? ['--permissions', permissions.permissions.join(',')] : []),
+    ...(permissions.geolocation ? ['--geolocation', `${permissions.geolocation.latitude},${permissions.geolocation.longitude}`] : []),
+    ...(permissions.fakeMedia ? ['--fake-media'] : []),
+    ...(permissions.acceptDialogs ? ['--accept-dialogs'] : []),
+    ...(channel ? ['--channel', channel] : [])];
+}
 
 export interface RecorderStats {
   actions: number;
@@ -49,21 +71,19 @@ export class Recorder {
     return this.active.size > 0;
   }
 
-  start(recordingId: string, url: string, browser = 'chromium'): void {
+  start(recordingId: string, url: string, browser = 'chromium', browserPermissions?: BrowserPermissionSettings): void {
     if (this.active.has(recordingId)) return;
     const dir = path.join(this.workDir, 'codegen');
     fs.mkdirSync(dir, { recursive: true });
     const outputPath = path.join(dir, `${recordingId}.spec.ts`);
     fs.writeFileSync(outputPath, '');
 
-    const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
-    // `npx playwright codegen` opens the headed recorder window; --output writes the growing spec.
-    // Fall back to the user's installed Google Chrome when bundled Chromium is absent.
-    const channel = engine === 'chromium' ? chromiumChannel() : undefined;
-    const args = ['playwright', 'codegen', url, '--output', outputPath, '--browser', engine, ...(channel ? ['--channel', channel] : [])];
-    const child = spawn('npx', args, {
+    // Invoke Playwright's installed CLI directly. Going through npx + cmd.exe added seconds to every
+    // recording start on Windows and unnecessarily interpreted URL characters in a shell.
+    const args = codegenArguments(this.workDir, outputPath, url, browser, browserPermissions);
+    const engine = args[args.indexOf('--browser') + 1];
+    const child = spawn(process.execPath, args, {
       stdio: 'ignore',
-      shell: process.platform === 'win32',
     });
     this.log.info({ recordingId, url, engine }, 'recording started');
 
@@ -92,8 +112,10 @@ export class Recorder {
     const state = this.active.get(recordingId);
     if (!state) return;
     this.killTree(state.child);
-    // finalize runs on the child 'exit' handler; call directly too in case exit is delayed.
-    setTimeout(() => this.finalize(recordingId), 300);
+    // Do not wait for Playwright codegen's process-exit event: on Windows that can lag after the
+    // browser is already closed, leaving the authoring UI stuck on "Generating".
+    this.tick(recordingId);
+    this.finalize(recordingId);
   }
 
   private finalize(recordingId: string): void {

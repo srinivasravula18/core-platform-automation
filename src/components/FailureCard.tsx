@@ -33,7 +33,7 @@ export default function FailureCard({ error }: { error: string }) {
 
       {a.suggestedFixes.length > 0 && (
         <div className="mt-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5">
-          <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-[var(--text-secondary)]"><Wrench className="h-3 w-3" /> How to fix</div>
+          <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-[var(--text-secondary)]"><Wrench className="h-3 w-3" /> How to Fix</div>
           <ul className="list-disc space-y-0.5 pl-4 text-[var(--text-primary)]">
             {a.suggestedFixes.map((f, i) => <li key={i}>{f}</li>)}
           </ul>
@@ -53,7 +53,7 @@ export default function FailureCard({ error }: { error: string }) {
         className="mt-1.5 inline-flex items-center gap-0.5 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
       >
         {showRaw ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        Raw error
+        Raw Error
       </button>
       {showRaw && (
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{stripAnsi(error)}</pre>

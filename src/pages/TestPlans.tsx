@@ -29,6 +29,8 @@ import { buildTestPlanHierarchy } from '@/src/lib/testPlanHierarchy';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { normalizeTags } from '@/src/lib/tags';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { useAgents } from '@/src/lib/useAutomation';
+import { RunModeModal } from '@/src/components/RunModeModal';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -145,6 +147,9 @@ export default function TestPlans() {
 
   const bulk = useBulkDelete('plans', fetchPlans, 'plan');
   const selectedPlanIds = Array.from(bulk.selectedIds).map(String);
+  const { agents: runAgents } = useAgents();
+  const [runPlanIds, setRunPlanIds] = useState<string[]>([]);
+  const [runModalOpen, setRunModalOpen] = useState(false);
 
   const fetchPlanRelations = () => {
     Promise.all([
@@ -261,6 +266,7 @@ export default function TestPlans() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error || 'Failed to save test plan.');
       const planId = selectedPlanId || String(data?.id || data?.plan?.id || '');
+      if (data?.plan) setPlans((current) => [data.plan, ...current.filter((plan) => String(plan.id) !== planId)]);
       const selectedSuiteIds = new Set(suiteIds);
       const changedSuites = suites.filter((suite) =>
         suitePlanIds(suite).includes(planId) !== selectedSuiteIds.has(String(suite.id)),
@@ -353,11 +359,11 @@ export default function TestPlans() {
     }
     if (conflict === 'future-start') {
       const date = new Date(`${candidate.startDate}T00:00:00`).toLocaleDateString();
-      if (!await showConfirm(`This plan's scheduled start date is ${date}. Start it now anyway?`, { title: 'Start plan early', confirmText: 'Start now' })) return;
+      if (!await showConfirm(`This plan's scheduled start date is ${date}. Start it now anyway?`, { title: 'Start Plan Early', confirmText: 'Start Now' })) return;
     }
     if (conflict === 'past-end') {
       const date = new Date(`${candidate.endDate}T00:00:00`).toLocaleDateString();
-      if (!await showConfirm(`This plan's end date (${date}) has already passed. Start it anyway? The end date will not be changed.`, { title: 'Plan schedule is overdue', confirmText: 'Start anyway' })) return;
+      if (!await showConfirm(`This Plan's End Date (${date}) has already passed. Start it anyway? The end date will not be changed.`, { title: 'Plan schedule is overdue', confirmText: 'Start Anyway' })) return;
     }
     setStartingPlanId(plan.id);
     try {
@@ -392,6 +398,20 @@ export default function TestPlans() {
     } finally {
       setIsStartingRun(false);
     }
+  };
+  const openPlanRun = (planIds = selectedPlanIds) => { setRunPlanIds(planIds); setRunModalOpen(true); };
+  const runPlanCases = async (mode: 'manual' | 'automated', headed: boolean, agentId: string) => {
+    const caseIds = Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => String(testCase.id)))));
+    setIsStartingRun(true);
+    try {
+      if (mode === 'manual') await startSelectedRun({ planIds: runPlanIds, caseIds, mode }, navigate);
+      else for (const caseId of caseIds) {
+        const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
+        const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+      }
+      setRunModalOpen(false); bulk.clearSelection();
+    } catch (error: any) { void showAlert(error.message || 'Failed to start selected test plan run.'); }
+    finally { setIsStartingRun(false); }
   };
 
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
@@ -432,8 +452,6 @@ export default function TestPlans() {
     return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode) && matchesUpdated;
   }), timeSort);
   const hierarchyRows = buildTestPlanHierarchy(filteredPlans, collapsedPlanIds);
-  const modalParentPlan = plans.find((plan) => plan.id === formData.parentPlanId) || null;
-
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -471,7 +489,7 @@ export default function TestPlans() {
               { key: 'runIds', label: 'Linked Test Runs', get: (p) => getPlanRuns(p).map((run) => run.name || run.id).join(', ') },
               { key: 'description', label: 'Description' },
               { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
-              { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
+              { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => casePlanIds(c).includes(p.id)).length },
               { key: 'updatedAt', label: 'Updated', get: (p: any) => p.metadata?.updatedAt || p.updatedAt || '' },
               { key: 'updatedBy', label: 'Updated By', get: (p: any) => p.metadata?.updatedBy?.name || '' },
               { key: 'createdAt', label: 'Created', get: (p: any) => p.metadata?.createdAt || p.createdAt || '' },
@@ -548,7 +566,7 @@ export default function TestPlans() {
           <div className="flex justify-between items-center">
             <div>
               {selectedPlanId && can('plans:delete') && (
-                <button onClick={handleDeletePlan} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+                <button onClick={handleDeletePlan} className="delete-action rounded-md border px-4 py-2 text-sm font-medium">Delete</button>
               )}
             </div>
             <div className="flex gap-3">
@@ -573,11 +591,15 @@ export default function TestPlans() {
               {dateWarningMessage}
             </div>
           )}
-          {modalParentPlan && (
-            <div className="rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2 text-sm text-[var(--text-primary)]">
-              Parent Test Plan: <span className="font-semibold">{modalParentPlan.name}</span>
-            </div>
-          )}
+          <label className="block text-sm font-medium text-[var(--text-muted)]">Parent Test Plan (Optional)
+            <select value={formData.parentPlanId} onChange={(e) => setFormData({ ...formData, parentPlanId: e.target.value })} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              <option value="">None (top-level plan)</option>
+              {plans.filter((plan) => String(plan.id) !== String(selectedPlanId || '')).map((plan) => {
+                const tags = normalizeTags(Array.isArray(plan.tags) ? plan.tags : []);
+                return <option key={plan.id} value={plan.id}>{plan.name}{tags.length ? ` — ${tags.join(', ')}` : ''}</option>;
+              })}
+            </select>
+          </label>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input 
@@ -629,7 +651,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Suites</label>
-              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {formData.suiteIds.length === 0 ? (
               <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link suites by tag</button>
@@ -650,7 +672,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Cases</label>
-              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {(formData.tagQuery.all?.length || formData.tagQuery.any?.length) ? (
               <div className="mb-1 text-xs text-[var(--text-muted)]">Tag-defined: {[...(formData.tagQuery.all || []), ...(formData.tagQuery.any || [])].join(formData.tagQuery.all?.length ? ' + ' : ' / ')} — new matches surface for review after saving.</div>
@@ -674,7 +696,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Runs</label>
-              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {formData.runIds.length === 0 ? (
               <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link runs by tag</button>
@@ -870,8 +892,8 @@ export default function TestPlans() {
                 {isDetailFilterOpen && (
                   <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-16rem)] w-[min(28rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-[var(--text-primary)]">Filter linked test cases</span>
-                      <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">Filter Linked Test Cases</span>
+                      <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
@@ -926,7 +948,7 @@ export default function TestPlans() {
                     {getPlanSuites(selectedDetailPlan.id).length === 0 ? (
                       <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No test suites are linked to this plan.</td></tr>
                     ) : getPlanSuites(selectedDetailPlan.id).map((suite) => (
-                      <tr key={suite.id} onClick={() => navigate(`/suites/${suite.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                      <tr key={suite.id} onClick={() => navigate(`/suites/${suite.id}?planId=${encodeURIComponent(selectedDetailPlan.id)}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                         <td className="px-4 py-3 font-medium">{suite.name}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{suite.module || '-'}</td>
@@ -1009,7 +1031,7 @@ export default function TestPlans() {
                     {getPlanRuns(selectedDetailPlan).length === 0 ? (
                       <tr><td colSpan={5} className="px-4 py-6 text-center text-[var(--text-muted)]">No test runs are linked to this plan.</td></tr>
                     ) : getPlanRuns(selectedDetailPlan).map((run) => (
-                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}?planId=${encodeURIComponent(selectedDetailPlan.id)}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{run.id}</td>
                         <td className="px-4 py-3 font-medium">{run.name || run.id}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{run.assignedTo || run.requestedBy || 'Unassigned'}</td>
@@ -1053,10 +1075,10 @@ export default function TestPlans() {
               <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
-                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
-                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match All</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match Any</button>
                   </div>
-                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <div>
@@ -1093,7 +1115,7 @@ export default function TestPlans() {
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
                     <input type="checkbox" checked={filters.notYetExecuted} onChange={(event) => setFilters((current) => ({ ...current, notYetExecuted: event.target.checked }))} />
-                    Not yet executed
+                    Not Yet Executed
                   </label>
                 </div>
               </div>
@@ -1104,14 +1126,12 @@ export default function TestPlans() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              {bulk.selectedCount > 1 && (
-                <button onClick={() => runSelectedPlans()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-                </button>
-              )}
+              <button onClick={() => openPlanRun()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
+              </button>
               {can('plans:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                  <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
                 </button>
               )}
             </div>
@@ -1119,13 +1139,14 @@ export default function TestPlans() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1240px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1420px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-80 px-4 py-3 font-medium">Name</th>
+                <th className="w-52 px-4 py-3 font-medium">Parent Plan</th>
                 <th className="w-32 px-4 py-3 font-medium">ID</th>
                 <th className="w-48 px-4 py-3 font-medium">Owner</th>
                 <th className="w-40 px-4 py-3 font-medium">Status</th>
@@ -1140,14 +1161,15 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : hierarchyRows.map(({ plan, depth, hasChildren }) => {
                 const planCases = getPlanCases(plan.id);
                 const planSuites = getPlanSuites(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
+                const parentPlan = plan.parentPlanId ? plans.find((candidate) => candidate.id === plan.parentPlanId) : null;
 
                 return (
                   <tr
@@ -1155,7 +1177,7 @@ export default function TestPlans() {
                     onClick={() => navigate(`/plans/${plan.id}`)}
                     className={cn(
                       "h-14 cursor-pointer align-middle transition-colors",
-                      isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
+                      isSelected ? "bg-[var(--accent)]/10" : plan.parentPlanId ? "bg-sky-500/[0.025] hover:bg-[var(--bg-secondary)]" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
@@ -1185,8 +1207,12 @@ export default function TestPlans() {
                         ) : (
                           <span className="w-5" aria-hidden="true" />
                         )}
-                        <span className="block max-w-[380px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                        <span className="block max-w-[260px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                        {plan.parentPlanId && <span className="shrink-0 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">Sub-plan</span>}
                       </div>
+                    </td>
+                    <td className="truncate px-4 py-3 text-xs">
+                      {parentPlan ? <button type="button" onClick={(event) => { event.stopPropagation(); navigate(`/plans/${parentPlan.id}`); }} className="max-w-full truncate text-left font-medium text-[var(--accent)] hover:underline" title={`Open parent plan: ${parentPlan.name}`}>{parentPlan.name}</button> : plan.parentPlanId ? <span className="text-amber-400" title={plan.parentPlanId}>Parent unavailable</span> : <span className="text-[var(--text-muted)]">Top-level</span>}
                     </td>
                     <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
@@ -1239,7 +1265,7 @@ export default function TestPlans() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            runSelectedPlans([plan.id]);
+                            openPlanRun([plan.id]);
                           }}
                           disabled={isStartingRun || planCases.length === 0}
                           title={isStartingRun ? 'Starting test plan run…' : runCaseCountLabel(planCases.length)}
@@ -1283,6 +1309,18 @@ export default function TestPlans() {
         </div>
       </div>
       )}
+      <RunModeModal
+        isOpen={runModalOpen}
+        count={Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => testCase.id)))).length}
+        busy={isStartingRun}
+        agents={runAgents}
+        onClose={() => setRunModalOpen(false)}
+        onRun={runPlanCases}
+        previewGroups={runPlanIds.map((id) => ({
+          label: plans.find((plan) => plan.id === id)?.name || id,
+          items: getPlanCases(id).map((testCase: any) => testCase.title || testCase.id),
+        }))}
+      />
     </div>
   );
 }

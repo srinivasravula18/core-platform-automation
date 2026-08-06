@@ -11,7 +11,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import { LOCAL_PORT, AGENT_VERSION } from './version.js';
 import { collectTelemetry } from './system.js';
-export function startLocalApi(deps) {
+export async function startLocalApi(deps, preferredPort = LOCAL_PORT) {
     const { log, loggerHandle, config, conn } = deps;
     const app = express();
     app.use(express.json({ limit: '2mb' }));
@@ -55,11 +55,11 @@ export function startLocalApi(deps) {
         res.json({ message: 'Reports are available in TestFlow AI.', lastRun: conn.runner.isBusy() ? 'running' : 'idle' });
     });
     app.post('/record/start', (req, res) => {
-        const { recordingId, url, browser } = req.body || {};
+        const { recordingId, url, browser, browserPermissions } = req.body || {};
         if (!url)
             return res.status(400).json({ error: 'url is required.' });
         const id = recordingId || `local-${Date.now()}`;
-        conn.recorder.start(id, url, browser);
+        conn.recorder.start(id, url, browser, browserPermissions);
         res.json({ ok: true, recordingId: id });
     });
     app.post('/record/stop', (req, res) => {
@@ -71,10 +71,10 @@ export function startLocalApi(deps) {
         res.json({ ok: true });
     });
     app.post('/run', (req, res) => {
-        const { jobId, recordingId, script, browser, environment, appUrl } = req.body || {};
+        const { jobId, recordingId, script, browser, environment, appUrl, browserPermissions } = req.body || {};
         if (!script)
             return res.status(400).json({ error: 'script is required.' });
-        void conn.runner.run({ jobId: jobId || `local-${Date.now()}`, recordingId: recordingId || '', script, browser: browser || 'chromium', environment: environment || 'QA', appUrl: appUrl || '' });
+        void conn.runner.run({ jobId: jobId || `local-${Date.now()}`, recordingId: recordingId || '', script, browser: browser || 'chromium', environment: environment || 'QA', appUrl: appUrl || '', browserPermissions });
         res.json({ ok: true });
     });
     app.post('/cancel', (req, res) => {
@@ -82,6 +82,22 @@ export function startLocalApi(deps) {
         if (jobId)
             conn.runner.cancel(jobId);
         res.json({ ok: true });
+    });
+    app.get('/pauses', (_req, res) => res.json({ pauses: conn.runner.openPauses() }));
+    app.post('/pauses/:id/resolve', (req, res) => {
+        const jobId = String(req.body?.jobId || '');
+        const pauseId = String(req.params.id || '');
+        const outcome = req.body?.outcome === 'skipped' || req.body?.outcome === 'aborted' ? req.body.outcome : 'resolved';
+        if (!jobId || !pauseId)
+            return res.status(400).json({ error: 'jobId and pause id are required.' });
+        const resolved = conn.runner.resolvePause(jobId, {
+            pauseId,
+            attempt: Number(req.body?.attempt) || 1,
+            outcome,
+            ...(req.body?.value != null ? { value: String(req.body.value) } : {}),
+            resolvedBy: 'local',
+        });
+        res.status(resolved ? 200 : 404).json(resolved ? { ok: true } : { error: 'Open pause not found.' });
     });
     app.post('/browser/open', (req, res) => {
         const { url } = req.body || {};
@@ -100,6 +116,24 @@ export function startLocalApi(deps) {
         }
         res.json({ ok: true });
     });
-    app.listen(LOCAL_PORT, '127.0.0.1', () => log.info({ port: LOCAL_PORT }, 'local API listening on 127.0.0.1'));
+    const listen = (port) => new Promise((resolve, reject) => {
+        const server = app.listen(port, '127.0.0.1');
+        server.once('error', reject);
+        server.once('listening', () => {
+            server.off('error', reject);
+            const address = server.address();
+            log.info({ port: typeof address === 'object' && address ? address.port : port }, 'local API listening on 127.0.0.1');
+            resolve(server);
+        });
+    });
+    try {
+        return await listen(preferredPort);
+    }
+    catch (error) {
+        if (error?.code !== 'EADDRINUSE' || preferredPort === 0)
+            throw error;
+        log.warn({ port: preferredPort }, 'local API port is in use; using an available loopback port');
+        return listen(0);
+    }
 }
 //# sourceMappingURL=localApi.js.map

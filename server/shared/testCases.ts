@@ -1,10 +1,13 @@
 export function normalizeCaseSteps(steps: any[] = []) {
   return steps
     .map((step) => {
-      const normalized: { action: string; expected: string; group?: string; groupIndex?: number } = {
+      const normalized: { action: string; expected: string; group?: string; groupIndex?: number; captureEvidence?: boolean } = {
         action: String(step?.action || '').trim(),
         expected: String(step?.expected || '').trim(),
       };
+      // Per-step evidence toggle (authored on the case, consumed by the manual runner). Only stored
+      // when explicitly disabled, so existing steps keep their evidence-allowed default.
+      if (step?.captureEvidence === false) normalized.captureEvidence = false;
       // Preserve optional recorder grouping metadata (see stepGrouping.ts) when present — additive,
       // so callers that only read {action, expected} are unaffected.
       const group = String(step?.group || '').trim();
@@ -67,7 +70,10 @@ export function buildAgentExecutionSteps(run: any) {
         expected: testCase.description || 'Expected behavior is verified.',
         outcome,
         reason,
+        actual: reason,
+        durationMs: Number(ev?.durationMs) || 0,
         screenshot,
+        testCaseTitle: testCase.title,
       }];
     }
 
@@ -78,6 +84,8 @@ export function buildAgentExecutionSteps(run: any) {
       expected: step.expected,
       outcome,
       reason,
+      actual: reason,
+      durationMs: Number(ev?.durationMs) || 0,
       // Distinct per-step screenshot when the script captured one; else the case-level shot.
       screenshot: stepShots[stepIndex] || screenshot,
       testCaseTitle: testCase.title,

@@ -77,12 +77,16 @@ export async function fetchTagDrift(target: EntityKind, id: string): Promise<Tag
 /** Accept new tag matches into the group (empty ids = accept all current new matches). */
 export async function acceptTagMatches(target: EntityKind, id: string, caseIds: string[] = []): Promise<TagDrift | null> {
   const res = await jsonPost(`/api/${target}/${id}/tag-accept`, { caseIds });
-  return res.ok ? res.json() : null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Could not add tag matches (${res.status}).`);
+  return data;
 }
 /** Dismiss tag matches so they stop resurfacing as drift. */
 export async function dismissTagMatches(target: EntityKind, id: string, caseIds: string[]): Promise<TagDrift | null> {
   const res = await jsonPost(`/api/${target}/${id}/tag-dismiss`, { caseIds });
-  return res.ok ? res.json() : null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Could not dismiss tag matches (${res.status}).`);
+  return data;
 }
 
 /** A version node from a case's revision graph. */

@@ -12,7 +12,7 @@
  * Website can serve as the target on its own), so users who work with Websites only are not blocked.
  */
 
-import { isAnyProviderConfigured } from '../../ai/orchestrator';
+import { isAnyProviderConfigured, providerBlockerReason } from '../../ai/orchestrator';
 import { listWebsites } from '../credentials/credentialsService';
 import { listProjects } from '../projects/projectService';
 import { effectiveGrantsForUser, isAllowed, UNRESTRICTED, type EffectiveGrants, type GrantCategory } from '../auth/groupStore';
@@ -48,7 +48,8 @@ export function agentSetupReadiness(scope: { userId?: string }): SetupReadiness 
 
   if (!isAnyProviderConfigured()) {
     missing.push('provider');
-    steps.push('• Connect an AI provider so the agent can think — Settings → AI Providers.');
+    // Name the actual blocker — an enabled-but-unusable provider must not read as "not connected".
+    steps.push(`• ${providerBlockerReason()}`);
   }
   if (!hasOwnedOrGrantedResource(listWebsites(), ownerId, grants, 'websites')) {
     missing.push('url');

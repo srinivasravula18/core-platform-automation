@@ -117,6 +117,7 @@ export default function Settings() {
         {tabs.map(([key, label, Icon]) => (
           <button
             key={key}
+            data-delete-style={key === 'data' ? 'ignore' : undefined}
             onClick={() => setTab(key)}
             className={`inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 py-2 font-medium transition-colors ${
               tab === key ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
@@ -183,7 +184,7 @@ function DataSection() {
             className="inline-flex items-center justify-center gap-2 rounded-md border border-red-500 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-            Delete artifacts
+            Delete Artifacts
           </button>
         </div>
       </div>
@@ -308,7 +309,7 @@ function ProfilesSection() {
 
       {/* Create form */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
-        <h3 className="mb-3 font-medium text-[var(--text-primary)]">New profile</h3>
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">New Profile</h3>
         <div className="grid gap-3 sm:grid-cols-3">
           <div>
             <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Name</label>
@@ -348,7 +349,7 @@ function ProfilesSection() {
             className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Create profile
+            Create Profile
           </button>
           {status.type !== 'idle' && (
             <span className={`text-xs ${status.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{status.message}</span>
@@ -358,7 +359,7 @@ function ProfilesSection() {
 
       {/* Existing profiles */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
-        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Existing profiles</h3>
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Existing Profiles</h3>
         {loading ? (
           <p className="text-sm text-[var(--text-muted)]">Loading…</p>
         ) : users.length === 0 ? (
@@ -386,7 +387,7 @@ function ProfilesSection() {
                     <button
                       onClick={() => remove(u)}
                       disabled={busy || u.role === 'admin'}
-                      title={u.role === 'admin' ? 'Admin profiles cannot be removed here' : 'Delete profile'}
+                      title={u.role === 'admin' ? 'Admin profiles cannot be removed here' : 'Delete Profile'}
                       className="rounded p-1.5 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -433,7 +434,7 @@ function GrantCheckboxes({ title, options, value, onChange }: { title: string; o
         <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{title}</span>
         <label className="flex items-center gap-1.5 text-xs text-[var(--text-primary)]">
           <input type="checkbox" className="accent-[var(--accent)]" checked={all} onChange={(e) => onChange(e.target.checked ? '*' : [])} />
-          All (unrestricted)
+          All (Unrestricted)
         </label>
       </div>
       {all ? (
@@ -477,10 +478,10 @@ function ActionsMatrix({ catalog, value, onChange }: { catalog: RbacCatalog; val
   return (
     <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Permissions (per action)</span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Permissions (Per Action)</span>
         <label className="flex items-center gap-1.5 text-xs text-[var(--text-primary)]">
           <input type="checkbox" className="accent-[var(--accent)]" checked={all} onChange={(e) => onChange(e.target.checked ? '*' : [])} />
-          All (unrestricted)
+          All (Unrestricted)
         </label>
       </div>
       {all ? (
@@ -567,7 +568,7 @@ function UserAccessEditor({ userId, label, onClose }: { userId: string; label: s
           )}
           <div className="flex items-center gap-2">
             <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save access
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save Access
             </button>
             {status.type !== 'idle' && <span className={`text-xs ${status.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{status.message}</span>}
           </div>
@@ -672,14 +673,14 @@ function GroupsSection() {
 
       {editing && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
-          <h3 className="mb-3 font-medium text-[var(--text-primary)]">{editing.id ? 'Edit group' : 'New group'}</h3>
+          <h3 className="mb-3 font-medium text-[var(--text-primary)]">{editing.id ? 'Edit Group' : 'New Group'}</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Name</span>
               <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. QA Team" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Description (optional)</span>
+              <span className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Description (Optional)</span>
               <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="What this group is for" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </label>
           </div>
@@ -718,7 +719,7 @@ function GroupsSection() {
 
           <div className="mt-4 flex items-center gap-2">
             <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save group
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save Group
             </button>
             <button onClick={() => setEditing(null)} disabled={busy} className="rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
           </div>
@@ -726,7 +727,7 @@ function GroupsSection() {
       )}
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
-        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Access groups</h3>
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Access Groups</h3>
         {loading ? (
           <p className="text-sm text-[var(--text-muted)]">Loading…</p>
         ) : groups.length === 0 ? (
@@ -818,7 +819,7 @@ function DeploymentSection() {
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Server repository root</h2>
+        <h2 className="text-lg font-medium">Server Repository Root</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           The folder on this server that holds your project repositories. A project keeps the path it
           was created with, which usually doesn't exist on the deployed server. Set that base folder
@@ -905,7 +906,6 @@ function ProvidersSection() {
   const [agentMap, setAgentMap] = useState<Record<string, Provider>>({});
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
-  const [activatingProvider, setActivatingProvider] = useState<Provider | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -926,18 +926,24 @@ function ProvidersSection() {
     load();
   }, [load]);
 
-  // Configuration edits are kept local where safe. Activation is intentionally not
-  // optimistic: the server tests the selected credential before marking a provider On.
+  // All mutations update local state optimistically and DON'T refetch the whole list,
+  // so changing a model/provider/toggle never flashes or "refreshes" the page. We only
+  // re-sync from the server (load) if a request actually fails.
   const saveKey = async (provider: Provider, apiKey: string) => {
     setStatus({ type: 'idle', message: '' });
+    const masked = apiKey.length <= 8 ? '****' : `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`;
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? { ...p, apiKeyMasked: masked, configured: p.authMode === 'account' ? p.configured : true, callable: (p.authMode === 'account' ? p.configured : true) && p.enabled }
+        : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
     });
     if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved. Turn it on to run a connection test.` });
-      load();
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved` });
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} key` });
       load();
@@ -951,6 +957,17 @@ function ProvidersSection() {
       setStatus({ type: 'error', message: 'Subscription/account CLI auth is local-only. Use API key mode in test and production.' });
       return;
     }
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? {
+            ...p,
+            authMode,
+            configured: authMode === 'api_key' ? !!p.apiKeyMasked : p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
+            callable: authMode === 'api_key' ? !!p.apiKeyMasked && p.enabled : p.enabled && p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
+            accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
+          }
+        : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -960,10 +977,9 @@ function ProvidersSection() {
       setStatus({
         type: 'success',
         message: authMode === 'api_key'
-          ? `${PROVIDER_LABELS[provider]} will use API key billing. Turn it on to test the credential.`
-          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth. Turn it on to test the local account.`,
+          ? `${PROVIDER_LABELS[provider]} will use API key billing`
+          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
       });
-      load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
       load();
@@ -972,25 +988,20 @@ function ProvidersSection() {
 
   const setEnabled = async (provider: Provider, enabled: boolean) => {
     setStatus({ type: 'idle', message: '' });
-    setActivatingProvider(provider);
-    if (enabled) setStatus({ type: 'idle', message: `Testing ${PROVIDER_LABELS[provider]} before activation…` });
-    try {
-      const res = await fetch(`/api/ai/providers/${provider}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'tested and enabled' : 'disabled'}` });
-      } else {
-        setStatus({ type: 'error', message: enabled ? `${PROVIDER_LABELS[provider]} remains off: ${data.error || data.health?.error || 'connection test failed'}` : `Failed to disable ${PROVIDER_LABELS[provider]}` });
-      }
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
+    if (enabled && providers.find((p) => p.name === provider)?.configured && !providers.find((p) => p.name === defaultProvider)?.callable) {
+      setDefaultProvider(provider);
+    }
+    const res = await fetch(`/api/ai/providers/${provider}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
+    } else {
+      setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
       load();
-    } catch {
-      setStatus({ type: 'error', message: `Failed to ${enabled ? 'test and enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
-    } finally {
-      setActivatingProvider(null);
     }
   };
 
@@ -1006,11 +1017,11 @@ function ProvidersSection() {
 
   const clearKey = async (provider: Provider) => {
     if (!await showConfirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`, { tone: 'danger' })) return;
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
-    if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key removed and provider disabled` });
-    }
-    load();
+    if (!res.ok) load();
   };
 
   const test = async (provider: Provider) => {
@@ -1025,16 +1036,15 @@ function ProvidersSection() {
   };
 
   const setDefault = async (provider: Provider, model: string) => {
+    setDefaultProvider(provider);
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model, enabled: true, callable: p.configured } : p)));
+    setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
     const res = await fetch('/api/ai/default-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, model }),
     });
-    if (res.ok) {
-      setDefaultProvider(provider);
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
-    }
-    load();
+    if (!res.ok) load();
   };
 
   const setAgentProvider = async (agent: string, provider: Provider) => {
@@ -1051,7 +1061,7 @@ function ProvidersSection() {
   // (load() flips `loading` again) must NOT unmount the section — otherwise the whole
   // page flashes/reconfigures and the API key being typed in a card is lost.
   if (loading && providers.length === 0) return <SkeletonCard />;
-  const enabledProviders = providers.filter((p) => p.callable);
+  const enabledProviders = providers.filter((p) => p.enabled);
 
   return (
     <div className="space-y-6">
@@ -1076,7 +1086,6 @@ function ProvidersSection() {
               onTest={() => test(p.name)}
               onSetDefault={(m) => setDefault(p.name, m)}
               isDefault={defaultProvider === p.name}
-              activating={activatingProvider === p.name}
             />
           ))}
         </div>
@@ -1097,15 +1106,13 @@ function ProvidersSection() {
               <select
                 value={agentMap[agent] || defaultProvider}
                 onChange={(e) => setAgentProvider(agent, e.target.value as Provider)}
-                disabled={enabledProviders.length === 0}
-                title={enabledProviders.length === 0 ? 'Test and enable an AI provider first' : undefined}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {enabledProviders.length ? enabledProviders.map((p) => (
+                {(enabledProviders.length ? enabledProviders : providers).map((p) => (
                   <option key={p.name} value={p.name}>
                     {PROVIDER_LABELS[p.name]}
                   </option>
-                )) : <option value="">No active provider</option>}
+                ))}
               </select>
             </div>
           ))}
@@ -1115,7 +1122,7 @@ function ProvidersSection() {
   );
 }
 
-function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault, activating }: React.PropsWithChildren<{
+function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault }: React.PropsWithChildren<{
   provider: ProviderInfo;
   onSaveKey: (apiKeyValue: string) => void;
   onSetEnabled: (enabled: boolean) => void;
@@ -1125,7 +1132,6 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   onTest: () => void;
   onSetDefault: (model: string) => void;
   isDefault: boolean;
-  activating: boolean;
 }>) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
@@ -1150,7 +1156,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             <h3 className="font-medium">{PROVIDER_LABELS[provider.name]}</h3>
             {provider.configured ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
-                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Ready to test'}
+                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Configured'}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
@@ -1160,22 +1166,21 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           </div>
           <div className="text-xs text-[var(--text-muted)]">
             {authMode === 'api_key'
-              ? provider.apiKeyMasked ? `key: ${provider.apiKeyMasked}` : 'API key mode'
-              : provider.accountTool ? `Local CLI: ${provider.accountTool}` : 'Subscription/account auth'}
+              ? provider.apiKeyMasked ? `key: ${provider.apiKeyMasked}` : 'API Key Mode'
+              : provider.accountTool ? `Local CLI: ${provider.accountTool}` : 'Subscription/Account Auth'}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => onSetEnabled(!provider.enabled)}
-            disabled={activating}
             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
               provider.enabled
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
                 : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
             }`}
           >
-            {activating ? 'Testing…' : provider.enabled ? 'On' : 'Off'}
+            {provider.enabled ? 'On' : 'Off'}
           </button>
           <button
             type="button"
@@ -1192,8 +1197,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.callable || isDefault}
-            title={isDefault ? 'This is the current default provider' : !provider.callable ? 'Test and enable this provider before making it the default' : 'Make this the default provider'}
+            disabled={!provider.enabled || !provider.configured || isDefault}
+            title={isDefault ? 'This is the current default provider' : !provider.enabled || !provider.configured ? 'Enable and configure this provider before making it the default' : 'Make this the default provider'}
             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-default ${
               isDefault
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
@@ -1201,7 +1206,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             }`}
           >
             {isDefault ? <CheckCircle className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
-            {isDefault ? 'Default' : 'Set as default'}
+            {isDefault ? 'Default' : 'Set as Default'}
           </button>
         </div>
       </div>
@@ -1220,7 +1225,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             className="mt-1 pointer-events-none accent-[var(--accent)]"
           />
           <span>
-            <span className="block font-medium">API key</span>
+            <span className="block font-medium">API Key</span>
             <span className="block text-xs text-[var(--text-muted)]">Used by Test Flow AI backend calls and cost tracking.</span>
           </span>
         </button>
@@ -1238,7 +1243,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
               className="mt-1 pointer-events-none accent-[var(--accent)]"
             />
             <span>
-              <span className="block font-medium">Subscription / account</span>
+              <span className="block font-medium">Subscription / Account</span>
               <span className="block text-xs text-[var(--text-muted)]">
                 Uses your local Codex or Claude Code login where supported.
               </span>
@@ -1395,7 +1400,7 @@ function PromptsSection() {
       const res = await fetch('/api/agent/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskType: taskTypeMap[agent] || 'case', prompt: testInput || 'Generate a sample test case' }),
+        body: JSON.stringify({ taskType: taskTypeMap[agent] || 'case', prompt: testInput || 'Generate a Sample Test Case' }),
       });
       const data = await res.json();
       setTestOutput(JSON.stringify(data, null, 2));
@@ -1482,12 +1487,12 @@ function PromptsSection() {
                     ) : (
                       <div className="space-y-3">
                         <div>
-                          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Active prompt</div>
+                          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Active Prompt</div>
                           <pre className="max-h-64 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs whitespace-pre-wrap">{p.activeBody}</pre>
                         </div>
                         {p.versions.length > 1 && (
                           <div>
-                            <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Version history</div>
+                            <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Version History</div>
                             <div className="space-y-1">
                               {p.versions.map((v) => (
                                 <div key={v.id} className="flex items-center justify-between gap-2 rounded border border-[var(--border)] bg-[var(--bg-primary)] p-2 text-xs">
@@ -1507,7 +1512,7 @@ function PromptsSection() {
                           </div>
                         )}
                         <div>
-                          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Test this agent</div>
+                          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Test This Agent</div>
                           <div className="flex flex-col gap-2 sm:flex-row">
                             <input
                               type="text"
@@ -1560,6 +1565,8 @@ type CredRow = {
   url: string;
   username: string;
   password: string;
+  /** Keeps a cleared edit field empty instead of immediately restoring the saved mask. */
+  passwordEdited?: boolean;
   revealedPassword?: string;
   passwordVisible?: boolean;
   revealing?: boolean;
@@ -1638,6 +1645,7 @@ function CredentialsSection() {
             url: w.baseUrl,
             username: user?.username || '',
             password: '',
+            passwordEdited: false,
             revealedPassword: '',
             passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
@@ -1662,7 +1670,7 @@ function CredentialsSection() {
   const addRow = () =>
     setRows((prev) => [
       ...prev,
-      { key: newKey(), name: '', url: '', username: '', password: '', revealedPassword: '', passwordVisible: false, useForPlaywright: true },
+      { key: newKey(), name: '', url: '', username: '', password: '', passwordEdited: false, revealedPassword: '', passwordVisible: false, useForPlaywright: true },
     ]);
 
   const togglePasswordVisible = async (key: string) => {
@@ -1766,6 +1774,7 @@ function CredentialsSection() {
         userId,
         revealedPassword: x.password ? x.password : x.revealedPassword,
         password: '',
+        passwordEdited: false,
         saving: false,
         saved: credentialValues(r),
       } : x)));
@@ -1836,7 +1845,9 @@ function CredentialsSection() {
               && (r.userId || r.password)
               && hasCredentialChanges(r),
             );
-            const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
+            const passwordValue = r.passwordEdited
+              ? r.password
+              : r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
             return (
               <div
                 key={r.key}
@@ -1853,7 +1864,7 @@ function CredentialsSection() {
                     const next = !r.passwordVisible && hasSavedPassword && !r.password
                       ? e.target.value.replace(SAVED_PASSWORD_MASK, '')
                       : e.target.value;
-                    patch(r.key, { password: next });
+                    patch(r.key, { password: next, passwordEdited: true });
                   }}
                   onFocus={(e) => {
                     if (!r.passwordVisible && hasSavedPassword && !r.password) e.currentTarget.select();
@@ -1878,7 +1889,7 @@ function CredentialsSection() {
               {isAdmin() && (
                 <label className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-xs text-[var(--text-muted)]" title="Share this URL with your testers (tester URLs stay private)">
                   <input type="checkbox" checked={r.shared === true} onChange={(e) => patch(r.key, { shared: e.target.checked })} className="accent-[var(--accent)]" />
-                  <span className="hidden sm:inline">Share with team</span>
+                  <span className="hidden sm:inline">Share with Team</span>
                 </label>
               )}
               <div className="flex items-center justify-center gap-1">
@@ -1963,19 +1974,19 @@ function AutonomySection() {
 const emptyWin = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0, calls: 0 };
 const WINDOW_META: Array<{ key: string; capKey: string; label: string }> = [
   { key: 'today', capKey: 'day', label: 'Today' },
-  { key: 'week', capKey: 'week', label: 'Last 7 days' },
-  { key: 'month', capKey: 'month', label: 'Last 30 days' },
-  { key: 'year', capKey: 'year', label: 'Last 365 days' },
-  { key: 'all', capKey: '', label: 'All time' },
+  { key: 'week', capKey: 'week', label: 'Last 7 Days' },
+  { key: 'month', capKey: 'month', label: 'Last 30 Days' },
+  { key: 'year', capKey: 'year', label: 'Last 365 Days' },
+  { key: 'all', capKey: '', label: 'All Time' },
 ];
 const fmtInt = (n: number) => Number(n || 0).toLocaleString();
 const fmtUsd = (n: number) => `$${Number(n || 0).toFixed(Number(n) >= 1 ? 2 : 4)}`;
 type SpendCaps = { day: number; week: number; month: number; year: number };
 const SPEND_CAP_FIELDS: Array<{ k: keyof SpendCaps; label: string }> = [
-  { k: 'day', label: 'Per day' },
-  { k: 'week', label: 'Per 7 days' },
-  { k: 'month', label: 'Per 30 days' },
-  { k: 'year', label: 'Per 365 days' },
+  { k: 'day', label: 'Per Day' },
+  { k: 'week', label: 'Per 7 Days' },
+  { k: 'month', label: 'Per 30 Days' },
+  { k: 'year', label: 'Per 365 Days' },
 ];
 const sameSpendCaps = (left: SpendCaps, right: SpendCaps) => SPEND_CAP_FIELDS.every(({ k }) => left[k] === right[k]);
 
@@ -2062,7 +2073,7 @@ function CostSection() {
       <div className="rounded-xl border border-red-500/30 bg-[var(--bg-card)] p-5 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-medium">Cost & Logs unavailable</h2>
+            <h2 className="text-lg font-medium">Cost & Logs Unavailable</h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">{loadError || 'The cost summary did not return usable data.'}</p>
           </div>
           <button onClick={() => void load()} className="inline-flex shrink-0 items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--bg-secondary)]">
@@ -2085,7 +2096,7 @@ function CostSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-medium">Chat logs</h2>
+            <h2 className="text-lg font-medium">Chat Logs</h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">Show the per-query background communication logs under each chat message and agent run.</p>
           </div>
           <button
@@ -2133,13 +2144,13 @@ function CostSection() {
 
       {/* All-time token breakdown: input / output / cache read / cache write. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Tokens by type (all time)</h2>
+        <h2 className="text-lg font-medium">Tokens by Type (All Time)</h2>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { k: 'inputTokens', label: 'Input' },
             { k: 'outputTokens', label: 'Output' },
-            { k: 'cacheReadTokens', label: 'Cache read' },
-            { k: 'cacheWriteTokens', label: 'Cache write' },
+            { k: 'cacheReadTokens', label: 'Cache Read' },
+            { k: 'cacheWriteTokens', label: 'Cache Write' },
           ].map(({ k, label }) => (
             <div key={k} className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
               <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div>
@@ -2153,7 +2164,7 @@ function CostSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-medium">Spend caps</h2>
+            <h2 className="text-lg font-medium">Spend Caps</h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
           </div>
           <button
@@ -2162,7 +2173,7 @@ function CostSection() {
             title={!capsDirty ? 'Change a spend cap to enable saving' : undefined}
             className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Save className="h-3 w-3" /> {savingCaps ? 'Saving capsâ€¦' : 'Save caps'}
+            <Save className="h-3 w-3" /> {savingCaps ? 'Saving capsâ€¦' : 'Save Caps'}
           </button>
         </div>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2194,8 +2205,8 @@ function CostSection() {
                 <th className="px-2 py-1 text-left">Model</th>
                 <th className="px-2 py-1 text-right">Input</th>
                 <th className="px-2 py-1 text-right">Output</th>
-                <th className="px-2 py-1 text-right">Cache read</th>
-                <th className="px-2 py-1 text-right">Cache write</th>
+                <th className="px-2 py-1 text-right">Cache Read</th>
+                <th className="px-2 py-1 text-right">Cache Write</th>
                 <th className="px-2 py-1 text-right">Calls</th>
                 <th className="px-2 py-1 text-right">Cost</th>
               </tr>
@@ -2232,7 +2243,7 @@ function CostSection() {
                 <th className="px-2 py-1 text-left">Model</th>
                 <th className="px-2 py-1 text-right">In</th>
                 <th className="px-2 py-1 text-right">Out</th>
-                <th className="px-2 py-1 text-right">Cache r/w</th>
+                <th className="px-2 py-1 text-right">Cache R/W</th>
                 <th className="px-2 py-1 text-right">Cost</th>
               </tr>
             </thead>

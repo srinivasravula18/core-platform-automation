@@ -93,16 +93,6 @@ export function registerSettingsRoutes(app: Express) {
   });
 
   app.post('/api/settings', async (req, res) => {
-    // AI-provider configuration has a dedicated API because activation must be
-    // verified by a real provider health check. Do not let this generic settings
-    // merge bypass that gate (for example with { providerSettings: { enabled: true } }).
-    const {
-      providerSettings: _providerSettings,
-      defaultProvider: _defaultProvider,
-      agentProviderMap: _agentProviderMap,
-      agentModelMap: _agentModelMap,
-      ...settingsPatch
-    } = req.body || {};
     const siteCredentials = Array.isArray(req.body.siteCredentials)
       ? req.body.siteCredentials
           .map((item: any) => ({
@@ -116,7 +106,7 @@ export function registerSettingsRoutes(app: Express) {
           .filter((item: any) => item.url && item.username && item.password)
       : db.settings.siteCredentials;
 
-    db.settings = { ...db.settings, ...settingsPatch, siteCredentials };
+    db.settings = { ...db.settings, ...req.body, siteCredentials };
     await savePersistedSettings();
     addActivity('Updated settings preferences');
     res.json({ success: true, settings: db.settings });

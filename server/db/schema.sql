@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS cases (
   source_run_id   TEXT,
   agent_run_id    TEXT,
   capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE,
+  defect_ids      TEXT[] DEFAULT ARRAY[]::TEXT[],
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
@@ -180,6 +181,8 @@ CREATE TABLE IF NOT EXISTS scripts (
   case_id         TEXT REFERENCES cases(id) ON DELETE SET NULL,
   target_url      TEXT DEFAULT '',
   agent_run_id    TEXT,
+  execution_mode  TEXT NOT NULL DEFAULT 'headless',
+  preferred_agent_id TEXT,
   created_by      TEXT DEFAULT 'QA Assistant',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -305,6 +308,13 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manua
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS defect_ids TEXT[] DEFAULT ARRAY[]::TEXT[];
+-- Manual-execution fields authored on the case (previously only on the manual run form).
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS assigned_to       TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS requested_by      TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS configuration     TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS target_url        TEXT DEFAULT '';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS attachments       JSONB NOT NULL DEFAULT '[]'::jsonb;
 -- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
@@ -511,7 +521,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS chat_messages_conversation_created ON chat_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS chat_messages_content_search ON chat_messages USING gin (to_tsvector('simple', content));
 
--- Idempotent legacy backfill. The JSONB column stays readable until the migration flag is retired.
+-- One-time legacy backfill: seed the transcript ONLY for conversations that have no messages at all.
+-- This whole file is re-applied on every boot, so a per-turn `ON CONFLICT (conversation_id, seq)` guard
+-- was not enough — once the snapshot grew past the log's last seq, each restart re-inserted the snapshot's
+-- tail at ordinals the append-only writers had assigned to different exchanges, and the transcript filled
+-- with duplicated turns that the console then rendered and saved back.
 INSERT INTO chat_messages (conversation_id, seq, role, kind, content, payload, token_estimate, created_at)
 SELECT c.id,
        t.ordinality,
@@ -523,6 +537,7 @@ SELECT c.id,
        c.created_at + (t.ordinality * interval '1 millisecond')
 FROM chat_conversations c
 CROSS JOIN LATERAL jsonb_array_elements(c.turns) WITH ORDINALITY AS t(turn, ordinality)
+WHERE NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
 ON CONFLICT (conversation_id, seq) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS context_manifests (
@@ -756,8 +771,9 @@ BEGIN
       EXIT WHEN changed = 0;
     END LOOP;
 
+    EXECUTE format('DROP INDEX IF EXISTS %I', table_name || '_active_project_title_unique');
     EXECUTE format(
-      'CREATE UNIQUE INDEX IF NOT EXISTS %1$I ON %2$I (
+      'CREATE UNIQUE INDEX %1$I ON %2$I (
          COALESCE(project_id, ''''), lower(btrim(%3$I))
        ) WHERE deleted_at IS NULL',
       table_name || '_active_project_title_unique',
@@ -1112,6 +1128,32 @@ CREATE INDEX IF NOT EXISTS automation_jobs_agent_idx ON automation_jobs(agent_id
 CREATE INDEX IF NOT EXISTS automation_jobs_status_idx ON automation_jobs(status);
 CREATE INDEX IF NOT EXISTS automation_jobs_batch_idx ON automation_jobs(batch_id, row_number);
 
+-- Human-in-the-loop pause metadata. Supplied values are deliberately never stored.
+CREATE TABLE IF NOT EXISTS automation_job_pauses (
+  id              TEXT PRIMARY KEY,
+  job_id          TEXT NOT NULL REFERENCES automation_jobs(id) ON DELETE CASCADE,
+  pause_id        TEXT NOT NULL,
+  attempt         INTEGER NOT NULL DEFAULT 1,
+  kind            TEXT NOT NULL,
+  prompt          TEXT NOT NULL,
+  hint            TEXT DEFAULT '',
+  masked          BOOLEAN NOT NULL DEFAULT true,
+  requires_headed BOOLEAN NOT NULL DEFAULT false,
+  timeout_ms      INTEGER NOT NULL,
+  on_timeout      TEXT NOT NULL DEFAULT 'fail',
+  outcome         TEXT NOT NULL DEFAULT 'open', -- open | resolved | skipped | expired | aborted
+  opened_at       TIMESTAMPTZ NOT NULL,
+  expires_at      TIMESTAMPTZ NOT NULL,
+  resolved_at     TIMESTAMPTZ,
+  resolved_by     TEXT DEFAULT '',
+  value_length    INTEGER,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(job_id, pause_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS automation_job_pauses_job_idx ON automation_job_pauses(job_id, opened_at);
+CREATE INDEX IF NOT EXISTS automation_job_pauses_open_idx ON automation_job_pauses(job_id, outcome) WHERE outcome = 'open';
+
 -- Schedules that enqueue jobs. kind: now | daily | weekly | monthly | cron | webhook.
 CREATE TABLE IF NOT EXISTS automation_schedules (
   id                 TEXT PRIMARY KEY,
@@ -1336,6 +1378,8 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS case_revisions JSONB NOT NULL DEFAU
 -- Versioned content = `code` only (name/status/folder edits do NOT mint a revision). Idempotent; inert
 -- when the flag is off. source_case_revision records the linked case's HEAD at capture for traceability.
 ALTER TABLE scripts ADD COLUMN IF NOT EXISTS current_revision INT NOT NULL DEFAULT 1;
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'headless';
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS preferred_agent_id TEXT;
 
 CREATE TABLE IF NOT EXISTS script_revisions (
   revision_id         TEXT PRIMARY KEY,

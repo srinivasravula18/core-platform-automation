@@ -1,10 +1,22 @@
 import ts from 'typescript';
 import { resolveExpression } from './variableEngine';
+import { normalizePauseRequest } from '../../../core/shared/pause';
+import { isPauseResumeEnabled } from './flag';
 
 const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'select', 'setInputFiles', 'type']);
 
 type Replacement = { start: number; end: number; text: string };
 type EditableCall = { call: ts.CallExpression; valueArgument: number };
+
+/** The enclosing statement, so a pause replaces `await x.fill(…)` whole rather than nesting inside it. */
+function statementOf(node: ts.Node): ts.Node {
+  let current: ts.Node = node;
+  while (current.parent) {
+    if (ts.isExpressionStatement(current)) return current;
+    current = current.parent;
+  }
+  return node;
+}
 
 /** Compile the immutable action locations once, then materialize any number of dataset rows. */
 export function createScriptMaterializer(script: string, steps: any[], mappings: any[], columns: any[], runToken?: string) {
@@ -28,6 +40,25 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
   return (row: any): string => {
     const replacements: Replacement[] = [];
     for (const step of steps) {
+      const pause = isPauseResumeEnabled() && step.metadata?.pause ? normalizePauseRequest(step.metadata.pause) : null;
+      if (pause) {
+        const editable = calls[step.ordinal];
+        const call = editable?.call;
+        if (!editable || !call || !ts.isPropertyAccessExpression(call.expression)) throw new Error(`Could not materialize pause for ${step.metadata?.label || step.locator}.`);
+        const expression = `await tf.pause(${JSON.stringify(pause)})`;
+        const argument = call.arguments[editable.valueArgument];
+        const statement = statementOf(call);
+        if (pause.kind === 'input' && argument && !['check', 'uncheck'].includes(call.expression.name.text)) {
+          replacements.push({ start: argument.getStart(source), end: argument.getEnd(), text: expression });
+        } else if (pause.kind === 'manual_action') {
+          // The user performs this in the browser, so the recorded action must not replay over it.
+          replacements.push({ start: statement.getStart(source), end: statement.getEnd(), text: `${expression};` });
+        } else {
+          // Insert at the statement, not the call: inserting inside `await …` yields `await await …`.
+          replacements.push({ start: statement.getStart(source), end: statement.getStart(source), text: `${expression};\n  ` });
+        }
+        continue;
+      }
       const mapping = mappings.find((item) => item.stepId === step.id && (!item.datasetId || item.datasetId === row.datasetId));
       let value: any;
       if (mapping) {

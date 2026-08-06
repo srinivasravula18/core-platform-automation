@@ -28,7 +28,7 @@ export default function Documentation() {
       <header className="mb-8 border-b border-[var(--border)] pb-6">
         <div className="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--accent)]">
           <BookOpen className="h-4 w-4" />
-          Product documentation
+          Product Documentation
         </div>
         <h1 className="text-3xl font-bold tracking-tight">{parsedGuide.title}</h1>
         <div className="mt-2 max-w-4xl text-sm leading-6 text-[var(--text-muted)]">
@@ -39,7 +39,7 @@ export default function Documentation() {
       <div className="grid gap-10 lg:grid-cols-[14rem_minmax(0,1fr)]">
         <aside className="hidden lg:block">
           <nav aria-label="Documentation sections" className="sticky top-0 max-h-[calc(100dvh-8rem)] space-y-1 overflow-y-auto pr-2">
-            <div className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">On this page</div>
+            <div className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">On This Page</div>
             {parsedGuide.sections.map((section) => (
               <a
                 key={section.id}

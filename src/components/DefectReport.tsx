@@ -1,4 +1,5 @@
 import { cn } from '@/src/lib/utils';
+import { withBasePath } from '@/src/lib/base-path';
 import FailureCard from './FailureCard';
 
 /**
@@ -30,7 +31,7 @@ function riskColor(level?: string) {
 
 export function hasRichReport(defect: any): boolean {
   const m = defect?.metadata || {};
-  return Boolean(defect?.stepsToReproduce || defect?.expected || defect?.actual || m.signature || m.investigation);
+  return Boolean(defect?.description || defect?.stepsToReproduce || defect?.expected || defect?.actual || defect?.linkedCaseId || defect?.linkedRunId || defect?.evidence?.length || m.component || m.signature || m.investigation || Object.values(m.environment || {}).some(Boolean));
 }
 
 export default function DefectReport({ defect }: { defect: any }) {
@@ -86,6 +87,9 @@ export default function DefectReport({ defect }: { defect: any }) {
             {m.errorKind}{m.failingTarget ? ` @ ${m.failingTarget}` : ''}
           </span>
         )}
+        {m.component && <span className="inline-flex items-center rounded border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{m.component}</span>}
+        {defect.linkedCaseId && <span className="inline-flex items-center rounded border border-[var(--border)] px-2 py-0.5 font-mono text-xs text-[var(--text-muted)]">Case {defect.linkedCaseId}</span>}
+        {defect.linkedRunId && <span className="inline-flex items-center rounded border border-[var(--border)] px-2 py-0.5 font-mono text-xs text-[var(--text-muted)]">Run {defect.linkedRunId}</span>}
       </div>
 
       <div className={cn('grid grid-cols-1 gap-x-6', hasSecondaryContent && 'lg:grid-cols-2')}>
@@ -197,14 +201,16 @@ export default function DefectReport({ defect }: { defect: any }) {
       {evidence.length > 0 && (
         <Section title={`Evidence (${evidence.length})`}>
           <div className="flex gap-2 overflow-x-auto pb-2">
-            {evidence.map((e: any, i: number) => (
-              e?.screenshotUrl ? (
-                <a key={i} href={e.screenshotUrl} target="_blank" rel="noreferrer" className="flex-shrink-0 group">
-                  <img src={e.screenshotUrl} alt={e.title || `evidence ${i + 1}`} className="h-28 rounded border border-[var(--border)] group-hover:border-red-500 transition-colors" />
+            {evidence.map((e: any, i: number) => {
+              const imageUrl = e?.screenshotUrl || e?.url;
+              const imageHref = imageUrl?.startsWith('/') ? withBasePath(imageUrl) : imageUrl;
+              return imageUrl ? (
+                <a key={i} href={imageHref} target="_blank" rel="noreferrer" className="flex-shrink-0 group">
+                  <img src={imageHref} alt={e.title || `evidence ${i + 1}`} className="h-28 rounded border border-[var(--border)] group-hover:border-red-500 transition-colors" />
                   <div className="text-[10px] text-[var(--text-muted)] mt-0.5 max-w-[180px] truncate">{e.title || ''}</div>
                 </a>
               ) : null
-            ))}
+            })}
           </div>
         </Section>
       )}

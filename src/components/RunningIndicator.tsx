@@ -102,7 +102,7 @@ export default function RunningIndicator() {
       {open && (
         <div className="absolute right-0 top-full mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Running now ({count})</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Running Now ({count})</span>
             <button onClick={() => setOpen(false)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"><X className="w-3.5 h-3.5" /></button>
           </div>
 
@@ -112,7 +112,7 @@ export default function RunningIndicator() {
                 <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)]" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm text-[var(--text-primary)]" title={run.prompt}>{run.prompt || 'Agent run'}</div>
-                  <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Deep run</div>
+                  <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Deep Run</div>
                 </div>
                 <button onClick={() => openConversation(run.conversationId)} title="Open this run" className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-card)]"><ExternalLink className="w-3.5 h-3.5" /></button>
                 <button

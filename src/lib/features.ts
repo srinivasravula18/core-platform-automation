@@ -30,7 +30,9 @@ export const FEATURES: FeatureDef[] = [
   { key: 'traceability', label: 'Traceability', hrefs: ['/traceability'] },
   { key: 'reports', label: 'Reports', hrefs: ['/reports'] },
   { key: 'defects', label: 'Defects', hrefs: ['/defects'] },
-  { key: 'automation', label: 'Automation', hrefs: ['/automation'] },
+  // The /automation overview is gone (every tile duplicated Dashboard/Cases/Runs/Schedules); the key
+  // now gates the automation routes that still exist.
+  { key: 'automation', label: 'Automation', hrefs: ['/automation/agent', '/automation/schedules', '/automation/data'] },
   { key: 'record-play', label: 'Record & Play', hrefs: ['/record-play'] },
   { key: 'git-agent', label: 'Git Agent', hrefs: ['/git-agent'] },
   { key: 'documentation', label: 'Documentation', hrefs: ['/documentation'] },

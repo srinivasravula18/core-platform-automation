@@ -4,9 +4,8 @@ import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/pr
 import { isPostgresEnabled, query } from '../db/pool';
 
 const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
-const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; activationVerifiedAt?: string; activationVerifiedAuthMode?: 'api_key' | 'account'; effort?: 'low' | 'medium' | 'high' }> = {
-  // A provider can only become enabled through a successful connection check.
-  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
+const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }> = {
+  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true, effort: 'medium' },
   openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
   anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
 };
@@ -17,23 +16,15 @@ function isProviderName(value: unknown): value is ProviderName {
 
 function normalizeProviderSettings(settings: any) {
   const existing = settings?.providerSettings || {};
-  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; activationVerifiedAt?: string; activationVerifiedAuthMode?: 'api_key' | 'account'; effort?: 'low' | 'medium' | 'high' }>;
+  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }>;
   for (const provider of PROVIDERS) {
     const stored = existing[provider] || {};
-    const authMode = stored.authMode === 'account' ? 'account' : 'api_key';
-    // Do this during startup normalization as well as in the Settings route. That
-    // prevents legacy `enabled: true` records from being usable by agents before a
-    // user happens to open Settings -> AI Providers.
-    const verifiedForCurrentMode = typeof stored.activationVerifiedAt === 'string'
-      && stored.activationVerifiedAuthMode === authMode;
     providerSettings[provider] = {
       ...DEFAULT_PROVIDER_SETTINGS[provider],
       apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
       model: typeof stored.model === 'string' ? stored.model : '',
-      authMode,
-      enabled: !!stored.enabled && verifiedForCurrentMode,
-      activationVerifiedAt: verifiedForCurrentMode ? stored.activationVerifiedAt : undefined,
-      activationVerifiedAuthMode: verifiedForCurrentMode ? authMode : undefined,
+      authMode: stored.authMode === 'account' ? 'account' : 'api_key',
+      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_PROVIDER_SETTINGS[provider].enabled,
       effort: ['low', 'medium', 'high'].includes(stored.effort) ? stored.effort : 'medium',
     };
   }
@@ -118,6 +109,7 @@ export const db: any = {
   automationDataMappings: [] as any[],
   automationExecutionBatches: [] as any[],
   automationJobs: [] as any[],
+  automationJobPauses: [] as any[],
   automationSchedules: [] as any[],
   automationArtifacts: [] as any[],
   automationEvents: [] as any[],
@@ -176,6 +168,7 @@ function getPersistableDbSnapshot() {
     automationDataMappings: db.automationDataMappings,
     automationExecutionBatches: db.automationExecutionBatches,
     automationJobs: db.automationJobs,
+    automationJobPauses: db.automationJobPauses,
     automationSchedules: db.automationSchedules,
     automationArtifacts: db.automationArtifacts,
     automationEvents: db.automationEvents,
@@ -247,6 +240,7 @@ export async function loadPersistedData() {
     db.automationDataMappings = Array.isArray(data.automationDataMappings) ? data.automationDataMappings : [];
     db.automationExecutionBatches = Array.isArray(data.automationExecutionBatches) ? data.automationExecutionBatches : [];
     db.automationJobs = Array.isArray(data.automationJobs) ? data.automationJobs : [];
+    db.automationJobPauses = Array.isArray(data.automationJobPauses) ? data.automationJobPauses : [];
     db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
     db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];
     db.automationEvents = Array.isArray(data.automationEvents) ? data.automationEvents : [];

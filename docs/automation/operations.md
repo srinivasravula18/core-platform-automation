@@ -55,6 +55,46 @@ fails jobs whose in-flight state died with the previous process. Re-run them fro
 `enabled`. Check the schedule row and that the backend process (which owns the ticker) is running.
 Only one backend process should own the scheduler — do not run multiple schedulers against one DB.
 
+**Agent download is slow behind the reverse proxy.** The bundle is ~300 MB, so nginx's default
+`proxy_buffering on` spools the whole response to `proxy_temp_path` on disk before it reaches the
+user — on a small VM that alone can dominate the transfer time. Turn buffering off for the download
+route (`<port>` = the same upstream the existing location proxies to):
+
+```nginx
+location ~ ^/(automation-dev|automation-test)/api/automation/agent/download$ {
+    proxy_pass http://127.0.0.1:<port>;
+    proxy_buffering off;              # stream straight through; do not spool 300 MB to disk
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout 1800s;         # slow links must not be cut mid-download
+    proxy_send_timeout 1800s;
+}
+```
+
+Reload with `sudo nginx -t && sudo systemctl reload nginx`. The first download after a deploy also
+waits on the one-time runtime ZIP build — look for `[automation] agent runtime cache ready (… MB, …ms)`
+in the backend log before judging download speed.
+
+**Runtime ZIP keeps rebuilding after every deploy.** The cache key is content-based, so this should not
+happen. If it does, `AGENT_BUNDLE_CACHE_DIR` is pointing somewhere the deploy wipes — set it to a path
+outside the deploy tree so the ~300 MB build survives restarts. Note the cache now contains
+`start.bat` too (only `config.json` is per-user), so editing the launcher legitimately triggers one
+rebuild.
+
+**"Download Agent" spins forever / never appears in the browser's downloads.** The button must NOT
+fetch the bundle into a blob — at ~300 MB the tab buffers everything in memory and shows nothing until
+the last byte lands. It mints a ticket (`POST /api/automation/agent/download-ticket`) and navigates to
+`/api/automation/agent/download?ticket=…`, so the browser streams to disk with its own progress
+indicator. That path is in the auth allowlist and authenticates by ticket in the handler; without a
+ticket or a session it still 401s, and an expired ticket answers 410.
+
+**How a download is assembled.** The cached archive IS the bundle. Per download the server streams its
+compressed bytes verbatim and appends only `config.json`, re-emitting the ZIP central directory
+(`zipReframe.ts`). Nothing is recompressed — a 309 MB bundle leaves the process in well under a second —
+and because the exact size is known before streaming, the response carries a real `Content-Length` and
+honours `Range`, so interrupted downloads resume. The archive is flat: users extract once, and
+`start.bat` only launches the agent. If a download ever arrives with a nested `runtime.zip`, the backend
+is running pre-flat-bundle code and needs a restart.
+
 ## Storage & retention
 
 Artifacts live under `automation-artifacts/<jobId>/` on the backend host and are served only through the

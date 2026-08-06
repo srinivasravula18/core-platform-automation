@@ -136,6 +136,8 @@ async function run() {
   created.push({ kind: 'runs', id: inheritedRunId });
   const irun = await api('GET', '/api/runs');
   const ir = irun.find((r: any) => r.id === inheritedRunId);
+  assert.ok(ir?.triggerMeta?.sourceVersions?.suites?.some((source: any) => source.id === iSuite), 'run captured its source suite version');
+  assert.ok(ir?.triggerMeta?.sourceVersions?.cases?.some((source: any) => source.id === caseA), 'run captured its source case version');
   const inheritedPin = (ir.casePins || []).find((p: any) => p.caseId === caseA);
   assert.equal(inheritedPin?.revisionNo, 3, 'run inherited the suite pin @v3');
   const irows = await results(inheritedRunId);

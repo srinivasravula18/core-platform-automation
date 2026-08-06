@@ -199,7 +199,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             className="flex w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-            {submitting ? 'Signing in...' : 'Sign in'}
+            {submitting ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
       </div>

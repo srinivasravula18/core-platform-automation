@@ -196,6 +196,13 @@ export async function heartbeat(agent: AgentRecord, telemetry: Partial<AgentTele
   return publicAgent(updated);
 }
 
+/** Rename an agent from the human management UI. */
+export async function renameAgent(agent: AgentRecord, name: string): Promise<PublicAgent> {
+  const updated = await Agents.upsert({ ...agent, name });
+  persist('agent renamed');
+  return publicAgent(updated);
+}
+
 /** Revoke an agent (owner-initiated). Clears secrets so its tokens stop working immediately. */
 export async function revokeAgent(id: string): Promise<boolean> {
   const agent = await Agents.get(id);

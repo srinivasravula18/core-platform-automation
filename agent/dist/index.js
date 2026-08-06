@@ -12,7 +12,7 @@ import { createLogger } from './logger.js';
 import { registerWithCloud } from './cloud.js';
 import { ConnectionManager } from './connection.js';
 import { startLocalApi } from './localApi.js';
-import { ensureBrowsers } from './browsers.js';
+import { ensureBrowsers, prewarmBrowser } from './browsers.js';
 import { checkForUpdate } from './updater.js';
 import { AGENT_VERSION } from './version.js';
 // Install dir: honor AGENT_HOME (set by the launcher scripts), else the executable's own directory.
@@ -46,9 +46,11 @@ async function main() {
     const conn = new ConnectionManager(log, baseDir, workDir, config);
     if (config.agentToken)
         conn.start();
-    startLocalApi({ log, loggerHandle, config, conn });
+    void startLocalApi({ log, loggerHandle, config, conn }).catch((err) => log.error({ err: err?.message }, 'local API failed to start'));
     // Make sure a browser is usable (system Chrome or bundled Chromium; else background-install Chromium).
     ensureBrowsers(log, baseDir);
+    // ...then absorb its first-run cost now, while the tester is still setting up the recording.
+    prewarmBrowser(log);
     // Non-blocking update check on boot.
     void checkForUpdate(config).then((u) => { if (u.updateAvailable)
         log.warn({ latest: u.latest }, 'a newer agent version is available'); });

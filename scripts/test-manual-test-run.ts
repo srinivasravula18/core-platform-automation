@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
-import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
+import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, readAutomationRunResponse, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../core/shared/testRunStatus';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -20,8 +20,18 @@ assert.deepEqual(scriptsForCases(cases.slice(0, 2), [
 assert.deepEqual(manualRunSelection('P1', ['C1']), { planIds: [], caseIds: ['C1'] });
 assert.deepEqual(manualRunSelection('', ['C1', 'C3']), { planIds: [], caseIds: ['C1', 'C3'] });
 assert.deepEqual(manualRunSelection('P1', []), { planIds: ['P1'], caseIds: [] });
+assert.deepEqual(runTagsForCases([{ id: 'C1', tags: ['smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), ['@smoke', '@regression']);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: [] }], ['C1', 'C2']), false);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['  '] }], ['C1']), false);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), true);
+assert.equal((await readAutomationRunResponse(new Response('{"run":{"id":"RUN-1"}}', { status: 201 }))).run.id, 'RUN-1');
+await assert.rejects(
+  readAutomationRunResponse(new Response('<html><h1>Gateway Timeout</h1></html>', { status: 504 }), 'https://test.example/api/automation/runs'),
+  (error: Error) => error.message === 'Gateway timeout: the web server/proxy did not receive a response from the backend automation service in time.\nRequest URL: https://test.example/api/automation/runs\nServer response: HTTP 504',
+);
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(casesForRun({ caseIds: ['C3'] }, cases, suites).map(({ id }) => id), ['C3']);
+assert.deepEqual(casesForRun({ id: 'R1', caseIds: ['C3'] }, cases, suites, [{ id: 'P1', runIds: ['R1'] }]).map(({ id }) => id), ['C1', 'C2', 'C3']);
 assert.deepEqual(scriptsForRun({ agentRunId: 'A1' }, [], [{ id: 'X1', agentRunId: 'A1', code: 'one' }]).map(({ id }) => id), ['X1']);
 assert.deepEqual(runnableCases(
   [{ id: 'C1', folderId: 'F1' }, { id: 'C2', folderId: 'F1' }, { id: 'C3', folderId: 'F2' }],
@@ -39,7 +49,13 @@ assert.deepEqual(runExecutionState({
   label: 'Completed 2/4 scripts',
 });
 assert.equal(runExecutionState({ status: 'In Progress' }).running, true);
+assert.deepEqual(
+  getRunStats({ totalExecutions: 1, passed: 1, failed: 0, steps: [{ outcome: 'Failed' }] }),
+  { total: 1, passed: 1, failed: 0, blocked: 0, skipped: 0, retest: 0, untested: 0, completed: 100 },
+  'explicit zero counters replace stale outcomes after a successful rerun',
+);
 assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
+assert.deepEqual(withoutAutomationJobMeta({ automationJobId: 'old-job', agentId: 'old-agent', automationExecution: { phase: 'failed' }, manualExecution: { total: 1 } }), { manualExecution: { total: 1 } });
 assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
 assert.equal(agentRunStatusForList('completed'), 'Completed — Pending Review');
 assert.equal(isPendingReviewTestRun({ status: agentRunStatusForList('completed') }), true);

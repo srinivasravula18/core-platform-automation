@@ -24,6 +24,7 @@ import {
   Wand2,
   History,
   MessageSquare,
+  MessagesSquare,
   Star,
   Target,
   Trash2,
@@ -75,6 +76,7 @@ import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
+import type { AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
 
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
@@ -353,32 +355,32 @@ interface Suggestion {
 
 const SUGGESTIONS: Suggestion[] = [
   {
-    label: 'Generate cases + scripts',
+    label: 'Generate Cases + Scripts',
     prompt: 'Generate 5 test cases for the login flow of https://example.com, then write the Playwright scripts and capture evidence',
     icon: FlaskConical,
   },
   {
-    label: 'Draft a test plan',
+    label: 'Draft a Test Plan',
     prompt: 'Create a regression test plan for the checkout flow',
     icon: ClipboardList,
   },
   {
-    label: 'Group into a suite',
+    label: 'Group into a Suite',
     prompt: 'Create a smoke test suite and group the login and checkout cases into it',
     icon: Layers,
   },
   {
-    label: 'Schedule a run',
+    label: 'Schedule a Run',
     prompt: 'Set up a smoke test run for the latest build',
     icon: PlayCircle,
   },
   {
-    label: 'File a defect',
+    label: 'File a Defect',
     prompt: 'File a high severity defect: the payment button is unresponsive on mobile',
     icon: Bug,
   },
   {
-    label: 'Write a report',
+    label: 'Write a Report',
     prompt: 'Generate a stakeholder test report for the latest release',
     icon: ClipboardList,
   },
@@ -386,15 +388,15 @@ const SUGGESTIONS: Suggestion[] = [
 
 // Capability strip shown on the empty state so the client sees the full scope.
 const CAPABILITIES: { label: string; icon: typeof FlaskConical }[] = [
-  { label: 'Test cases', icon: FlaskConical },
-  { label: 'Playwright scripts', icon: Code2 },
+  { label: 'Test Cases', icon: FlaskConical },
+  { label: 'Playwright Scripts', icon: Code2 },
   { label: 'Evidence', icon: ImageIcon },
-  { label: 'Test plans', icon: ClipboardList },
+  { label: 'Test Plans', icon: ClipboardList },
   { label: 'Suites', icon: Layers },
   { label: 'Runs', icon: PlayCircle },
   { label: 'Defects', icon: Bug },
   { label: 'Reports', icon: ClipboardList },
-  { label: 'Rework / expand', icon: Wand2 },
+  { label: 'Rework / Expand', icon: Wand2 },
 ];
 
 // Where each completed step type lives, so we can offer a "drill in" link.
@@ -623,7 +625,7 @@ const AppAskCard = memo(function AppAskCard({
                 : turn.apps.map((a) => (
                   <option key={a.id} value={a.id}>{a.name}</option>
                 ))}
-              {turn.allowAllApps && <option value="__all_apps__">All apps (read-only sweep)</option>}
+              {turn.allowAllApps && <option value="__all_apps__">All Apps (Read-only Sweep)</option>}
             </select>
             {!isAdmin && selected && selected.tabs.length > 0 && (
               <select
@@ -632,7 +634,7 @@ const AppAskCard = memo(function AppAskCard({
                 aria-label="Tab (optional)"
                 className="min-w-0 max-w-[220px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               >
-                <option value="">Whole app</option>
+                <option value="">Whole App</option>
                 {selected.tabs.map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
@@ -640,7 +642,7 @@ const AppAskCard = memo(function AppAskCard({
             )}
             <button
               onClick={() => {
-                const name = appId === '__all_apps__' ? 'All apps' : (selected?.name || appId);
+                const name = appId === '__all_apps__' ? 'All Apps' : (selected?.name || appId);
                 if (!appId) return;
                 onProceed(turn, { appId, appName: name, tab: tab || undefined });
               }}
@@ -904,10 +906,17 @@ export default function AgentConsole() {
 
   // Resume an understanding ("thinking") that was in flight when the user navigated away: the backend job is
   // durable, so on return we re-attach by conversation and rebuild the review card instead of dropping it.
-  const reconcileUnderstanding = useCallback(async (id: string, token: number) => {
+  const reconcileUnderstanding = useCallback(async (id: string, token: number, restored?: Turn[]) => {
     try {
+      const known = restored ?? turnsRef.current;
       // Never double-attach — if the restored turns already show a thinking/folder-ask, it wasn't dropped.
-      if (turnsRef.current.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      if (known.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      // Nor when this request already moved past the gate: an assistant turn after the last user message
+      // means the understanding was answered (proceeded or superseded), so re-attaching would graft a
+      // second review card behind a run that is already underway.
+      let lastUserIdx = -1;
+      for (let i = known.length - 1; i >= 0; i -= 1) if (known[i].role === 'user') { lastUserIdx = i; break; }
+      if (lastUserIdx >= 0 && known.slice(lastUserIdx + 1).some((t) => t.role === 'assistant')) return;
       const r = await fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(id)}`);
       if (!r.ok || token !== loadReqRef.current) return;
       const job = (await r.json())?.job;
@@ -966,16 +975,20 @@ export default function AgentConsole() {
 
   // Resume a router decision that finished while the user was away: re-drive the unconsumed message through
   // send() (reusing its user turn). Guards below skip any double-run. Pairs with the durable goal job.
-  const reconcileGoal = useCallback(async (id: string, token: number) => {
+  // `restored` is the conversation the caller just loaded: turnsRef still holds the PREVIOUS
+  // conversation at this point (state updates land after this tick), and re-driving against it
+  // re-ran an already-answered message — which the console then showed as a duplicate response.
+  const reconcileGoal = useCallback(async (id: string, token: number, restored?: Turn[]) => {
     try {
-      if (turnsRef.current.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      const known = restored ?? turnsRef.current;
+      if (known.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
       const u = await fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(id)}`).then((x) => x.json()).catch(() => null);
       if (token !== loadReqRef.current) return;
       if (u?.job) return; // understanding is in flight — its own reconcile handles it
       const g = await fetch(`/api/agent/goal/for-conversation/${encodeURIComponent(id)}`, { headers: { 'Cache-Control': 'no-store' } }).then((x) => x.json()).catch(() => null);
       if (token !== loadReqRef.current || !g?.job) return;
       // Only the last user turn with no assistant response after it is unconsumed work to resume.
-      const turns = turnsRef.current;
+      const turns = known;
       let lastUserIdx = -1;
       for (let i = turns.length - 1; i >= 0; i -= 1) if (turns[i].role === 'user') { lastUserIdx = i; break; }
       if (lastUserIdx < 0) return;
@@ -1012,9 +1025,9 @@ export default function AgentConsole() {
       // Re-attach any run the snapshot lost (navigated away mid-start) — see reconcileConversationRuns.
       void reconcileConversationRuns(id, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
-      void reconcileUnderstanding(id, token);
+      void reconcileUnderstanding(id, token, clean);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(id, token);
+      void reconcileGoal(id, token, clean);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
@@ -1084,8 +1097,8 @@ export default function AgentConsole() {
         // Never wipe a live/hydrated thread; a cache-hydrated revisit still reconciles (idempotent) to resume.
         if (hydratedRef.current) {
           void reconcileConversationRuns(conversationId, token);
-          void reconcileUnderstanding(conversationId, token);
-          void reconcileGoal(conversationId, token);
+          void reconcileUnderstanding(conversationId, token, turnsRef.current);
+          void reconcileGoal(conversationId, token, turnsRef.current);
         }
         return;
       }
@@ -1095,9 +1108,9 @@ export default function AgentConsole() {
       // Re-attach any run the snapshot lost for the restored conversation (navigated away mid-start).
       void reconcileConversationRuns(chosen, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
-      void reconcileUnderstanding(chosen, token);
+      void reconcileUnderstanding(chosen, token, chosenTurns);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(chosen, token);
+      void reconcileGoal(chosen, token, chosenTurns);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -1138,7 +1151,7 @@ export default function AgentConsole() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         keepalive,
-        body: JSON.stringify({ workspaceId: snap.workspaceId, title: convTitleRef.current || firstUser?.text?.slice(0, 80) || 'New chat', turns: snap.turns }),
+        body: JSON.stringify({ workspaceId: snap.workspaceId, title: convTitleRef.current || firstUser?.text?.slice(0, 80) || 'New Chat', turns: snap.turns }),
       });
     },
     [],
@@ -1643,7 +1656,7 @@ export default function AgentConsole() {
         id: args.thinkingId,
         role: 'assistant',
         kind: 'text',
-        text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
+        text: data?.error || 'I could not start the generation — the agent returned no run and no answer.',
       });
     }
   }, [commitTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
@@ -1803,7 +1816,7 @@ export default function AgentConsole() {
     }
   }, [replaceTurn, startDeepRun, presentDeepUnderstanding]);
 
-  const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string) => {
+  const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string, attachments?: AIImageAttachment[]) => {
     const featureQuery = (query || '').trim();
     if (!featureQuery) {
       replaceTurn(thinkingId, {
@@ -1834,6 +1847,7 @@ export default function AgentConsole() {
           history: buildHistory(),
           projectId: selectedProjectId || undefined,
           appId: selectedAppId || undefined,
+          attachments: attachments?.length ? attachments : undefined,
         }),
       });
       if (!res.ok || !res.body) {
@@ -1940,7 +1954,7 @@ export default function AgentConsole() {
 
   // Explicit "Rework with AI" from the draft card: re-run the drafting agent seeded with the current
   // draft + the user's instruction so it realigns/expands in place (same path a chat follow-up uses).
-  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string) => {
+  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string, attachments: AIImageAttachment[] = []) => {
     if (busy || !instruction.trim()) return;
     const previousDraft: PendingRequirementDraft = {
       turnId: turn.id,
@@ -1954,7 +1968,7 @@ export default function AgentConsole() {
     // turn, so the reqdraft id must first become a thinking turn (runRequirementDraft swaps it back to the result).
     replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Applying your requirement changes...' });
     try {
-      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim());
+      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim(), attachments);
     } finally {
       setBusy(false);
       inputRef.current?.focus();
@@ -2746,7 +2760,7 @@ export default function AgentConsole() {
           id: thinkingId,
           role: 'assistant',
           kind: 'text',
-          text: `Something went wrong: ${err?.message || 'unknown error'}. Check that an AI provider key is configured in Settings.`,
+          text: `Something went wrong: ${err?.message || 'unknown error'}.`,
         });
       } finally {
         clearActiveRequest();
@@ -2822,6 +2836,9 @@ export default function AgentConsole() {
   // Cancel a folder-ask card: clear the pending run and swap the card for a plain notice.
   const cancelFolderAsk = useCallback((turnId: string) => {
     setPendingDeep(null);
+    // Retire the durable understanding job too, or returning to this chat re-attaches it and the
+    // dismissed review card comes back.
+    void fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(conversationId)}`, { method: 'DELETE' }).catch(() => {});
     replaceTurn(turnId, {
       id: turnId,
       role: 'assistant',
@@ -2829,7 +2846,7 @@ export default function AgentConsole() {
       text: 'Cancelled. Tell me what to change (target, fields, or steps) and I will re-plan.',
     });
     inputRef.current?.focus();
-  }, [replaceTurn]);
+  }, [replaceTurn, conversationId]);
 
   const executePlan = useCallback(
     async (planId: string, turnId: string, opts?: { approveAll?: boolean }) => {
@@ -2972,7 +2989,7 @@ export default function AgentConsole() {
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent)]/10 text-[var(--accent)]">
-            <BrainCircuit className="h-5 w-5" />
+            <MessagesSquare className="h-5 w-5" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
@@ -2985,7 +3002,7 @@ export default function AgentConsole() {
                   <Layers className="h-3 w-3 shrink-0 text-[var(--accent)]" />
                   <span className="truncate">
                     {scopeProject.name}
-                    <span className="text-[var(--text-muted)]/70"> / {scopeApp ? scopeApp.name : 'All apps'}</span>
+                    <span className="text-[var(--text-muted)]/70"> / {scopeApp ? scopeApp.name : 'All Apps'}</span>
                   </span>
                 </span>
               )}
@@ -3021,7 +3038,7 @@ export default function AgentConsole() {
                         )}
                         className="text-[var(--accent)] hover:underline"
                       >
-                        {selectedConversationIds.size === conversations.length ? 'Clear selection' : 'Select all'}
+                        {selectedConversationIds.size === conversations.length ? 'Clear Selection' : 'Select All'}
                       </button>
                       {selectedConversationIds.size > 0 && (
                         <button
@@ -3029,7 +3046,7 @@ export default function AgentConsole() {
                           onClick={() => void deleteSelectedConversations()}
                           className="text-red-400 hover:underline"
                         >
-                          {selectedConversationIds.size === conversations.length ? 'Delete all' : `Delete (${selectedConversationIds.size})`}
+                          {selectedConversationIds.size === conversations.length ? 'Delete All' : `Delete (${selectedConversationIds.size})`}
                         </button>
                       )}
                     </div>
@@ -3076,7 +3093,7 @@ export default function AgentConsole() {
                             className="w-full rounded border border-[var(--accent)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-xs font-medium text-[var(--text-primary)] outline-none"
                           />
                         ) : (
-                          <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled chat'}</span>
+                          <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled Chat'}</span>
                         )}
                         <span className="block font-mono text-[10px] text-[var(--text-muted)]/60 truncate">{c.id}</span>
                         <span className="text-[10px] text-[var(--text-muted)]">
@@ -3250,7 +3267,7 @@ export default function AgentConsole() {
                         <button
                           type="button"
                           onClick={() => void copyUserPrompt(turn.id, turn.text)}
-                          title={copiedTurnId === turn.id ? 'Copied' : 'Copy prompt'}
+                          title={copiedTurnId === turn.id ? 'Copied' : 'Copy Prompt'}
                           className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
                         >
                           <Copy className="h-3 w-3" />
@@ -3406,7 +3423,7 @@ export default function AgentConsole() {
                           busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
                           onCreate={() => void confirmRequirementDraft(turn)}
                           onDiscard={() => discardRequirementDraft(turn.id)}
-                          onRework={(instruction) => void reworkRequirementDraft(turn, instruction)}
+                          onRework={(instruction, attachments) => void reworkRequirementDraft(turn, instruction, attachments)}
                           onChange={(result) => {
                             replaceTurn(turn.id, { ...turn, result });
                             setPendingRequirementDraft((current) => current?.turnId === turn.id ? { ...current, result } : current);
@@ -3504,7 +3521,7 @@ export default function AgentConsole() {
                               className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                             >
                               <PlayCircle className="h-3.5 w-3.5 text-[var(--accent)]" />
-                              Run headless for screenshots
+                              Run Headless for Screenshots
                             </button>
                           )}
                         </div>
@@ -3514,7 +3531,7 @@ export default function AgentConsole() {
                           <button
                             type="button"
                             onClick={() => void copyUserPrompt(turn.id, turn.text)}
-                            title={copiedTurnId === turn.id ? 'Copied' : 'Copy response'}
+                            title={copiedTurnId === turn.id ? 'Copied' : 'Copy Response'}
                             className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] opacity-0 transition-opacity hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] group-hover:opacity-100 group-focus-within:opacity-100"
                           >
                             {copiedTurnId === turn.id ? <Check className="h-3 w-3 text-[var(--accent)]" /> : <Copy className="h-3 w-3" />}
@@ -3627,7 +3644,7 @@ export default function AgentConsole() {
                   )}
                 >
                   <AppWindow className="h-3.5 w-3.5" />
-                  {selectedApps.length ? `${selectedApps.length} app${selectedApps.length > 1 ? 's' : ''} selected` : 'Apps to test'}
+                  {selectedApps.length ? `${selectedApps.length} app${selectedApps.length > 1 ? 's' : ''} selected` : 'Apps to Test'}
                   <ChevronDown className="h-3 w-3" />
                 </button>
                 {appPickerOpen && (
@@ -3637,13 +3654,13 @@ export default function AgentConsole() {
                     ) : (
                       <>
                         <div className="mb-1 flex items-center justify-between gap-2 border-b border-[var(--border)] px-2 py-1.5">
-                          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Apps to test</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Apps to Test</span>
                           <button
                             type="button"
                             onClick={() => setSelectedAppIds(allAppsSelected ? new Set() : new Set(websites.map((w) => w.id)))}
                             className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--accent)] hover:bg-[var(--accent)]/10"
                           >
-                            {allAppsSelected ? 'Clear' : 'Select all'}
+                            {allAppsSelected ? 'Clear' : 'Select All'}
                           </button>
                         </div>
                         {websites.map((w) => {
@@ -3697,7 +3714,7 @@ export default function AgentConsole() {
                 )}
               >
                 <Code2 className="h-3.5 w-3.5" />
-                Script author
+                Script Author
               </button>
               {isListening || interimTranscript || speechError ? (
                 <span className={cn(speechError ? 'text-red-400' : 'text-[var(--text-muted)]')}>

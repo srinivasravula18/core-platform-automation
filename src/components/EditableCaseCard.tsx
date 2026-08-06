@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FlaskConical, Pencil, SplitSquareHorizontal, Loader2, Check, Link2Off, Paperclip, Sparkles, X } from 'lucide-react';
+import { FlaskConical, Pencil, SplitSquareHorizontal, Loader2, Check, Link2Off, Sparkles } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 import StepGroupList from '@/src/components/StepGroupList';
 import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import {
   applyAIReworkProposal,
   isAIReworkProposalStale,
@@ -45,21 +46,6 @@ export interface EditableCase {
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
 // Rework image attachments — client-side rules mirror the /api/agent/rework-case validation.
-interface ReworkAttachment { name: string; mimeType: string; dataBase64: string }
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
-
-// Reads a File into raw base64 (the data: URL prefix stripped).
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
-
 function priorityClasses(p?: string): string {
   switch ((p || '').toLowerCase()) {
     case 'high':
@@ -82,14 +68,17 @@ interface Props {
   onUnlink?: () => void;
   /** Called after a successful save / AI edit so the parent can refresh. */
   onSaved?: () => void;
+  /** AI authoring tools (rework panel, step multi-select, Expand/Merge). Off where a run only needs
+   *  plain step editing — case authoring lives in Test Cases. */
+  aiTools?: boolean;
 }
 
-export default function EditableCaseCard({ initial, startEditing = false, linkType, selected, onToggleSelected, onUnlink, onSaved }: Props): ReactElement {
+export default function EditableCaseCard({ initial, startEditing = false, linkType, selected, onToggleSelected, onUnlink, onSaved, aiTools = true }: Props): ReactElement {
   const navigate = useNavigate();
   const [c, setC] = useState<EditableCase>(() => ({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }));
   const [editing, setEditing] = useState(startEditing);
   const [feedback, setFeedback] = useState('');
-  const [attachments, setAttachments] = useState<ReworkAttachment[]>([]);
+  const [attachments, setAttachments] = useState<AIImageAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -191,17 +180,9 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
   // Validate + read picked image files into base64 attachments (max 4, 5MB, png/jpeg/webp/gif).
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return;
-    const errs: string[] = [];
-    const next = [...attachments];
-    for (const f of Array.from(files)) {
-      if (next.length >= MAX_ATTACHMENTS) { errs.push(`Max ${MAX_ATTACHMENTS} images per rework.`); break; }
-      if (!ATTACH_TYPES.includes(f.type)) { errs.push(`${f.name}: only PNG, JPEG, WebP or GIF images are allowed.`); continue; }
-      if (f.size > MAX_ATTACH_BYTES) { errs.push(`${f.name}: exceeds the 5MB limit.`); continue; }
-      try { next.push({ name: f.name, mimeType: f.type, dataBase64: await readFileAsBase64(f) }); }
-      catch (e: any) { errs.push(e?.message || `Could not read ${f.name}`); }
-    }
+    const { next, error } = await appendAIImageAttachments(attachments, files);
     setAttachments(next);
-    setAttachError(errs.join(' '));
+    setAttachError(error);
   };
   const removeAttachment = (ai: number) => setAttachments((prev) => prev.filter((_, idx) => idx !== ai));
 
@@ -378,13 +359,13 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test Steps</span>
               <div className="flex items-center gap-1.5">
-                {mergePick.size >= 1 && (
+                {aiTools && mergePick.size >= 1 && (
                   <button onClick={() => editPickedSteps('expand')} disabled={busy === 'expand'} title="Break the ticked steps into finer sub-steps (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
                     {busy === 'expand' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
                     Expand {mergePick.size} step{mergePick.size === 1 ? '' : 's'}
                   </button>
                 )}
-                {mergePick.size >= 2 && (
+                {aiTools && mergePick.size >= 2 && (
                   <button onClick={() => editPickedSteps('merge')} disabled={busy === 'merge'} title="Combine the ticked steps into one (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50">
                     {busy === 'merge' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3 rotate-180" />}
                     Merge {mergePick.size} steps
@@ -393,10 +374,12 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
               </div>
             </div>
             {(c.steps || []).map((s, si) => (
-              <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
-                <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
-                  <input type="checkbox" checked={mergePick.has(si)} onChange={() => toggleMergePick(si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
-                </label>
+              <div key={si} className={`grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 ${aiTools ? 'lg:grid-cols-[auto_1fr_1fr_auto]' : 'lg:grid-cols-[1fr_1fr_auto]'}`}>
+                {aiTools && (
+                  <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
+                    <input type="checkbox" checked={mergePick.has(si)} onChange={() => toggleMergePick(si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                  </label>
+                )}
                 <textarea value={s.action || ''} onChange={(e) => patchStep(si, { action: e.target.value })} placeholder={`Step ${si + 1} action`} className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                 <textarea value={s.expected || ''} onChange={(e) => patchStep(si, { expected: e.target.value })} placeholder="Expected result" className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                 <button onClick={() => removeStep(si)} className="rounded px-2 text-[11px] font-medium text-red-400 hover:bg-red-500/10">Remove</button>
@@ -406,9 +389,9 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
           </div>
 
           <div className="space-y-2 border-t border-[var(--border)] pt-2">
-            <AIReworkPanel
+            {aiTools && <AIReworkPanel
               compact
-              scopeLabel={c.title || 'Current case'}
+              scopeLabel={c.title || 'Current Case'}
               showScopeLabel={false}
               value={feedback}
               onChange={setFeedback}
@@ -422,22 +405,9 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
               appliedMessage={reworkMessage}
               onUndo={reworkUndoStack.length ? undoRework : undefined}
               accessory={(
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <label className="inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
-                    <Paperclip className="h-3 w-3" /> Attach
-                    <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { void addAttachments(e.target.files); e.target.value = ''; }} />
-                  </label>
-                  {attachments.map((a, ai) => (
-                    <span key={ai} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 text-[11px] text-[var(--text-muted)]">
-                      {a.name}
-                      <button type="button" onClick={() => removeAttachment(ai)} aria-label={`Remove ${a.name}`} className="rounded p-1 hover:text-red-400">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                <div className="mt-2"><AIImageAttachmentPicker attachments={attachments} error={attachError} disabled={busy === 'rework'} onAdd={(files) => void addAttachments(files)} onRemove={removeAttachment} /></div>
               )}
-            />
+            />}
             <div className="flex justify-end">
               <div className="flex items-center gap-2">
                 <button onClick={() => { setEditing(false); setC({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }); }} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
@@ -445,7 +415,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
                 </button>
                 <button onClick={saveCase} disabled={busy === 'save'} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                   {busy === 'save' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                  Save changes
+                  Save Changes
                 </button>
               </div>
             </div>

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckSquare, Square, Pencil, Trash2, SplitSquareHorizontal, Loader2, Check, Paperclip, Sparkles, X } from 'lucide-react';
+import { CheckSquare, Square, Pencil, Trash2, SplitSquareHorizontal, Loader2, Check, Sparkles } from 'lucide-react';
 import { invalidateData } from '@/src/store/data';
 import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import {
   applyAIReworkProposal,
   isAIReworkProposalStale,
@@ -52,64 +53,7 @@ interface Case {
 const EXPAND_OPTIONS = [4, 6, 8, 10, 12, 15];
 
 // Rework image attachments — client-side rules mirror the /api/agent/rework-case validation.
-interface ReworkAttachment { name: string; mimeType: string; dataBase64: string }
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
 const BULK_CONCURRENCY = 4;
-
-// Reads a File into raw base64 (the data: URL prefix stripped).
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
-
-// Validate + read picked image files into base64 attachments (max 4, 5MB, png/jpeg/webp/gif).
-async function appendAttachments(current: ReworkAttachment[], files: FileList | null): Promise<{ next: ReworkAttachment[]; error: string }> {
-  const errs: string[] = [];
-  const next = [...current];
-  for (const f of Array.from(files || [])) {
-    if (next.length >= MAX_ATTACHMENTS) { errs.push(`Max ${MAX_ATTACHMENTS} images per rework.`); break; }
-    if (!ATTACH_TYPES.includes(f.type)) { errs.push(`${f.name}: only PNG, JPEG, WebP or GIF images are allowed.`); continue; }
-    if (f.size > MAX_ATTACH_BYTES) { errs.push(`${f.name}: exceeds the 5MB limit.`); continue; }
-    try { next.push({ name: f.name, mimeType: f.type, dataBase64: await readFileAsBase64(f) }); }
-    catch (e: any) { errs.push(e?.message || `Could not read ${f.name}`); }
-  }
-  return { next, error: errs.join(' ') };
-}
-
-// Small "Attach" button + removable chip list, shared by the per-case and bulk rework blocks.
-function AttachmentPicker({ attachments, error, disabled, onAdd, onRemove }: {
-  attachments: ReworkAttachment[];
-  error?: string;
-  disabled?: boolean;
-  onAdd: (files: FileList | null) => void;
-  onRemove: (index: number) => void;
-}) {
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <label className={`inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-muted)] ${disabled ? 'opacity-50' : 'cursor-pointer hover:border-[var(--accent)] hover:text-[var(--text-primary)]'}`}>
-          <Paperclip className="h-3 w-3" /> Attach
-          <input type="file" accept="image/*" multiple disabled={disabled} className="sr-only" onChange={(e) => { onAdd(e.target.files); e.target.value = ''; }} />
-        </label>
-        {attachments.map((a, ai) => (
-          <span key={ai} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-            {a.name}
-            <button type="button" onClick={() => onRemove(ai)} disabled={disabled} aria-label={`Remove ${a.name}`} className="hover:text-red-400 disabled:opacity-50">
-              <X className="h-3 w-3" />
-            </button>
-          </span>
-        ))}
-      </div>
-      {error && <p role="alert" className="text-[11px] text-red-400">{error}</p>}
-    </>
-  );
-}
 
 function priorityClasses(p?: string): string {
   switch ((p || '').toLowerCase()) {
@@ -158,12 +102,12 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
   const [dirtyIdx, setDirtyIdx] = useState<Set<number>>(new Set());
   const [saveError, setSaveError] = useState<Record<number, string>>({});
   // Per-case rework attachments (index-keyed like feedback).
-  const [attachments, setAttachments] = useState<Record<number, ReworkAttachment[]>>({});
+  const [attachments, setAttachments] = useState<Record<number, AIImageAttachment[]>>({});
   const [attachError, setAttachError] = useState<Record<number, string>>({});
   // Bulk rework — selection and per-case status are keyed by case.id (stable under concurrency).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPrompt, setBulkPrompt] = useState('');
-  const [bulkAttachments, setBulkAttachments] = useState<ReworkAttachment[]>([]);
+  const [bulkAttachments, setBulkAttachments] = useState<AIImageAttachment[]>([]);
   const [bulkAttachError, setBulkAttachError] = useState('');
   const [bulkStatus, setBulkStatus] = useState<Record<string, 'pending' | 'running' | 'done' | 'failed'>>({});
   const [bulkErrors, setBulkErrors] = useState<Record<string, string>>({});
@@ -265,7 +209,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
     }
   };
   const addCaseAttachments = async (i: number, files: FileList | null) => {
-    const { next, error } = await appendAttachments(attachments[i] || [], files);
+    const { next, error } = await appendAIImageAttachments(attachments[i] || [], files);
     setAttachments((p) => ({ ...p, [i]: next }));
     setAttachError((p) => ({ ...p, [i]: error }));
   };
@@ -304,7 +248,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
   const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
 
   const addBulkAttachments = async (files: FileList | null) => {
-    const { next, error } = await appendAttachments(bulkAttachments, files);
+    const { next, error } = await appendAIImageAttachments(bulkAttachments, files);
     setBulkAttachments(next);
     setBulkAttachError(error);
   };
@@ -428,7 +372,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
             disabled={bulkRunning}
             className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)] disabled:opacity-50"
           >
-            {allSelected ? 'Select none' : 'Select all'}
+            {allSelected ? 'Select None' : 'Select All'}
           </button>
         )}
       </div>
@@ -450,7 +394,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
           onUndo={reworkAppliedOwner === 'bulk' && reworkUndoStack.length ? undoRework : undefined}
           accessory={(
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <AttachmentPicker
+              <AIImageAttachmentPicker
                 attachments={bulkAttachments}
                 error=""
                 disabled={bulkRunning}
@@ -637,7 +581,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                       className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                     >
                       {busy === `expand-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
-                      Expand steps
+                      Expand Steps
                     </button>
                   </div>
                 </div>
@@ -683,7 +627,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                   onUndo={reworkAppliedOwner === `case-${i}` && reworkUndoStack.length ? undoRework : undefined}
                   accessory={(
                     <div className="mt-2">
-                      <AttachmentPicker
+                      <AIImageAttachmentPicker
                         attachments={attachments[i] || []}
                         error=""
                         disabled={bulkRunning}
@@ -707,7 +651,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                       className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                     >
                       {busy === `save-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                      Save changes
+                      Save Changes
                     </button>
                   </div>
                 </div>

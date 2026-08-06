@@ -57,6 +57,24 @@ function ffmpegReady(): boolean {
   try { return fs.readdirSync(browsersRoot()).some((d) => d.startsWith('ffmpeg-')); } catch { return false; }
 }
 
+/**
+ * Pay Chromium's first-run cost at boot instead of on the first recording.
+ *
+ * A freshly extracted bundle makes Windows scan chrome.exe and its siblings the first time they
+ * execute, and Chromium builds its profile — together the bulk of the "recording takes ~10s to open
+ * a window" complaint. `channel: 'chromium'` matters: it warms the FULL headed build codegen uses,
+ * not the separate headless-shell binary, while still starting without a visible window.
+ */
+export function prewarmBrowser(log: Logger): void {
+  const channel = chromiumChannel() || 'chromium';
+  if (!bundledChromiumReady() && !systemChromePath()) return;
+  const started = Date.now();
+  void chromium.launch({ headless: true, channel })
+    .then((browser) => browser.close())
+    .then(() => log.info({ ms: Date.now() - started, channel }, 'browser pre-warmed — first recording starts fast'))
+    .catch((err) => log.debug({ err: err?.message }, 'browser pre-warm skipped'));
+}
+
 /** Boot check: install whatever is missing (browser and/or ffmpeg) in the background. */
 export function ensureBrowsers(log: Logger, cwd: string): void {
   const chrome = systemChromePath();

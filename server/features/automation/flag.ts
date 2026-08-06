@@ -11,6 +11,18 @@ export function isRemoteAgentEnabled(): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/** Code-level flag for human-in-the-loop pauses. Change to 1 when the feature is ready to enable. */
+export let PAUSE_RESUME_V1: 0 | 1 = 1;
+
+/** Allows tests/bootstrap code to change the code-level flag without an environment variable. */
+export function setPauseResumeV1(value: 0 | 1): void {
+  PAUSE_RESUME_V1 = value;
+}
+
+export function isPauseResumeEnabled(): boolean {
+  return PAUSE_RESUME_V1 === 1;
+}
+
 /**
  * Recorder step coalescing + logical grouping (see stepGrouping.ts). This is the default product
  * behavior — recorded interactions are coalesced and grouped into collapsible blocks in the created

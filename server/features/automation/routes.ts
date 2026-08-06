@@ -14,9 +14,11 @@
 import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
+import cronParser from 'cron-parser';
 import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { requireAuth } from '../auth/routes';
+import { asyncRoute } from '../../shared/asyncRoute';
+import { requireAuth, isAuthed } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
 import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
@@ -29,12 +31,14 @@ import {
   authenticateAgent,
   refreshAgentToken,
   heartbeat,
+  renameAgent,
   revokeAgent,
   publicAgent,
   withLiveStatus,
 } from './agentService';
 import {
   createRecording,
+  finalizeRecording,
   startRecording,
   stopRecording,
   updateRecording,
@@ -44,14 +48,17 @@ import {
   overrideRecordingStep,
   undoRecordingStepOverride,
   redoRecordingStepOverride,
+  updateRecordingStepPause,
 } from './recordingService';
-import { createJob, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
-import { runBatchOnServer } from './serverRunner';
+import { createJob, createServerJob, createLinkedTestRun, cancelJob, getJob, refreshExecutionBatch, setJobStatus, tryDispatch } from './jobService';
 import { isAgentConnected } from './agentGateway';
+import { runBatchOnServer, runJobOnServer } from './serverRunner';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
-import { streamAgentZip, agentLatestInfo, agentDirExists } from './downloadService';
+import { streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
+import { createDownloadTicket, readDownloadTicket } from './downloadTickets';
+import { describeCron, parseCronText, looksLikeCron } from './cronText';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
 import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
@@ -61,6 +68,7 @@ import { resolveExpression, newRunToken, expressionHasUniqueGenerator } from './
 import { buildTemplateWorkbook, inferIntent, intentTip, sampleFor } from './templateService';
 import { buildSlots } from './placeholderRegistry';
 import type { AgentRecord, ArtifactKind, ScheduleKind } from './types';
+import { listJobPauses, resolvePause } from './pauseService';
 
 /** Authenticate an agent from its `Authorization: Bearer <agentId>.<secret>` token. */
 function requireAgent(req: Request, res: Response, next: NextFunction) {
@@ -80,7 +88,9 @@ export function registerAutomationRoutes(app: Express) {
   if (!isRemoteAgentEnabled()) return;
 
   // Enrich the downloadable agent with Windows Chromium at boot so end users install nothing.
-  ensureBundledChromium();
+  void ensureBundledChromium()
+    .then(() => warmAgentBundleCache())
+    .catch((error) => console.error('[automation] agent bundle preparation failed:', error?.message || error));
 
   /* ---------- human API (scoped) ---------- */
 
@@ -110,6 +120,17 @@ export function registerAutomationRoutes(app: Express) {
     const [scoped] = scopeFilter([agent] as any[], reqScope(req));
     if (!scoped) return res.status(404).json({ error: 'Agent not found.' });
     res.json({ agent: withLiveStatus(publicAgent(agent)) });
+  });
+
+  app.patch('/api/automation/agents/:id', requireAuth, async (req: Request, res: Response) => {
+    const agent = await Agents.get(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found.' });
+    const [scoped] = scopeFilter([agent] as any[], reqScope(req));
+    if (!scoped) return res.status(404).json({ error: 'Agent not found.' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) return res.status(400).json({ error: 'Agent name is required.' });
+    if (name.length > 80) return res.status(400).json({ error: 'Agent name must be 80 characters or fewer.' });
+    res.json({ agent: withLiveStatus(await renameAgent(agent as AgentRecord, name)) });
   });
 
   app.post('/api/automation/agents/:id/revoke', requireAuth, async (req: Request, res: Response) => {
@@ -202,10 +223,12 @@ export function registerAutomationRoutes(app: Express) {
     await AutomationRunData.replaceForBatch(batch.id, ledger);
     // Pooled policy consumes its rows so a later batch never re-uses them.
     if (dataPolicy === 'pooled') await AutomationDatasetRows.markConsumed(dataset.id, rows.map((row: any) => row.rowNumber), batch.id);
+    const caseId = String(rec.metadata?.caseId || '');
+    const testCase = caseId ? await Cases.get(caseId) : null;
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
       // agentId '' => the job stays queued (no agent dispatch); it executes on the server below.
-      await createJob({
+      const job = await createJob({
         recordingId: rec.id,
         agentId: '',
         trigger: 'manual',
@@ -214,6 +237,13 @@ export function registerAutomationRoutes(app: Express) {
         datasetRowId: row.id,
         rowNumber: row.rowNumber,
       }, scope);
+      await createLinkedTestRun(job, rec, scope, {
+        name: `${rec.name || 'Automation run'} · ${dataset.name || 'Dataset'} · Row ${row.rowNumber}`,
+        caseId,
+        folderId: testCase?.folderId || '',
+        progress: `Dataset row ${row.rowNumber} queued`,
+        triggerMeta: { automationBatchId: batch.id, datasetId: dataset.id, datasetName: dataset.name || '', rowNumber: row.rowNumber },
+      });
     }
     batch = await refreshExecutionBatch(batch.id);
     // Execute the batch headless on the SERVER — no desktop agent needed. Fire-and-forget so the HTTP
@@ -223,15 +253,34 @@ export function registerAutomationRoutes(app: Express) {
   }
 
   app.post('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
-    const { name, appUrl, browser, environment, agentId, caseMeta } = req.body || {};
+    const { name, appUrl, browser, environment, agentId, caseMeta, browserPermissions } = req.body || {};
     if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
-    const rec = await createRecording({ name, appUrl, browser, environment, agentId, caseMeta }, reqScope(req));
+    const rec = await createRecording({ name, appUrl, browser, environment, agentId, caseMeta, browserPermissions }, reqScope(req));
     res.status(201).json({ recording: rec });
   });
 
   app.get('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
     const mine = scopeFilter((await Recordings.list()) as any[], reqScope(req));
     res.json({ recordings: mine });
+  });
+
+  // The local Record & Play screen uses Playwright codegen directly. Once stopped, promote that
+  // temporary file into the same durable recording store used by the remote agent flow. This does
+  // not create or start a Test Run.
+  app.post('/api/automation/recordings/import-codegen', requireAuth, async (req: Request, res: Response) => {
+    const script = String(req.body?.script || '').trim();
+    const appUrl = String(req.body?.appUrl || '').trim();
+    if (!script) return res.status(400).json({ error: 'Record at least one action before saving.' });
+    if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
+    const recording = await createRecording({
+      name: String(req.body?.name || 'Recorded flow').trim(),
+      appUrl,
+      browser: 'chromium',
+      environment: 'QA',
+    }, reqScope(req));
+    await finalizeRecording(recording.id, { script, metadata: { source: 'local-codegen' } });
+    const saved = await Recordings.get(recording.id);
+    res.status(201).json({ recording: saved });
   });
 
   // Data-drivable RUNNABLES = repository Scripts (each linked to a Test Case) + finalized recordings.
@@ -296,7 +345,7 @@ export function registerAutomationRoutes(app: Express) {
   app.patch('/api/automation/recordings/:id', requireAuth, async (req: Request, res: Response) => {
     const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
-    const saved = await updateRecording(req.params.id, { name: req.body?.name });
+    const saved = await updateRecording(req.params.id, { name: req.body?.name, script: req.body?.script });
     res.json({ recording: saved });
   });
 
@@ -350,6 +399,19 @@ export function registerAutomationRoutes(app: Express) {
     const out = await stopRecording(req.params.id);
     if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out);
+  });
+
+  // A codegen session records source actions but Playwright's codegen CLI does not emit video.
+  // Replay the saved script through the same artifact runner as Test Runs to create a video preview
+  // without creating a Test Run record.
+  app.post('/api/automation/recordings/:id/video-preview', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    if (!String(rec.script || '').trim()) return res.status(400).json({ error: 'Save a recording with actions before creating its video preview.' });
+    const job = await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
+    await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, videoPreviewJobId: job.id } });
+    void runJobOnServer(job.id).catch((error) => console.error('[automation] recording video preview failed:', error?.message || error));
+    res.status(202).json({ job });
   });
 
   // Download an Excel template built from THIS recording — headers = field names, plus a Guide sheet.
@@ -588,6 +650,24 @@ export function registerAutomationRoutes(app: Express) {
     }
   });
 
+  // Resolve either a cron expression or a plain-English sentence to the exact expression that will
+  // run, with the next fire times. Server-side on purpose: same parser the scheduler ticks on.
+  app.post('/api/automation/cron/resolve', requireAuth, (req: Request, res: Response) => {
+    const input = String(req.body?.input || '').trim();
+    if (!input) return res.json({ expression: '', description: '', nextRuns: [] });
+    const expression = looksLikeCron(input) ? input : parseCronText(input);
+    if (!expression) {
+      return res.json({ expression: '', description: '', nextRuns: [], error: 'Could not read that. Try "At 04:05 on day-of-month 5" or a cron expression like 5 4 5 * *.' });
+    }
+    try {
+      const iterator = cronParser.parseExpression(expression, { currentDate: new Date(), tz: 'UTC' });
+      const nextRuns = [0, 1, 2].map(() => iterator.next().toDate().toISOString());
+      res.json({ expression, description: describeCron(expression), nextRuns });
+    } catch {
+      res.json({ expression, description: '', nextRuns: [], error: `"${expression}" is not a valid cron expression.` });
+    }
+  });
+
   app.get('/api/automation/batches', requireAuth, async (req, res) => {
     res.json({ batches: scopeFilter(await AutomationExecutionBatches.list(), reqScope(req)) });
   });
@@ -634,6 +714,7 @@ export function registerAutomationRoutes(app: Express) {
     const rec = await scopedGet((id) => Recordings.get(id), recordingId, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
     const job = await createJob({ recordingId, agentId, trigger: 'manual', headed: !!headed }, reqScope(req));
+    await createLinkedTestRun(job, rec, reqScope(req));
     res.status(201).json({ job });
   });
 
@@ -643,10 +724,37 @@ export function registerAutomationRoutes(app: Express) {
   });
 
   app.get('/api/automation/jobs/:id', requireAuth, async (req: Request, res: Response) => {
-    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    const job = await scopedGet(getJob, req.params.id, req);
     if (!job) return res.status(404).json({ error: 'Job not found.' });
     res.json({ job });
   });
+
+  app.patch('/api/automation/recordings/:id/steps/:stepId/pause', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const out = await updateRecordingStepPause(rec.id, req.params.stepId, String(req.body?.action || 'save'), req.body?.pause);
+    if ('error' in out) return res.status(out.status).json({ error: out.error });
+    res.json(out);
+  });
+
+  app.get('/api/automation/jobs/:id/pauses', requireAuth, async (req: Request, res: Response) => {
+    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    if (!job) return res.status(404).json({ error: 'Job not found.' });
+    res.json({ pauses: await listJobPauses(job.id) });
+  });
+
+  const answerPause = (outcome: 'resolved' | 'skipped') => asyncRoute(async (req: Request, res: Response) => {
+    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    if (!job) return res.status(404).json({ error: 'Job not found.' });
+    const result = await resolvePause(job.id, req.params.pauseId, { attempt: req.body?.attempt, outcome, value: req.body?.value }, reqScope(req).userId || 'user');
+    if (result.error) return res.status(result.status || 400).json({ error: result.error });
+    const pausedMs = Math.max(0, Date.parse(result.pause.resolvedAt) - Date.parse(result.pause.openedAt));
+    await setJobStatus(job.id, 'running', { summary: { ...(job.summary || {}), pausedMs: Number(job.summary?.pausedMs || 0) + pausedMs, assisted: true } });
+    res.json({ pause: result.pause });
+  });
+
+  app.post('/api/automation/jobs/:id/pauses/:pauseId/resume', requireAuth, answerPause('resolved'));
+  app.post('/api/automation/jobs/:id/pauses/:pauseId/skip', requireAuth, answerPause('skipped'));
 
   app.post('/api/automation/jobs/:id/cancel', requireAuth, async (req: Request, res: Response) => {
     const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
@@ -656,43 +764,57 @@ export function registerAutomationRoutes(app: Express) {
     res.json(out);
   });
 
-  /* ---------- run an Automation test case → executes on the agent, tracked as a Test Run ---------- */
-  // Bridges Test Management and the agent job engine: dispatch the case's recorded script to the
-  // agent and create a Test Run linked to the job (trigger_meta.automationJobId). The Test Runs UI
-  // then renders the job's artifacts (video/trace/screenshots/junit/logs) and job.done syncs the run.
-  app.post('/api/automation/runs', requireAuth, async (req: Request, res: Response) => {
+  /* ---------- run an Automation test case on the server, tracked as a Test Run ---------- */
+  // Manual and scheduled executions share the same headless runner and artifact pipeline.
+  app.post('/api/automation/runs', requireAuth, asyncRoute(async (req: Request, res: Response) => {
     const caseId = String(req.body?.caseId || '');
+    const scope = reqScope(req);
     const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
     if (!testCase) return res.status(404).json({ error: 'Test case not found.' });
     // The recorded script lives on the recording that produced this case (linked via metadata.caseId).
-    const rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
+    let rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
       .find((r: any) => r.metadata?.caseId === caseId && r.status === 'ready' && r.script);
+    if (!rec) {
+      const script = scopeFilter((await Scripts.list()) as any[], scope).find((item: any) => String(item.caseId || '') === caseId && String(item.code || '').trim());
+      if (script) rec = await recordingForScript(script.id, scope);
+    }
     if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
-    const agentId = String(req.body?.agentId || rec.agentId || '');
-    if (!isAgentConnected(agentId)) return res.status(409).json({ error: 'Select a connected agent to run on.' });
-    // Persist the linked run before dispatching. A fast completion must be able to
+    // Persist the linked run before execution. A fast completion must be able to
     // synchronize its counts onto this record.
-    const job = await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: false, dispatch: false }, reqScope(req));
-    const run = {
-      ...scopeStamp(reqScope(req)),
-      id: `RUN-${randomBytes(2).toString('hex').toUpperCase()}`,
+    const requestedRunId = String(req.body?.runId || '');
+    if (requestedRunId && !/^RUN-[A-F0-9]{16}$/.test(requestedRunId)) return res.status(400).json({ error: 'Invalid run ID.' });
+    if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
+    const headed = !!req.body?.headed;
+    const agentId = String(req.body?.agentId || rec.agentId || '');
+    const agent = headed && agentId ? await scopedGet((id) => Agents.get(id), agentId, req) : null;
+    if (headed && (!agent || agent.revokedAt || !isAgentConnected(agentId))) {
+      return res.status(409).json({ error: 'Headed execution requires one of your local agents to be online. Open Local Agent and try again, or choose Headless.' });
+    }
+    const linkedScript = scopeFilter((await Scripts.list()) as any[], scope)
+      .find((script: any) => script.id === rec.metadata?.scriptId || String(script.caseId || '') === caseId);
+    if (linkedScript) {
+      await Scripts.upsert({
+        ...linkedScript,
+        executionMode: headed ? 'headed' : 'headless',
+        preferredAgentId: headed ? agentId : '',
+      });
+    }
+    const job = headed
+      ? await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: true, dispatch: false }, scope)
+      : await createServerJob({ recordingId: rec.id, trigger: 'manual' }, scope);
+    const run = await createLinkedTestRun(job, rec, scope, {
+      id: requestedRunId || undefined,
       name: testCase.title || 'Automation run',
-      caseIds: [caseId],
+      caseId,
       requestedBy: req.body?.requestedBy || '',
-      status: 'Running',
-      progress: 'Dispatched to agent',
-      targetUrl: rec.appUrl || '',
       folderId: testCase.folderId || '',
-      triggerType: 'automation',
-      triggerMeta: { automationJobId: job.id, agentId },
-      startedAt: new Date().toISOString(),
-      date: new Date().toISOString().split('T')[0],
-    };
-    await Runs.upsert(run);
-    if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
-    await tryDispatch(job.id);
+      progress: headed ? 'Running headed on local agent' : 'Running headless on server',
+      triggerMeta: { executionMode: headed ? 'headed' : 'headless' },
+    });
+    if (headed) await tryDispatch(job.id);
+    else void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
     res.status(201).json({ run, jobId: job.id });
-  });
+  }));
 
   /* ---------- schedules (human, scoped) ---------- */
 
@@ -768,10 +890,13 @@ export function registerAutomationRoutes(app: Express) {
     const cron = req.body?.cron ?? s.cron;
     const timezone = req.body?.timezone ?? s.timezone;
     const enabled = req.body?.enabled ?? s.enabled;
-    const next = enabled ? computeNextRun(kind, cron, timezone, new Date()) : null;
+    const runAt = req.body?.runAt ?? s.nextRunAt;
+    const next = enabled && kind !== 'once' ? computeNextRun(kind, cron, timezone, new Date()) : null;
+    if (kind === 'cron' && enabled && !next) return res.status(400).json({ error: 'Invalid cron expression.' });
+    if (kind === 'once' && enabled && (!runAt || Number.isNaN(new Date(runAt).getTime()))) return res.status(400).json({ error: 'A valid run date is required.' });
     const saved = await AutomationSchedules.upsert({
       ...s, kind, cron, timezone, enabled,
-      nextRunAt: next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
+      nextRunAt: !enabled ? null : kind === 'once' ? new Date(runAt).toISOString() : next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
     });
     if (!isPostgresEnabled()) persistDataInBackground('schedule updated');
     res.json({ schedule: saved });
@@ -843,14 +968,44 @@ export function registerAutomationRoutes(app: Express) {
     return `${req.protocol}://${req.get('host')}`;
   }
 
-  // Download a ready-to-run agent bundle with a fresh single-use pairing token baked in.
-  app.get('/api/automation/agent/download', requireAuth, (req: Request, res: Response) => {
+  // Clicking Download mints a ticket; the browser then navigates to the bundle URL so Chrome
+  // downloads it natively (streaming, with its own progress) instead of the page buffering 300 MB.
+  app.post('/api/automation/agent/download-ticket', requireAuth, (req: Request, res: Response) => {
     if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
     const scope = reqScope(req);
-    const { pairingToken } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') });
+    const name = String(req.query.name || req.body?.name || 'TestFlow Agent');
+    const { pairingToken, expiresInMs } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name });
+    const ticket = createDownloadTicket({ pairingToken, name, userId: scope.userId || '', expiresInMs });
+    res.json({ ticket, expiresInMs });
+  });
+
+  // Download a ready-to-run agent bundle with a single-use pairing token baked in. Authorized either
+  // by a ticket (browser navigation, which cannot send headers) or by the usual session header.
+  app.get('/api/automation/agent/download', async (req: Request, res: Response) => {
+    if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
+
+    const ticket = req.query.ticket ? readDownloadTicket(String(req.query.ticket)) : null;
+    if (req.query.ticket && !ticket) {
+      return res.status(410).json({ error: 'This download link has expired. Click Download Agent again.' });
+    }
+    if (!ticket && !isAuthed(req)) return res.status(401).json({ error: 'Authentication required.' });
+
+    // A ticket pins its pairing token, so retries and resumes return byte-identical bytes.
+    let pairingToken: string;
+    let name: string;
+    if (ticket) {
+      pairingToken = ticket.pairingToken;
+      name = ticket.name;
+    } else {
+      const scope = reqScope(req);
+      name = String(req.query.name || 'TestFlow Agent');
+      pairingToken = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') }).pairingToken;
+    }
+
     // cloudUrl is the base the agent calls <base>/api/automation/... — APP_URL already carries any
     // base path (e.g. /automation in production); the request-origin fallback is used in local dev.
-    streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
+    // Forward Range so a dropped 300 MB download resumes instead of restarting.
+    await streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name, range: req.headers.range });
   });
 
   // Latest published agent version (allowlisted so a running agent's updater can poll it).
@@ -867,6 +1022,8 @@ export function registerAutomationRoutes(app: Express) {
     if (!match) return res.status(401).json({ error: 'Invalid webhook token.' });
     const scope = { projectId: match.projectId || '', appId: match.appId || null, userId: match.ownerId || '', role: '' };
     const job = await createJob({ recordingId: match.recordingId, agentId: match.agentId, trigger: 'webhook', scheduleId: match.id }, scope);
+    const rec = await Recordings.get(match.recordingId);
+    if (rec) await createLinkedTestRun(job, rec, scope);
     res.status(201).json({ ok: true, jobId: job.id });
   });
 }

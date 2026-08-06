@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
-import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun } from '@/core/shared/testRunStatus';
+import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, withoutAutomationJobMeta } from '@/core/shared/testRunStatus';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { RunPausePrompt } from '@/src/components/RunPausePrompt';
 import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
@@ -24,12 +25,16 @@ import type { TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
-import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForRun, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
+import { casesForRun, getRunStats, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
 import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { useAgents } from '@/src/lib/useAutomation';
+import { LineageBreadcrumb } from '@/src/components/LineageBreadcrumb';
+import { DataTable } from '@/src/components/DataTable/DataTable';
+import { runSourceVersionChanges } from '@/src/lib/runSourceVersions';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -42,41 +47,6 @@ async function downloadFromUrl(url: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
-function getRunStats(run: any, caseCount?: number) {
-  const steps = Array.isArray(run?.steps) ? run.steps : [];
-  // A run detail displays test cases, not the individual instructions inside each
-  // case. Older runs persisted their instruction count in totalExecutions, which
-  // made "Untested" larger than the cases shown in this table.
-  const storedTotal = Number(run?.totalExecutions) || 0;
-  const total = caseCount || storedTotal || steps.length || 0;
-  const hasLegacyStepTotal = Boolean(caseCount && storedTotal > caseCount);
-  const caseOutcomes = new Map<string, string>();
-  if (hasLegacyStepTotal) {
-    steps.forEach((step: any, index: number) => {
-      const caseKey = String(step?.testCaseId || step?.testCaseTitle || String(step?.step || '').match(/^(\d+)\./)?.[1] || index);
-      const outcome = String(step?.outcome || step?.status || '');
-      const previous = caseOutcomes.get(caseKey) || '';
-      // Retain the most serious result when a legacy checklist contains several
-      // instruction rows for the same case.
-      if (/fail/i.test(outcome) || !previous) caseOutcomes.set(caseKey, outcome);
-    });
-  }
-  const outcomes = hasLegacyStepTotal ? [...caseOutcomes.values()] : steps.map((step: any) => String(step?.outcome || step?.status || ''));
-  const passed = hasLegacyStepTotal
-    ? outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length
-    : Number(run?.passed) || outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length;
-  const failed = hasLegacyStepTotal
-    ? outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length
-    : Number(run?.failed) || outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length;
-  const blocked = outcomes.filter((outcome) => /block|blocked/i.test(outcome)).length;
-  const skipped = outcomes.filter((outcome) => /skip|skipped/i.test(outcome)).length;
-  const retest = outcomes.filter((outcome) => /retest/i.test(outcome)).length;
-  const untested = Math.max(0, total - passed - failed - blocked - skipped - retest);
-  const completed = total ? Math.round(((passed + failed + blocked + skipped + retest) / total) * 100) : 0;
-
-  return { total, passed, failed, blocked, skipped, retest, untested, completed };
-}
-
 function statusDot(status: string) {
   if (/pass/i.test(status)) return 'bg-emerald-400';
   if (/fail/i.test(status)) return 'bg-red-400';
@@ -85,7 +55,7 @@ function statusDot(status: string) {
   return 'bg-slate-500';
 }
 
-const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
+const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed Script';
 const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
 type EditableRunStep = { action: string; expected: string; captureEvidence: boolean };
 type EditableRunResult = { caseId: string; caseTitle: string; originalCount: number; steps: EditableRunStep[] };
@@ -114,6 +84,7 @@ function runStartedAt(run: any): string {
 
 export default function TestRuns() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { runId } = useParams();
   const [runs, setRuns] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -127,8 +98,9 @@ export default function TestRuns() {
   const [selectedView, setSelectedView] = useUrlState('runFilter', 'All Runs', ['All Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs', 'My Runs'] as const);
   const [filters, setFilters] = useState({ statuses: [] as string[], requesters: [] as string[], suites: [] as string[], sources: [] as string[], tags: [] as string[] });
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
-  const [caseStatusFilter, setCaseStatusFilter] = useState('All');
+  const [caseFilters, setCaseFilters] = useState({ statuses: [] as string[], priorities: [] as string[], tags: [] as string[], script: 'All' as 'All' | 'Linked' | 'None' });
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
+  const caseFilterRef = useRef<HTMLDivElement | null>(null);
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement | null>(null);
@@ -145,15 +117,10 @@ export default function TestRuns() {
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
   const [newRunTags, setNewRunTags] = useState<string[]>([]);
-  const [newRunStatus, setNewRunStatus] = useState<(typeof MANUAL_RUN_STATUS_OPTIONS)[number]>('Not Started');
-  const [newRunMode, setNewRunMode] = useState<'manual' | 'automated'>('manual');
-  const [newRunConfiguration, setNewRunConfiguration] = useState('');
-  const [newRunPriority, setNewRunPriority] = useState('');
-  // Step/Action/Expected rows authored in the Create Manual Run form (outcomes are set later in the runner).
-  // captureEvidence toggles whether the tester may attach a screenshot to this step during the run.
-  const [newRunSteps, setNewRunSteps] = useState<Array<{ action: string; expected: string; captureEvidence: boolean }>>([]);
-  const [editRunResults, setEditRunResults] = useState<EditableRunResult[]>([]);
-  const [editStepsLoading, setEditStepsLoading] = useState(false);
+  // Not restricted to MANUAL_RUN_STATUS_OPTIONS: a run can legitimately hold a status the editor does
+  // not offer (Cancelled, "Completed — Pending Review", Review Required…). Coercing those to a default
+  // would make Save overwrite the real status, so the current value is carried through verbatim.
+  const [newRunStatus, setNewRunStatus] = useState<string>('Not Started');
   const [savingRun, setSavingRun] = useState(false);
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
   // The tag query the run was composed with (from the linker) — persisted as definition.tagQuery so
@@ -161,12 +128,15 @@ export default function TestRuns() {
   const [newRunTagQuery, setNewRunTagQuery] = useState<TagQuery>({});
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
+  const { agents: runAgents } = useAgents();
   const [now, setNow] = useState(() => Date.now()); // live clock so in-progress run durations count up
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
+  const [stoppingRunId, setStoppingRunId] = useState('');
   const [editingCase, setEditingCase] = useState<any>(null);
   const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
   const [selectedEvidenceIndex, setSelectedEvidenceIndex] = useState<number | null>(null);
+  const [groupPanelCollapsed, setGroupPanelCollapsed] = useState(false);
   const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
@@ -206,11 +176,14 @@ export default function TestRuns() {
     try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
   }, []);
 
-  const selectedRun = runs.find((run) => String(run.id) === String(runId)) || null;
+  const pendingRun = (location.state as any)?.pendingRun;
+  const persistedRun = runs.find((run) => String(run.id) === String(runId)) || null;
+  const selectedRun = persistedRun || (String(pendingRun?.id) === String(runId) ? pendingRun : null);
 
   // Only AUTOMATED executions drive the 2s live-poll. A manual run sits at "In Progress" while a tester
   // fills it in — polling/refetching then would flicker the page and reset their in-progress selections.
-  const hasRunningRuns = runs.some((run) => run.mode !== 'manual' && runExecutionState(run).running);
+  const hasRunningRuns = runs.some((run) => run.mode !== 'manual' && runExecutionState(run).running)
+    || Boolean(pendingRun && !persistedRun);
   useEffect(() => {
     if (!hasRunningRuns) return;
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
@@ -234,6 +207,15 @@ export default function TestRuns() {
     document.addEventListener('pointerdown', closeOnOutsideClick);
     return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
   }, [isFilterOpen]);
+  // The run-detail case filter is multi-select, so it stays open until dismissed outside.
+  useEffect(() => {
+    if (!isCaseFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!caseFilterRef.current?.contains(event.target as Node)) setIsCaseFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isCaseFilterOpen]);
   const activeRuns = runs.filter(isActiveTestRun);
   const closedRuns = runs.filter(isClosedTestRun);
 
@@ -267,16 +249,43 @@ export default function TestRuns() {
   const suiteOptions = Array.from(new Set(runs.map((run) => String(run.suiteName || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
 
-  const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites) : [], [cases, selectedRun, suites]);
+  const planId = new URLSearchParams(location.search).get('planId');
+  const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites, plans)
+    .filter((testCase) => !planId || casePlanIds(testCase).includes(planId)) : [], [cases, planId, plans, selectedRun, suites]);
+
+  // Filter options come from the cases actually in this run — never a fixed list, so they stay true
+  // to the data and never offer a value that matches nothing.
+  const runCaseFilterOptions = useMemo(() => {
+    const statuses = new Set<string>();
+    const priorities = new Set<string>();
+    const tags = new Set<string>();
+    for (const testCase of selectedRunCases) {
+      statuses.add(String(testCase.status || 'Untested'));
+      if (testCase.priority) priorities.add(String(testCase.priority));
+      for (const tag of (Array.isArray(testCase.tags) ? testCase.tags : [])) tags.add(String(tag));
+    }
+    return {
+      statuses: [...statuses].sort(),
+      priorities: [...priorities].sort(),
+      tags: [...tags].sort(),
+    };
+  }, [selectedRunCases]);
 
   const visibleRunCases = useMemo(() => {
     const query = caseSearchTerm.toLowerCase();
     return selectedRunCases.filter((testCase) => {
       const matchesSearch = !query || `${testCase.id || ''} ${testCase.title || ''}`.toLowerCase().includes(query);
-      const matchesStatus = caseStatusFilter === 'All' || (testCase.status || 'Untested') === caseStatusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesStatus = !caseFilters.statuses.length || caseFilters.statuses.includes(String(testCase.status || 'Untested'));
+      const matchesPriority = !caseFilters.priorities.length || caseFilters.priorities.includes(String(testCase.priority || ''));
+      const caseTags = (Array.isArray(testCase.tags) ? testCase.tags : []).map((tag: any) => String(tag));
+      const matchesTags = !caseFilters.tags.length || caseFilters.tags.some((tag) => caseTags.includes(tag));
+      const hasScript = Boolean(scriptsForCases([testCase], scripts)[0]);
+      const matchesScript = caseFilters.script === 'All' || (caseFilters.script === 'Linked' ? hasScript : !hasScript);
+      return matchesSearch && matchesStatus && matchesPriority && matchesTags && matchesScript;
     });
-  }, [caseSearchTerm, caseStatusFilter, selectedRunCases]);
+  }, [caseSearchTerm, caseFilters, selectedRunCases, scripts]);
+
+  const activeCaseFilterCount = caseFilters.statuses.length + caseFilters.priorities.length + caseFilters.tags.length + (caseFilters.script === 'All' ? 0 : 1);
 
   const groupedCases = useMemo(() => {
     const groups = new Map<string, any[]>();
@@ -301,10 +310,6 @@ export default function TestRuns() {
     setNewRunStatus('Not Started');
     setNewRunCaseIds(new Set());
     setNewRunTagQuery({});
-    setNewRunConfiguration('');
-    setNewRunPriority('');
-    setNewRunSteps([]);
-    setEditRunResults([]);
     setIsRunModalOpen(true);
   };
 
@@ -317,78 +322,35 @@ export default function TestRuns() {
     setNewRunPlanId(run.testPlanId || '');
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
-    setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
-    setNewRunMode(run.mode === 'manual' ? 'manual' : 'automated');
-    setNewRunConfiguration('');
-    setNewRunPriority('');
-    setEditRunResults([]);
-    setEditStepsLoading(false);
-    setNewRunCaseIds(new Set(casesForRun(run, cases, suites).map((testCase) => String(testCase.id))));
+    setNewRunStatus(String(run.status || 'Not Started'));
+    setNewRunCaseIds(new Set(casesForRun(run, cases, suites, plans).map((testCase) => String(testCase.id))));
+    // Carry the run's saved tag query so editing shows how membership was defined, not a blank slate.
+    setNewRunTagQuery(run.definition?.tagQuery || {});
     setIsRunModalOpen(true);
-    if (run.mode === 'manual') {
-      setEditStepsLoading(true);
-      void fetch(`/api/runs/${encodeURIComponent(run.id)}/results`).then(async (response) => {
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'Could not load manual run steps.');
-        const results = Array.isArray(data.results) ? data.results : [];
-        setNewRunConfiguration(results[0]?.configuration || '');
-        setNewRunPriority(results[0]?.priority || '');
-        setEditRunResults(results.map((result: any) => {
-          const steps = Array.isArray(result.stepResults) ? result.stepResults : [];
-          return {
-            caseId: String(result.caseId), caseTitle: String(result.caseTitle || result.caseId), originalCount: steps.length,
-            steps: steps.map((step: any) => ({ action: String(step.action || ''), expected: String(step.expected || ''), captureEvidence: step.captureEvidence !== false })),
-          };
-        }));
-      }).catch((error) => void showAlert(error.message || 'Could not load manual run steps.')).finally(() => setEditStepsLoading(false));
-    }
   };
 
   const handleSaveRun = async () => {
     if (!newRunName.trim()) { void showAlert('Run name is required.'); return; }
     const caseIds = [...newRunCaseIds] as string[];
-    const isManual = newRunMode === 'manual';
-    // Manual runs are authored standalone (steps added in the runner, no linked cases). Automated runs
-    // still execute linked cases/scripts, so they require a selection.
-    if (!editingRunId && !isManual && !caseIds.length) { void showAlert('Select at least one test case.'); return; }
+    // A run executes the cases it selects, so a selection is required.
+    if (!editingRunId && !caseIds.length) { void showAlert('Select at least one test case.'); return; }
+    // Run type is derived server-side from the selected cases (a Manual case yields a manual run), so
+    // every entry point — this modal, Test Cases, suites, plans — agrees without sending a mode.
     let url: string;
     let body: any;
     if (editingRunId) {
       url = `/api/runs/${encodeURIComponent(editingRunId)}`;
-      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: isManual ? '' : newRunPlanId };
-      if (!isManual) body.caseIds = caseIds; // don't disturb a case-less manual run's membership
-    } else if (isManual) {
-      url = '/api/runs';
-      body = { name: newRunName, mode: 'manual', tags: newRunTags, status: newRunStatus, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, targetUrl: newRunTargetUrl, configuration: newRunConfiguration, priority: newRunPriority, steps: newRunSteps.filter((s) => s.action.trim() || s.expected.trim()) };
+      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId };
+      body.caseIds = caseIds;
     } else {
       url = '/api/runs/from-selection';
-      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
+      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
     }
     setSavingRun(true);
     try {
       const response = await fetch(url, { method: editingRunId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const rsp = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(rsp.error || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
-      if (editingRunId && isManual) {
-        for (const result of editRunResults) {
-          const resultUrl = `/api/runs/${encodeURIComponent(editingRunId)}/results/${encodeURIComponent(result.caseId)}`;
-          const summaryResponse = await fetch(resultUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ configuration: newRunConfiguration, priority: newRunPriority }) });
-          if (!summaryResponse.ok) throw new Error((await summaryResponse.json().catch(() => ({}))).error || 'Failed to update manual run summary.');
-          const common = Math.min(result.originalCount, result.steps.length);
-          for (let index = 0; index < common; index++) {
-            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
-            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to update step ${index + 1}.`);
-          }
-          for (let index = result.originalCount - 1; index >= result.steps.length; index--) {
-            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'DELETE' });
-            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to delete step ${index + 1}.`);
-          }
-          for (let index = result.originalCount; index < result.steps.length; index++) {
-            const stepResponse = await fetch(`${resultUrl}/steps`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
-            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to add step ${index + 1}.`);
-          }
-        }
-      }
       setIsRunModalOpen(false);
       const wasEditing = Boolean(editingRunId);
       setEditingRunId('');
@@ -413,29 +375,47 @@ export default function TestRuns() {
 
   const handleExecuteRuns = async (runsToExecute: any[]) => {
     if (!runsToExecute.length) return;
+    setSelectedEvidenceIndex(null);
     const errors: string[] = [];
     for (const run of runsToExecute) {
       if (runProgress[run.id] || runExecutionState(run).running) continue;
       if (run.mode === 'manual') continue; // manual runs are started/executed by hand in the run view, not via scripts
-      const runCases = casesForRun(run, cases, suites);
+      const runCases = casesForRun(run, cases, suites, plans);
       const runScripts = scriptsForRun(run, runCases, scripts);
       if (!runScripts.length) {
         errors.push(`${run.name}: no linked Playwright scripts`);
         continue;
       }
-      setRunProgress((current) => ({ ...current, [run.id]: `Running ${runScripts.length} script${runScripts.length === 1 ? '' : 's'}…` }));
+      const onlineAgent = runScripts.length === 1
+        ? runAgents.find((agent) => !agent.revoked && (agent.status === 'online' || agent.status === 'busy'))
+        : null;
+      const launchProgress = onlineAgent
+        ? `Starting headed on local agent ${onlineAgent.name || onlineAgent.machineName}`
+        : `Starting headless on server (${runScripts.length > 1 ? 'multiple scripts run together' : 'no local agent available'})`;
+      setRunProgress((current) => ({ ...current, [run.id]: launchProgress }));
       setRuns((current) => current.map((item) => item.id === run.id ? {
         ...item,
         status: 'Running',
         state: 'In Progress',
-        progress: `Starting 0/${runScripts.length} scripts`,
+        progress: launchProgress,
+        evidence: [],
+        steps: [],
+        passed: 0,
+        failed: 0,
+        totalExecutions: 0,
+        executionTime: '',
+        completedAt: null,
         triggerMeta: {
-          ...(item.triggerMeta || {}),
+          ...withoutAutomationJobMeta(item.triggerMeta),
           manualExecution: { completed: 0, total: runScripts.length },
         },
       } : item));
       try {
-        const response = await fetch(`/api/runs/${run.id}/execute`, { method: 'POST' });
+        const response = await fetch(`/api/runs/${run.id}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferLocalAgent: true }),
+        });
         const responseText = await response.text();
         let data: any = {};
         try { data = responseText ? JSON.parse(responseText) : {}; } catch { /* proxy/server returned text */ }
@@ -462,7 +442,7 @@ export default function TestRuns() {
 
   const handleCloseRun = async (run: any) => {
     if (!await showConfirm('Confirm that you reviewed the execution results and close this test run?', {
-      title: 'Close test run',
+      title: 'Close Test Run',
       confirmText: 'Confirm & Close',
     })) return;
     setClosingRunId(run.id);
@@ -478,8 +458,27 @@ export default function TestRuns() {
     }
   };
 
+  const handleStopRun = async (run: any) => {
+    if (!await showConfirm('Stop this running execution?', { title: 'Stop Test Run', confirmText: 'Stop Run', tone: 'danger' })) return;
+    setStoppingRunId(run.id);
+    try {
+      const jobId = String(run.triggerMeta?.automationJobId || '');
+      const url = jobId
+        ? `/api/automation/jobs/${encodeURIComponent(jobId)}/cancel`
+        : `/api/runs/${encodeURIComponent(run.id)}/stop`;
+      const response = await fetch(url, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to stop test run.');
+      await refreshRunsQuiet();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to stop test run.');
+    } finally {
+      setStoppingRunId('');
+    }
+  };
+
   // Automated runs execute Playwright scripts, so only cases that HAVE a linked script are runnable.
-  // (Manual runs author their own steps and don't use this list.)
+  // Manual runs execute the case's authored steps, so they can select any case.
   const selectableCases = useMemo(() => cases.filter((c) => scriptsForCases([c], scripts).length > 0), [cases, scripts]);
   const selectableCaseIdSet = useMemo(() => new Set(selectableCases.map((c) => String(c.id))), [selectableCases]);
   // Cases WITHOUT a script — excluded from the automated case picker so it only offers scripted cases.
@@ -499,6 +498,15 @@ export default function TestRuns() {
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
+    const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
+    // Resolved from the run's own cases (not a stored display string) so it reflects real composition.
+    const runLineageSuiteIds = Array.from(new Set(selectedRunCases.flatMap((testCase) => caseSuiteIds(testCase))));
+    const runLineageSuites = runLineageSuiteIds.map((id) => suites.find((suite) => String(suite.id) === String(id))).filter(Boolean);
+    const runLineagePlan = selectedRun.testPlanId ? plans.find((plan) => String(plan.id) === String(selectedRun.testPlanId)) : null;
+    const sourceVersionChanges = runSourceVersionChanges(
+      { ...selectedRun, suiteIds: runLineageSuiteIds },
+      { plans, suites, cases },
+    );
     const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
     const selectedEvidence = selectedEvidenceIndex == null ? null : evidenceItems[selectedEvidenceIndex] || null;
     const exportEvidenceItems = caseBulk.selectedCount
@@ -524,8 +532,8 @@ export default function TestRuns() {
     };
 
     return (
-      <div className="app-page-shell h-full flex flex-col">
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="app-page-shell min-h-full">
+        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
           <div className="p-5 border-b border-[var(--border)]">
             <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
               <button onClick={() => navigate('/runs')} className="inline-flex items-center gap-1 hover:text-[var(--text-primary)]">
@@ -540,8 +548,16 @@ export default function TestRuns() {
                 <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
                 <span className="whitespace-nowrap">Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
-                {selectedRun.testPlanId && <span className="whitespace-nowrap">Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
-                <span className="whitespace-nowrap">{selectedRun.date || 'No date'}</span>
+                {(runLineagePlan || runLineageSuites.length > 0) && (
+                  <LineageBreadcrumb
+                    crumbs={[
+                      ...(runLineagePlan ? [{ label: runLineagePlan.name, to: `/plans/${encodeURIComponent(runLineagePlan.id)}` }] : []),
+                      ...runLineageSuites.slice(0, 2).map((suite) => ({ label: suite.name, to: `/suites/${encodeURIComponent(suite.id)}` })),
+                      ...(runLineageSuites.length > 2 ? [{ label: `+${runLineageSuites.length - 2} more suites` }] : []),
+                    ]}
+                  />
+                )}
+                <span className="whitespace-nowrap">{selectedRun.date || 'No Date'}</span>
                 <span className="whitespace-nowrap">{selectedRun.executionTime || '-'}</span>
                 {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
               </div>
@@ -566,6 +582,15 @@ export default function TestRuns() {
                 </button>
                 )}
                 {/* "Run scripts" is an AUTOMATED action only — manual runs are executed by hand in the runner. */}
+                {selectedRun.mode !== 'manual' && selectedIsRunning && can('runs:execute') && (
+                  <button
+                    onClick={() => { void handleStopRun(selectedRun); }}
+                    disabled={stoppingRunId === selectedRun.id}
+                    className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping…' : 'Stop Run'}
+                  </button>
+                )}
                 {selectedRun.mode !== 'manual' && can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}
@@ -573,7 +598,7 @@ export default function TestRuns() {
                   title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                   className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
+                  <PlayCircle className="h-4 w-4" /> Run Scripts
                 </button>
                 )}
               </div>
@@ -602,6 +627,26 @@ export default function TestRuns() {
             />
           </div>
 
+          {sourceVersionChanges.length > 0 && (
+            <div className="mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                <GitCompareArrows className="h-4 w-4 text-amber-500" />
+                Source version changes ({sourceVersionChanges.length})
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">These linked plans, suites, or cases changed after this run captured them.</p>
+              <div className="mt-2 divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-card)]">
+                {sourceVersionChanges.map((change) => (
+                  <div key={`${change.kind}-${change.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-500">{change.kind}</span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]" title={`${change.name} (${change.id})`}>{change.name}</span>
+                    <span className="font-mono text-[var(--text-muted)]">{change.versionText}</span>
+                    <span className="w-full text-[var(--text-muted)] sm:w-auto">{change.fields.length ? change.fields.join(', ') : 'Version changed'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {selectedRun.mode === 'manual' ? (
             <ManualRunner run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} onChanged={refreshRunsQuiet} />
           ) : (<>
@@ -618,13 +663,14 @@ export default function TestRuns() {
           {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
           {selectedRun.triggerMeta?.automationJobId && (
             <div className="p-5 border-b border-[var(--border)] overflow-auto">
+              <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
               <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
             </div>
           )}
           {evidenceItems.length > 0 && (
             <div className="border-b border-[var(--border)] p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold">Execution evidence ({evidenceItems.length})</h2>
+                <h2 className="text-sm font-semibold">Execution Evidence ({evidenceItems.length})</h2>
                 {can('runs:export') && (
                 <ExportMenu
                   filename={`${selectedRun.id}-evidence`}
@@ -641,9 +687,9 @@ export default function TestRuns() {
                     { key: 'screenshot', label: 'Screenshot', kind: 'image' },
                   ]}
                   formats={['csv', 'json', 'md', 'pdf', 'html']}
-                  label={caseBulk.selectedCount ? `Export selected (${caseBulk.selectedCount})` : 'Export evidence'}
+                  label={caseBulk.selectedCount ? `Export Selected (${caseBulk.selectedCount})` : 'Export Evidence'}
                   extraItems={[{
-                    label: caseBulk.selectedCount ? 'Screenshots for selected cases (.zip)' : 'All screenshots (.zip)',
+                    label: caseBulk.selectedCount ? 'Screenshots for Selected Cases (.zip)' : 'All Screenshots (.zip)',
                     onClick: () => { void downloadEvidenceZip(); },
                   }]}
                 />
@@ -684,7 +730,7 @@ export default function TestRuns() {
             {selectedIsRunning ? (
               <div
                 className="h-full animate-pulse bg-[var(--accent)] transition-[width] duration-500"
-                style={{ width: `${selectedExecution.total ? Math.max(2, selectedExecution.percent) : 100}%` }}
+                style={{ width: `${Math.min(100, Math.max(2, selectedExecution.percent || 5))}%` }}
               />
             ) : (
               <>
@@ -701,12 +747,12 @@ export default function TestRuns() {
             <span role="status" aria-live="polite">
               {selectedIsRunning ? `${selectedExecution.percent}% · ${selectedProgress}` : `${stats.completed}% Completed`}
             </span>
-            <span className="text-emerald-400">Passed {stats.passed}</span>
-            <span className="text-red-400">Failed {stats.failed}</span>
-            <span className="text-indigo-400">Blocked {stats.blocked}</span>
-            <span className="text-yellow-400">Retest {stats.retest}</span>
-            <span className="text-slate-400">Skipped {stats.skipped}</span>
-            <span className="text-[var(--text-muted)]">Untested {stats.untested}</span>
+            <span className="text-emerald-400">Passed {resettingRunStats ? 0 : stats.passed}</span>
+            <span className="text-red-400">Failed {resettingRunStats ? 0 : stats.failed}</span>
+            <span className="text-indigo-400">Blocked {resettingRunStats ? 0 : stats.blocked}</span>
+            <span className="text-yellow-400">Retest {resettingRunStats ? 0 : stats.retest}</span>
+            <span className="text-slate-400">Skipped {resettingRunStats ? 0 : stats.skipped}</span>
+            <span className="text-[var(--text-muted)]">Untested {resettingRunStats ? 0 : stats.untested}</span>
           </div>
 
           <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-3">
@@ -716,31 +762,93 @@ export default function TestRuns() {
             <div className="flex flex-wrap items-center gap-2">
               {caseBulk.selectedCount > 0 && can('cases:delete') && (
                 <button onClick={caseBulk.deleteSelected} disabled={caseBulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                  <Trash2 className="w-4 h-4" /> Delete selected ({caseBulk.selectedCount})
+                  <Trash2 className="w-4 h-4" /> Delete Selected ({caseBulk.selectedCount})
                 </button>
               )}
-              <button onClick={() => setCaseStatusFilter('All')} title="Show all grouped cases" className="p-2 rounded-md border border-[var(--border)] text-[var(--accent)]"><Folder className="w-4 h-4" /></button>
+              <button onClick={() => setCaseFilters({ statuses: [], priorities: [], tags: [], script: 'All' })} title="Show all grouped cases" className="p-2 rounded-md border border-[var(--border)] text-[var(--accent)]"><Folder className="w-4 h-4" /></button>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
                 <input value={caseSearchTerm} onChange={(e) => setCaseSearchTerm(e.target.value)} className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" placeholder="Search by Test Case ID or Title" />
               </div>
-              <div className="relative">
-                <button onClick={() => setIsCaseFilterOpen(!isCaseFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] rounded-md px-3 py-2 text-sm"><Filter className="w-4 h-4" /> {caseStatusFilter === 'All' ? 'Filter' : caseStatusFilter}</button>
+              <div className="relative" ref={caseFilterRef}>
+                <button onClick={() => setIsCaseFilterOpen(!isCaseFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] rounded-md px-3 py-2 text-sm">
+                  <Filter className="w-4 h-4" /> Filter
+                  {activeCaseFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-xs font-medium text-white">{activeCaseFilterCount}</span>}
+                </button>
                 {isCaseFilterOpen && (
-                  <div className="absolute right-0 top-11 z-20 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                    {['All', 'Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated', 'Untested'].map((status) => (
-                      <button key={status} onClick={() => { setCaseStatusFilter(status); setIsCaseFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
-                        {status}
-                      </button>
+                  <div className="absolute right-0 top-11 z-20 max-h-96 w-64 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Filter Cases</span>
+                      {activeCaseFilterCount > 0 && (
+                        <button onClick={() => setCaseFilters({ statuses: [], priorities: [], tags: [], script: 'All' })} className="text-xs font-medium text-[var(--accent)] hover:underline">Clear</button>
+                      )}
+                    </div>
+
+                    {([
+                      { key: 'statuses', label: 'Status', options: runCaseFilterOptions.statuses },
+                      { key: 'priorities', label: 'Priority', options: runCaseFilterOptions.priorities },
+                      { key: 'tags', label: 'Tags', options: runCaseFilterOptions.tags },
+                    ] as const).filter((group) => group.options.length > 0).map((group) => (
+                      <div key={group.key} className="mb-3">
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">{group.label}</div>
+                        {group.options.map((option) => (
+                          <label key={option} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={caseFilters[group.key].includes(option)}
+                              onChange={() => setCaseFilters((prev) => ({
+                                ...prev,
+                                [group.key]: prev[group.key].includes(option)
+                                  ? prev[group.key].filter((value) => value !== option)
+                                  : [...prev[group.key], option],
+                              }))}
+                              className="h-3.5 w-3.5 accent-[var(--accent)]"
+                            />
+                            <span className="truncate">{option}</span>
+                          </label>
+                        ))}
+                      </div>
                     ))}
+
+                    <div>
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Script</div>
+                      {(['All', 'Linked', 'None'] as const).map((option) => (
+                        <label key={option} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
+                          <input
+                            type="radio"
+                            name="run-case-script-filter"
+                            checked={caseFilters.script === option}
+                            onChange={() => setCaseFilters((prev) => ({ ...prev, script: option }))}
+                            className="h-3.5 w-3.5 accent-[var(--accent)]"
+                          />
+                          <span>{option === 'All' ? 'Any' : option === 'Linked' ? 'With script' : 'Without script'}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col md:grid md:grid-cols-[280px_1fr]">
-            <div className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
+          <div
+            className="relative flex min-h-[22rem] flex-col overflow-hidden md:grid"
+            style={{ gridTemplateColumns: groupPanelCollapsed ? '0px minmax(0,1fr)' : '280px minmax(0,1fr)' }}
+          >
+            <button
+              type="button"
+              onClick={() => setGroupPanelCollapsed((collapsed) => !collapsed)}
+              aria-expanded={!groupPanelCollapsed}
+              aria-label={groupPanelCollapsed ? 'Show test case groups panel' : 'Hide test case groups panel'}
+              title={groupPanelCollapsed ? 'Show groups panel' : 'Hide groups panel'}
+              className="absolute top-3 z-10 hidden -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-card)] p-1 text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] md:flex md:items-center md:justify-center"
+              style={{ left: groupPanelCollapsed ? 12 : 280 }}
+            >
+              {groupPanelCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
+            </button>
+            {/* Stays a grid item (never display:none) even when collapsed — a hidden item would drop
+                out of grid placement entirely and shift the case table into the 0px column instead. */}
+            <div aria-hidden={groupPanelCollapsed} className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
               <div className="px-4 py-3 text-xs font-semibold uppercase text-[var(--text-muted)] border-b border-[var(--border)]">Sort by: Custom</div>
               {groupedCases.length === 0 ? (
                 <div className="px-4 py-6 text-sm text-[var(--text-muted)]">No linked test cases.</div>
@@ -753,7 +861,17 @@ export default function TestRuns() {
             </div>
 
             <div className="overflow-auto">
-              <table className="w-full text-left text-sm whitespace-nowrap">
+              <table className="w-full min-w-[70rem] table-fixed text-left text-sm whitespace-nowrap">
+                <colgroup>
+                  <col className="w-14" />
+                  <col className="w-56" />
+                  <col className="w-72" />
+                  <col className="w-28" />
+                  <col className="w-28" />
+                  <col className="w-32" />
+                  <col className="w-32" />
+                  <col className="w-16" />
+                </colgroup>
                 <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)] border-b border-[var(--border)]">
                   <tr>
                     <th className="px-4 py-3 w-10">
@@ -784,8 +902,12 @@ export default function TestRuns() {
                       <td className="px-4 py-3">
                         <input type="checkbox" checked={caseBulk.isSelected(testCase.id)} onChange={() => caseBulk.toggle(testCase.id)} />
                       </td>
-                      <td className="px-4 py-3 font-mono">{testCase.id}</td>
-                      <td className="px-4 py-3 font-medium max-w-md truncate">{testCase.title}</td>
+                      <td className="overflow-hidden px-4 py-3 font-mono">
+                        <span className="block truncate" title={testCase.id}>{testCase.id}</span>
+                      </td>
+                      <td className="overflow-hidden px-4 py-3 font-medium">
+                        <span className="block truncate" title={testCase.title}>{testCase.title}</span>
+                      </td>
                       <td className="px-4 py-3">
                         <VersionPinSelect
                           target="runs"
@@ -815,7 +937,7 @@ export default function TestRuns() {
                             className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5 text-xs font-medium text-[var(--text-muted)]"
                             title='No Playwright script is linked — "Run scripts" cannot execute this case'
                           >
-                            No script
+                            No Script
                           </span>
                         )}
                       </td>
@@ -864,6 +986,8 @@ export default function TestRuns() {
             <EditableCaseCard
               initial={editingCase}
               startEditing
+              // A run edits steps only; AI case authoring belongs in Test Cases.
+              aiTools={false}
               onSaved={() => {
                 setEditingCase(null);
                 fetchData();
@@ -882,7 +1006,7 @@ export default function TestRuns() {
                 onClick={() => { if (scriptViewer) navigator.clipboard?.writeText(scriptViewer.code); }}
                 className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
               >
-                Copy code
+                Copy Code
               </button>
               <button onClick={() => setScriptViewer(null)} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">Close</button>
             </div>
@@ -900,8 +1024,8 @@ export default function TestRuns() {
             <div className="flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(event) => event.stopPropagation()}>
               <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{selectedEvidence.caseTitle || selectedEvidence.caseId || 'Evidence screenshot'}</div>
-                  <div className="truncate text-xs text-[var(--text-muted)]">{selectedEvidence.stepLabel || 'Captured screenshot'}{selectedEvidence.action ? ` · ${selectedEvidence.action}` : ''}</div>
+                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{selectedEvidence.caseTitle || selectedEvidence.caseId || 'Evidence Screenshot'}</div>
+                  <div className="truncate text-xs text-[var(--text-muted)]">{selectedEvidence.stepLabel || 'Captured Screenshot'}{selectedEvidence.action ? ` · ${selectedEvidence.action}` : ''}</div>
                 </div>
                 <button type="button" onClick={() => setSelectedEvidenceIndex(null)} className="rounded border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">Close</button>
               </div>
@@ -946,7 +1070,7 @@ export default function TestRuns() {
               { key: 'status', label: 'Status' },
               { key: 'requestedBy', label: 'Requested By' },
               { key: 'suiteName', label: 'Suite' },
-              { key: 'scripts', label: 'Scripts', get: (r) => scriptsForRun(r, casesForRun(r, cases, suites), scripts).map(scriptLabel).join(', ') },
+              { key: 'scripts', label: 'Scripts', get: (r) => scriptsForRun(r, casesForRun(r, cases, suites, plans), scripts).map(scriptLabel).join(', ') },
               { key: 'executionTime', label: 'Execution Time' },
               { key: 'runDateTime', label: 'Run Date & Time', get: (r) => runStartedAt(r) || r.createdAt || r.date || '' },
               { key: 'passed', label: 'Passed', get: (r) => (r.steps || []).filter((s: any) => /pass/i.test(s?.outcome || s?.status || '')).length },
@@ -958,7 +1082,7 @@ export default function TestRuns() {
           {/* Gate create actions on runs:create */}
           {can('runs:create') && (
             <>
-              <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
+              <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Test Run</button>
               <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
             </>
           )}
@@ -967,13 +1091,13 @@ export default function TestRuns() {
 
       <Modal
         isOpen={isRunModalOpen}
-        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }}
-        title={editingRunId ? 'Edit Test Run' : 'Create Manual Run'}
+        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); }}
+        title={editingRunId ? 'Edit Test Run' : 'Create Test Run'}
         footer={
           <div className="flex justify-end gap-3">
-            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
             {(editingRunId ? can('runs:update') : can('runs:create')) && (
-            <button disabled={savingRun || editStepsLoading} onClick={handleSaveRun} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm text-white disabled:opacity-50">{savingRun ? 'Saving…' : editingRunId ? 'Save Changes' : 'Create Run'}</button>
+            <button disabled={savingRun} onClick={handleSaveRun} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm text-white disabled:opacity-50">{savingRun ? 'Saving…' : editingRunId ? 'Save Changes' : 'Create Run'}</button>
             )}
           </div>
         }
@@ -983,35 +1107,13 @@ export default function TestRuns() {
             <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
           </label>
 
-          {/* Run type: manual = human step-by-step runner; automated = Playwright execution. Fixed at creation. */}
-          {!editingRunId && (
-            <div>
-              <label className="block text-xs font-medium text-[var(--text-muted)]">Run Type</label>
-              <div className="mt-1 inline-flex rounded-md border border-[var(--border)] p-0.5">
-                {(['manual', 'automated'] as const).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setNewRunMode(m)}
-                    className={cn('rounded px-3 py-1.5 text-sm font-medium capitalize transition-colors', newRunMode === m ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]')}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1 text-[11px] text-[var(--text-muted)]">{newRunMode === 'manual' ? 'Testers record per-step outcomes, actuals, comments and screenshots.' : 'Runs linked Playwright scripts automatically.'}</p>
-            </div>
-          )}
-
-          {/* Automated runs map to a Test Plan; manual runs are standalone (organized by tags). */}
-          {newRunMode !== 'manual' && (
+          {/* Runs map to a Test Plan. */}
           <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
             <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
-              <option value="">No plan</option>
+              <option value="">No Plan</option>
               {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
-          )}
 
           {/* Assign To + Status */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1019,23 +1121,15 @@ export default function TestRuns() {
               <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
             <label className="block text-xs font-medium text-[var(--text-muted)]">Status
-              <select value={newRunStatus} onChange={(e) => setNewRunStatus(e.target.value as (typeof MANUAL_RUN_STATUS_OPTIONS)[number])} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+              <select value={newRunStatus} onChange={(e) => setNewRunStatus(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+                {/* An execution-owned status the editor doesn't offer stays selectable so saving keeps it. */}
+                {!MANUAL_RUN_STATUS_OPTIONS.includes(newRunStatus as any) && <option value={newRunStatus}>{newRunStatus}</option>}
                 {MANUAL_RUN_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
               </select>
             </label>
           </div>
 
-          {/* Manual runs capture Configuration + Priority up front (the Azure Summary fields). */}
-          {newRunMode === 'manual' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Configuration
-              <input value={newRunConfiguration} onChange={(e) => setNewRunConfiguration(e.target.value)} placeholder="e.g. Sandbox / Chrome" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
-            </label>
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Priority
-              <input value={newRunPriority} onChange={(e) => setNewRunPriority(e.target.value)} placeholder="e.g. 2 / High" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
-            </label>
-          </div>
-          )}
+          {/* Configuration + Priority come from the selected test cases (authored in Test Cases). */}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Requested By
@@ -1044,12 +1138,9 @@ export default function TestRuns() {
             <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL
               <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
-            {/* Manual-run duration is measured from start→completion, not entered up front. */}
-            {newRunMode !== 'manual' && (
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration
-              <input value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} placeholder="e.g. 15m" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration
+              <input type="time" value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
-            )}
           </div>
 
           {/* Tags on their own full-width row so a long tag list never unbalances the form. */}
@@ -1060,84 +1151,12 @@ export default function TestRuns() {
             </div>
           </div>
 
-          {/* Author the test steps here (Action + Expected). Outcomes/evidence/comments are recorded
-              later in the runner after you open the run. Manual create only. */}
-          {!editingRunId && newRunMode === 'manual' && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Steps</label>
-              <div className="rounded-md border border-[var(--border)]">
-                <div className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                  <span>#</span><span>Action</span><span>Expected Result</span><span>Evidence</span><span />
-                </div>
-                <div className="max-h-56 overflow-y-auto">
-                  {newRunSteps.length === 0 && (
-                    <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet. Add the first step below.</div>
-                  )}
-                  {newRunSteps.map((step, index) => (
-                    <div key={index} className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
-                      <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{index + 1}</span>
-                      <textarea value={step.action} onChange={(e) => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, action: e.target.value } : it))} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-                      <textarea value={step.expected} onChange={(e) => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, expected: e.target.value } : it))} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-                      {/* Evidence toggle: when ON, the tester can attach a screenshot to this step during
-                          the run; when OFF, uploads are disabled for it. No upload happens at create time. */}
-                      <div className="flex items-center pt-1.5">
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={step.captureEvidence}
-                          title={step.captureEvidence ? 'Evidence allowed on this step — click to disable' : 'Evidence disabled — click to allow'}
-                          onClick={() => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, captureEvidence: !it.captureEvidence } : it))}
-                          className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
-                        >
-                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                        </button>
-                      </div>
-                      <button type="button" onClick={() => setNewRunSteps((s) => s.filter((_, i) => i !== index))} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <button type="button" onClick={() => setNewRunSteps((s) => [...s, { action: '', expected: '', captureEvidence: true }])} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
-                <Plus className="h-4 w-4" /> Add step
-              </button>
-            </div>
-          )}
+          {/* Steps come from the selected test cases — authored in Test Cases, seeded per case here. */}
 
-          {/* Manual runs author their own steps in the runner — no case linking. */}
-          {editingRunId && newRunMode === 'manual' && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Steps</label>
-              {editStepsLoading ? <div className="rounded-md border border-[var(--border)] p-4 text-center text-sm text-[var(--text-muted)]">Loading steps…</div>
-                : editRunResults.map((result, resultIndex) => (
-                  <div key={result.caseId} className="mb-3 last:mb-0">
-                    {editRunResults.length > 1 && <div className="mb-1 truncate text-xs font-medium text-[var(--text-primary)]">{result.caseTitle}</div>}
-                    <div className="rounded-md border border-[var(--border)]">
-                      <div className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                        <span>#</span><span>Action</span><span>Expected Result</span><span>Attachment</span><span />
-                      </div>
-                      {result.steps.length === 0 && <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet.</div>}
-                      {result.steps.map((step, stepIndex) => (
-                        <div key={stepIndex} className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
-                          <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{stepIndex + 1}</span>
-                          <textarea value={step.action} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, action: event.target.value } : item) } : group))} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-                          <textarea value={step.expected} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, expected: event.target.value } : item) } : group))} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-                          <div className="flex items-center pt-1.5"><button type="button" role="switch" aria-checked={step.captureEvidence} title={step.captureEvidence ? 'Attachments allowed — click to turn off' : 'Attachments off — click to allow'} onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, captureEvidence: !item.captureEvidence } : item) } : group))} className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence ? 'translate-x-4' : 'translate-x-0.5'}`} /></button></div>
-                          <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.filter((_, j) => j !== stepIndex) } : group))} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
-                        </div>
-                      ))}
-                    </div>
-                    <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: [...group.steps, { action: '', expected: '', captureEvidence: true }] } : group))} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"><Plus className="h-4 w-4" /> Add step</button>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          {!editingRunId && newRunMode !== 'manual' && (
+          {/* Also shown while editing: the PUT already carries caseIds, so membership is editable. */}
             <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts<RequiredMark /></label>
+                <label className="block text-xs font-medium text-[var(--text-muted)]">Test Cases{!editingRunId && <RequiredMark />}</label>
                 <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
                   Search &amp; link by tag
                 </button>
@@ -1157,7 +1176,7 @@ export default function TestRuns() {
                 </button>
               ) : (
                 <div className="flex max-h-40 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
-                  {selectableCases.filter((testCase) => newRunCaseIds.has(String(testCase.id))).map((testCase) => (
+                  {cases.filter((testCase) => newRunCaseIds.has(String(testCase.id))).map((testCase) => (
                     <span key={testCase.id} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
                       <span className="truncate">{testCase.title || testCase.id}</span>
                       <button
@@ -1176,7 +1195,6 @@ export default function TestRuns() {
                 {newRunCaseIds.size} test case{newRunCaseIds.size === 1 ? '' : 's'} selected
               </p>
           </div>
-          )}
         </div>
       </Modal>
 
@@ -1188,11 +1206,11 @@ export default function TestRuns() {
         <EntityLinker
           isOpen={isCaseLinkerOpen}
           onClose={() => setIsCaseLinkerOpen(false)}
-          title="Link scripted test cases to this run"
+          title="Link test cases to this run"
           target="cases"
           confirmLabel="Use selected cases"
           initialSelectedIds={[...newRunCaseIds]}
-          excludeIds={nonScriptedCaseIds}
+          // Every case is selectable: scripted ones run via Playwright, unscripted ones run by hand.
           onConfirm={(ids, meta) => { setNewRunCaseIds(new Set(ids)); setNewRunTagQuery(meta.tagQuery); setIsCaseLinkerOpen(false); }}
         />
       )}
@@ -1220,7 +1238,7 @@ export default function TestRuns() {
               <button onClick={() => setIsFilterOpen((open) => !open)} aria-expanded={isFilterOpen} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"><Filter className="w-4 h-4" /> Filters{activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}</button>
               {isFilterOpen && (
                 <div className="absolute right-0 top-11 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
-                  <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], requesters: [], suites: [], sources: [], tags: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                  <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], requesters: [], suites: [], sources: [], tags: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button></div>
                   <div className="flex flex-col gap-3">
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Run Type</label><MultiSelectDropdown label="Any type" options={[{ id: 'Manual', name: 'Manual' }, { id: 'Automated', name: 'Automated' }]} value={filters.sources} onChange={(sources) => setFilters((current) => ({ ...current, sources }))} /></div>
@@ -1235,12 +1253,12 @@ export default function TestRuns() {
               <>
                 {bulk.selectedCount > 1 && can('runs:execute') && (
                   <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={runs.some((run) => bulk.selectedIds.has(run.id) && (runProgress[run.id] || runExecutionState(run).running))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                    <PlayCircle className="w-4 h-4" /> Run selected ({bulk.selectedCount})
+                    <PlayCircle className="w-4 h-4" /> Run Selected ({bulk.selectedCount})
                   </button>
                 )}
                 {can('runs:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                  <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
                 </button>
                 )}
               </>
@@ -1248,41 +1266,56 @@ export default function TestRuns() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
-              <tr>
-                <th className="px-4 py-3 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
-                </th>
-                <th className="px-4 py-3 w-10"></th>
-                <th className="w-80 px-4 py-3 font-medium">Run</th>
-                <th className="w-28 px-4 py-3 font-medium">Type</th>
-                <th className="w-64 px-4 py-3 font-medium">Scripts</th>
-                <th className="w-28 px-4 py-3 font-medium">Tests</th>
-                <th className="w-28 px-4 py-3 font-medium">Duration</th>
-                <th className="w-52 px-4 py-3 font-medium">Run Date &amp; Time</th>
-                <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
-                <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
-                <th className="w-32 px-4 py-3 font-medium">Updated</th>
-                <th className="w-20 px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {loading ? (
-                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
-              ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
-              ) : filteredRuns.map((run) => {
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</div>
+          ) : (
+            <DataTable
+              rowCount={filteredRuns.length}
+              rowHeight={72}
+              height="100%"
+              ariaLabel="Test runs"
+              tableClassName="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap"
+              onActivateRow={(index) => navigate(`/runs/${filteredRuns[index].id}`)}
+              emptyState={<div className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</div>}
+              renderHeaderRow={() => (
+                <tr>
+                  <th className="px-4 py-3 w-10">
+                    <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
+                  </th>
+                  <th className="px-4 py-3 w-10"></th>
+                  <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Type</th>
+                  <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
+                  <th className="w-52 px-4 py-3 font-medium" scope="col">Run Date &amp; Time</th>
+                  <th className="w-56 px-4 py-3 font-medium" scope="col">Tests Status</th>
+                  <th className="w-40 px-4 py-3 font-medium" scope="col">Failure Analysis</th>
+                  <th className="w-32 px-4 py-3 font-medium" scope="col">Updated</th>
+                  <th className="w-20 px-4 py-3"></th>
+                </tr>
+              )}
+              renderRow={(index, rowProps) => {
+                const run = filteredRuns[index];
                 const stats = getRunStats(run);
-                const runScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts);
+                const runScripts = scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts);
                 const scriptNames = runScripts.map(scriptLabel);
                 const hasScripts = runScripts.length > 0;
                 const execution = runExecutionState(run);
                 const progress = runProgress[run.id] || execution.label;
                 const running = execution.running || Boolean(runProgress[run.id]);
                 return (
-                  <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
+                  <tr
+                    key={run.id}
+                    ref={rowProps.ref}
+                    tabIndex={rowProps.tabIndex}
+                    onKeyDown={rowProps.onKeyDown}
+                    onFocus={rowProps.onFocus}
+                    aria-rowindex={rowProps['aria-rowindex']}
+                    onClick={() => navigate(`/runs/${run.id}`)}
+                    className="cursor-pointer transition-colors hover:bg-[var(--bg-secondary)] focus:outline focus:outline-2 focus:-outline-offset-2 focus:outline-[var(--accent)]"
+                  >
                     <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
                     </td>
@@ -1291,14 +1324,14 @@ export default function TestRuns() {
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-semibold" title={run.name}>{run.name}</div>
-                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
+                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned To {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
                         </div>
                         {/* Manual runs: Run is enabled (no scripts needed) and opens the run to start it. */}
                         {can('runs:execute') && (
                         <button
                           onClick={(event) => { event.stopPropagation(); if (run.mode === 'manual') void startManualRun(run); else void handleExecuteRuns([run]); }}
                           disabled={run.mode !== 'manual' && (running || !hasScripts)}
-                          title={run.mode === 'manual' ? 'Start this manual run' : (hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run')}
+                          title={run.mode === 'manual' ? 'Start This Manual Run' : (hasScripts ? 'Run Linked Playwright Scripts' : 'No Playwright scripts are linked to this run')}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}
@@ -1324,7 +1357,7 @@ export default function TestRuns() {
                         <Timestamp value={runStartedAt(run)} mode="absolute" className="block truncate" />
                       ) : run.createdAt ? (
                         <div title="This run has not started; showing when it was created.">
-                          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Not started</div>
+                          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Not Started</div>
                           <Timestamp value={run.createdAt} mode="absolute" className="block truncate" />
                         </div>
                       ) : run.date ? (
@@ -1354,7 +1387,7 @@ export default function TestRuns() {
                         className="truncate"
                         title={stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
                       >
-                        {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                        {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution Failed' : '-')}
                       </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
@@ -1377,15 +1410,13 @@ export default function TestRuns() {
                     </td>
                   </tr>
                 );
-              })}
-            </tbody>
-          </table>
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
-
-
 
 

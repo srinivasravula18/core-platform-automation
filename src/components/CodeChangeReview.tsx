@@ -61,7 +61,7 @@ export function CodeChangeReview({ analysis }: { analysis: any }) {
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
       <div className="mb-2 flex items-center gap-2">
         <GitBranch className="h-4 w-4 text-[var(--accent)]" />
-        <span className="text-sm font-semibold text-[var(--text-primary)]">Code change analysis</span>
+        <span className="text-sm font-semibold text-[var(--text-primary)]">Code Change Analysis</span>
         {analysis?.branch && (
           <span className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
             {analysis.branch} · {String(analysis.baseRef || '').slice(0, 10)}
@@ -74,7 +74,7 @@ export function CodeChangeReview({ analysis }: { analysis: any }) {
       {/* Classified changes */}
       {changes.length > 0 && (
         <div className="mb-3 space-y-1.5">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">What changed</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">What Changed</div>
           {changes.map((c, i) => (
             <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -88,7 +88,7 @@ export function CodeChangeReview({ analysis }: { analysis: any }) {
                 )}
                 {c.dbChange && (
                   <span className="rounded border border-rose-500/20 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-400">
-                    DB change
+                    DB Change
                   </span>
                 )}
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--text-primary)]">{c.file}</span>

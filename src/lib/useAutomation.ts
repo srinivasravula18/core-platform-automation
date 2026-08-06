@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { withEventSourceAuth } from '@/src/lib/base-path';
+import type { BrowserPermissionSettings } from '@/core/shared/browserPermissions';
+export type { BrowserPermissionSettings } from '@/core/shared/browserPermissions';
 
 // Client types mirror the cloud's PublicAgent / recording / job / schedule shapes (server/features/automation).
 export interface Agent {
@@ -22,12 +24,20 @@ export interface Recording {
   id: string; name: string; appUrl: string; browser: string; environment: string;
   status: 'draft' | 'recording' | 'ready'; script: string; agentId: string | null;
   stats: Record<string, number>; createdAt: string; completedAt: string | null;
+  metadata?: { browserPermissions?: BrowserPermissionSettings; caseId?: string; scriptId?: string; [key: string]: any };
 }
 
 export interface Job {
   id: string; recordingId: string; agentId: string; trigger: string; status: string;
   queuedAt: string; startedAt: string | null; finishedAt: string | null; exitCode: number | null;
-  summary: Record<string, number>; error: string;
+  summary: Record<string, any>; error: string;
+}
+
+export interface JobPause {
+  id: string; jobId: string; pauseId: string; attempt: number; kind: 'input' | 'manual_action';
+  prompt: string; hint?: string; masked: boolean; requiresHeaded: boolean; timeoutMs: number;
+  onTimeout: 'fail' | 'skip'; outcome: 'open' | 'resolved' | 'skipped' | 'expired' | 'aborted';
+  openedAt: string; expiresAt: string; resolvedAt?: string | null; resolvedBy?: string; valueLength?: number | null;
 }
 
 export interface Schedule {
@@ -45,6 +55,7 @@ export function jobStatusMeta(status: string): { label: string; cls: string } {
     case 'done': return { label: 'Passed', cls: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30' };
     case 'failed': return { label: 'Failed', cls: 'bg-red-500/15 text-red-500 border-red-500/30' };
     case 'running': return { label: 'Running', cls: 'bg-blue-500/15 text-blue-500 border-blue-500/30' };
+    case 'awaiting_user': return { label: 'Waiting for you', cls: 'bg-amber-500/15 text-amber-500 border-amber-500/30' };
     case 'uploading': return { label: 'Uploading', cls: 'bg-blue-500/15 text-blue-500 border-blue-500/30' };
     case 'dispatched': return { label: 'Dispatched', cls: 'bg-indigo-500/15 text-indigo-500 border-indigo-500/30' };
     case 'cancelled': return { label: 'Cancelled', cls: 'bg-slate-500/15 text-slate-400 border-slate-500/30' };
@@ -114,6 +125,23 @@ export function useJobs() { const { items, loading, refresh } = useCollection<Jo
 export function useRecordings() { const { items, loading, refresh } = useCollection<Recording>('/api/automation/recordings', 'recordings'); return { recordings: items, loading, refresh }; }
 export function useSchedules() { const { items, loading, refresh } = useCollection<Schedule>('/api/automation/schedules', 'schedules'); return { schedules: items, loading, refresh }; }
 
+export function useJobPauses(jobId: string) {
+  const [pauses, setPauses] = useState<JobPause[]>([]);
+  const [loading, setLoading] = useState(true);
+  const refresh = useCallback(async () => {
+    if (!jobId) return;
+    try {
+      const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}/pauses`).then((response) => response.json());
+      setPauses(Array.isArray(data?.pauses) ? data.pauses : []);
+    } catch { /* keep previous */ } finally { setLoading(false); }
+  }, [jobId]);
+  useEffect(() => { setPauses([]); setLoading(true); void refresh(); }, [refresh]);
+  useAgentEvents((event) => {
+    if (event.scopeType === 'job' && event.scopeId === jobId && (event.type === 'job.paused' || event.type === 'job.resumed')) void refresh();
+  });
+  return { pauses, loading, refresh };
+}
+
 /**
  * Subscribe to the live automation event stream (SSE). The handler ref is kept current so the
  * EventSource itself is created once and survives handler changes (no reconnect storms).
@@ -133,11 +161,13 @@ export function useAgentEvents(onEvent: (evt: AutomationEvent) => void): void {
 export interface RecordingCaseMeta {
   testingType?: string; testingTypes?: string[]; priority?: string; folderId?: string;
   testPlanIds?: string[]; testSuiteIds?: string[];
+  description?: string; preconditions?: string; defectIds?: string[];
 }
 export interface StartRecordingInput {
   name: string; appUrl: string; browser: string; environment: string; agentId: string; caseMeta?: RecordingCaseMeta;
+  browserPermissions?: BrowserPermissionSettings;
 }
-export type RecordingPhase = 'setup' | 'recording' | 'summary';
+export type RecordingPhase = 'setup' | 'recording' | 'finalizing' | 'summary';
 
 /**
  * The record-a-flow state machine (setup → recording → summary), shared by the standalone Record
@@ -147,7 +177,7 @@ export type RecordingPhase = 'setup' | 'recording' | 'summary';
  */
 export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   phase: RecordingPhase; recordingId: string; script: string; stats: Record<string, number>;
-  elapsed: number; mmss: string; busy: boolean; caseId: string;
+  elapsed: number; mmss: string; busy: boolean; caseId: string; empty: boolean;
   start: (input: StartRecordingInput) => Promise<string>; stop: () => Promise<void>;
   discard: () => Promise<void>; reset: () => void;
 } {
@@ -158,14 +188,12 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false);
   const [caseId, setCaseId] = useState('');
+  // True when the finished recording captured no interactions, so no test case was created.
+  const [empty, setEmpty] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Safety net for Stop: the UI leaves 'recording' when recording.done lands. If that event is
-  // delayed/lost, this fallback still moves us to summary so the timer can't count forever.
-  const stopFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearStopFallback = () => { if (stopFallbackRef.current) { clearTimeout(stopFallbackRef.current); stopFallbackRef.current = null; } };
   const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
   const startTimer = () => { setElapsed(0); timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000); };
-  useEffect(() => () => { stopTimer(); clearStopFallback(); }, []);
+  useEffect(() => () => { stopTimer(); }, []);
 
   useAgentEvents((evt) => {
     if (evt.scopeType === 'agent') { opts?.onAgentEvent?.(); return; }
@@ -173,14 +201,32 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     if (evt.type === 'recording.chunk' && typeof evt.data.script === 'string') setScript(evt.data.script);
     if (evt.type === 'recording.status' && evt.data.stats) setStats((s) => ({ ...s, ...evt.data.stats }));
     if (evt.type === 'recording.done') {
-      clearStopFallback();
       const rec = evt.data.recording as Recording | undefined;
       if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
       if (typeof evt.data.caseId === 'string') setCaseId(evt.data.caseId);
+      setEmpty(evt.data.empty === true);
       stopTimer();
       setPhase('summary');
     }
   });
+
+  useEffect(() => {
+    if (phase !== 'finalizing' || !recordingId) return;
+    const check = async () => {
+      try {
+        const response = await fetch(`/api/automation/recordings/${encodeURIComponent(recordingId)}`);
+        const recording = (await response.json().catch(() => ({}))).recording as Recording | undefined;
+        if (recording?.status !== 'ready') return;
+        setScript(recording.script || '');
+        setStats(recording.stats || {});
+        setCaseId(String(recording.metadata.caseId || ''));
+        setPhase('summary');
+      } catch { /* SSE can still complete the session. */ }
+    };
+    void check();
+    const poll = setInterval(() => { void check(); }, 1000);
+    return () => clearInterval(poll);
+  }, [phase, recordingId]);
 
   const start = async (input: StartRecordingInput): Promise<string> => {
     if (busy) throw new Error('A recording is already starting.');
@@ -195,7 +241,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: input.agentId }),
       });
       if (!started.ok) throw new Error((await started.json())?.error || 'start failed');
-      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setPhase('recording'); startTimer();
+      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setPhase('recording'); startTimer();
       return id;
     } finally { setBusy(false); }
   };
@@ -205,10 +251,9 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     setBusy(true);
     // Stop the clock immediately — don't keep counting while we wait on the agent's round-trip.
     stopTimer();
+    setPhase('finalizing');
     try { await fetch(`/api/automation/recordings/${recordingId}/stop`, { method: 'POST' }); }
     catch { /* ignore */ } finally { setBusy(false); }
-    clearStopFallback();
-    stopFallbackRef.current = setTimeout(() => { setPhase((p) => (p === 'recording' ? 'summary' : p)); }, 8000);
   };
 
   const discard = async (): Promise<void> => {
@@ -217,8 +262,8 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setPhase('setup');
   };
 
-  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); };
+  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); };
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
-  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, start, stop, discard, reset };
+  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, start, stop, discard, reset };
 }

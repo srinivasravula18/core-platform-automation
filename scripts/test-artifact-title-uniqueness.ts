@@ -23,13 +23,19 @@ for (const artifact of artifacts) {
   assert.equal(saved[artifact.field], 'Checkout Flow', `${artifact.label}: trims the stored title`);
 
   await assert.rejects(
-    artifact.repo.upsert({ id: `${artifact.label}-2`, projectId: 'project-a', appId: 'app-b', ownerId: 'owner-b', [artifact.field]: 'checkout flow' }),
+    artifact.repo.upsert({ id: `${artifact.label}-2`, projectId: 'project-a', appId: 'app-b', ownerId: 'owner-a', [artifact.field]: 'checkout flow' }),
     (error: any) => error?.status === 409 && error?.code === 'DUPLICATE_ARTIFACT_TITLE',
-    `${artifact.label}: rejects case-insensitive duplicates across apps and owners in one project`,
+    `${artifact.label}: rejects case-insensitive duplicates across apps for one owner in one project`,
+  );
+
+  await assert.rejects(
+    artifact.repo.upsert({ id: `${artifact.label}-other-owner`, projectId: 'project-a', ownerId: 'owner-b', [artifact.field]: 'checkout flow' }),
+    (error: any) => error?.status === 409 && error?.code === 'DUPLICATE_ARTIFACT_TITLE',
+    `${artifact.label}: rejects duplicates from another owner in the same project`,
   );
 
   await artifact.repo.upsert({ ...saved, [artifact.field]: 'Checkout Flow' });
-  const other = await artifact.repo.upsert({ id: `${artifact.label}-2`, projectId: 'project-a', [artifact.field]: 'Other Flow' });
+  const other = await artifact.repo.upsert({ id: `${artifact.label}-2`, projectId: 'project-a', ownerId: 'owner-a', [artifact.field]: 'Other Flow' });
   await assert.rejects(
     artifact.repo.upsert({ ...other, [artifact.field]: 'checkout flow' }),
     (error: any) => error?.status === 409 && error?.code === 'DUPLICATE_ARTIFACT_TITLE',
@@ -38,7 +44,7 @@ for (const artifact of artifacts) {
   await artifact.repo.upsert({ id: `${artifact.label}-3`, projectId: 'project-b', [artifact.field]: 'checkout flow' });
 
   db[artifact.store].find((item: any) => item.id === first.id).deletedAt = new Date().toISOString();
-  await artifact.repo.upsert({ id: `${artifact.label}-4`, projectId: 'project-a', [artifact.field]: 'CHECKOUT FLOW' });
+  await artifact.repo.upsert({ id: `${artifact.label}-4`, projectId: 'project-a', ownerId: 'owner-a', [artifact.field]: 'CHECKOUT FLOW' });
 }
 
 console.log(`artifact title uniqueness: ${artifacts.length}/${artifacts.length} artifact types passed`);

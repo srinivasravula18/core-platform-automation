@@ -12,24 +12,71 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { createInterface } from 'readline';
 import { AutomationJobs, AutomationExecutionBatches, Recordings } from '../../db/repository';
 import { setJobStatus, syncLinkedRun } from './jobService';
 import { saveArtifact } from './artifactService';
 import { emitEvent } from './eventsService';
 import type { ArtifactKind } from './types';
+import { parseAtomicSteps } from './stepGrouping';
+import { mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { playwrightFailure } from '../../../agent/src/playwrightFailure';
+import { startPauseControl, type PauseControl } from '../../../agent/src/pauseControl';
+import { pausePreludeSource } from '../../../agent/src/preludeSource';
+import { closeOpenPausesForJob, listJobPauses, recordPause, registerLocalPauseResolver } from './pauseService';
+import { isPauseResumeEnabled } from './flag';
+import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
+import { MISSION_RUNNER_SOURCE } from '../agent/compiler/missionRunner.template';
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw', 'automation');
 const running = new Map<string, ReturnType<typeof spawn>>();
+const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
 
-function configTemplate(engine: string): string {
+const progressReporterSource = `
+class TestFlowProgressReporter {
+  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); }
+  emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
+  tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
+  title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
+  onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
+  onTestBegin(test) { this.emit('test_started', test); }
+  onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
+  onStepBegin(_test, _result, step) { if (!this.tracked(step)) return; const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() })); }
+  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
+}
+module.exports = TestFlowProgressReporter;
+`;
+
+function progressFromLine(line: string): any | null {
+  const at = line.indexOf(PROGRESS_PREFIX);
+  if (at < 0) return null;
+  try { return JSON.parse(line.slice(at + PROGRESS_PREFIX.length)); } catch { return null; }
+}
+
+export function browserPermissionPrelude(settings: BrowserPermissionSettings, appUrl: string): string {
+  if (!settings.permissions.length && !settings.acceptDialogs) return '';
+  let origin = '';
+  try { origin = new URL(appUrl).origin; } catch { /* grant for the isolated context below */ }
+  const grant = settings.permissions.length
+    ? `await context.grantPermissions(${JSON.stringify(settings.permissions)}${origin ? `, { origin: ${JSON.stringify(origin)} }` : ''});`
+    : '';
+  const dialogs = settings.acceptDialogs ? `page.on('dialog', (dialog) => { void dialog.accept().catch(() => {}); });` : '';
+  return `import { test as __testflowBrowserSetup } from '@playwright/test';\n__testflowBrowserSetup.beforeEach(async ({ context, page }) => { ${grant} ${dialogs} });\n`;
+}
+
+export function configTemplate(engine: string, hasPauses = false, settings: BrowserPermissionSettings = { permissions: [] }): string {
   const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
+  const fakeMediaArgs = browserName === 'chromium' && settings.fakeMedia
+    ? `, launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }`
+    : '';
+  const geolocation = settings.geolocation ? `, geolocation: ${JSON.stringify(settings.geolocation)}` : '';
   return `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
-  timeout: 60000,
-  reporter: [['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
-  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on' },
+  timeout: ${hasPauses ? 0 : 60000},
+  reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
+  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${fakeMediaArgs} },
 });
 `;
 }
@@ -71,6 +118,11 @@ function parseSummary(runDir: string): Record<string, number> {
   } catch { return {}; }
 }
 
+function parseFailure(runDir: string, script: string): string {
+  try { return playwrightFailure(JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8')), script); }
+  catch { return ''; }
+}
+
 /** Execute a queued job's recording headless on the server. Resolves when the run + upload finish. */
 export async function runJobOnServer(jobId: string): Promise<void> {
   const job = await AutomationJobs.get(jobId);
@@ -83,26 +135,74 @@ export async function runJobOnServer(jobId: string): Promise<void> {
     await setJobStatus(jobId, 'failed', { error: 'No script to run.', finishedAt: new Date().toISOString() });
     return;
   }
+  const hasPauses = isPauseResumeEnabled() && /\btf\.pause\s*\(/.test(scriptSource);
+  const browserPermissions = normalizeBrowserPermissionSettings(rec?.metadata?.browserPermissions);
+  if (hasPauses && /\btf\.pause\s*\(\s*\{[\s\S]*?kind\s*:\s*['"]manual_action['"]/.test(scriptSource)) {
+    await setJobStatus(jobId, 'failed', { error: 'This script requires a headed run for a manual browser action.', finishedAt: new Date().toISOString() });
+    return;
+  }
+
+  let control: PauseControl | undefined;
+  let unregisterResolver = () => {};
+  if (hasPauses) {
+    control = await startPauseControl(jobId, (pause) => {
+      void recordPause('', pause).then(async (saved) => {
+        if (!saved) return;
+        const current = await AutomationJobs.get(jobId);
+        const prior = current?.summary || {};
+        await setJobStatus(jobId, 'awaiting_user', { summary: { ...prior, pauseCount: (await listJobPauses(jobId)).length, assisted: true } });
+      });
+    });
+    unregisterResolver = registerLocalPauseResolver(jobId, (answer) => control!.resolve(answer.pauseId, answer));
+  }
 
   const runDir = path.join(RUN_ROOT, jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
   fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
-  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium'));
-  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), scriptSource);
+  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions));
+  fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
+  if (/from\s+['"]\.\/mission-runner['"]/.test(scriptSource)) fs.writeFileSync(path.join(runDir, 'tests', 'mission-runner.ts'), MISSION_RUNNER_SOURCE);
+  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${hasPauses ? pausePreludeSource : ''}${scriptSource}`);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });
+  const output: string[] = [];
 
-  const exitCode: number = await new Promise((resolve) => {
-    const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
-      cwd: runDir, shell: process.platform === 'win32', env: { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never' },
+  let progressWrites = Promise.resolve();
+  let exitCode: number;
+  try {
+    exitCode = await new Promise((resolve) => {
+      const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
+        cwd: runDir,
+        shell: process.platform === 'win32',
+        env: {
+          ...process.env,
+          PLAYWRIGHT_HTML_OPEN: 'never',
+          TESTFLOW_STEP_TOTAL: String(parseAtomicSteps(scriptSource).length),
+          ...(control ? { TESTFLOW_CONTROL_URL: control.url, TESTFLOW_CONTROL_KEY: control.key, TESTFLOW_JOB_ID: jobId } : {}),
+        },
+      });
+      running.set(jobId, child);
+      const onLine = (line: string) => {
+        const progress = progressFromLine(line);
+        if (!progress) { output.push(line); if (output.length > 30) output.shift(); void log(line); return; }
+        progressWrites = progressWrites.then(async () => {
+          const current = await AutomationJobs.get(jobId);
+          if (!current || current.status === 'cancelled') return;
+          await setJobStatus(jobId, 'running', { summary: mergeExecutionProgress(current.summary || {}, progress) });
+        });
+      };
+      if (child.stdout) createInterface({ input: child.stdout }).on('line', onLine);
+      if (child.stderr) createInterface({ input: child.stderr }).on('line', onLine);
+      child.once('close', (code) => { running.delete(jobId); resolve(code ?? 1); });
+      child.once('error', (err) => { output.push(`Runner error: ${err.message}`); void log(output.at(-1)!); running.delete(jobId); resolve(1); });
     });
-    running.set(jobId, child);
-    const onLine = (b: Buffer) => String(b).split('\n').filter(Boolean).forEach((l) => void log(l));
-    child.stdout?.on('data', onLine);
-    child.stderr?.on('data', onLine);
-    child.once('close', (code) => { running.delete(jobId); resolve(code ?? 1); });
-    child.once('error', (err) => { void log(`runner error: ${err.message}`); running.delete(jobId); resolve(1); });
-  });
+  } finally {
+    unregisterResolver();
+    await control?.close();
+  }
+  await progressWrites;
+
+  if ((await AutomationJobs.get(jobId))?.status === 'cancelled') return;
 
   await setJobStatus(jobId, 'uploading');
   for (const a of collectArtifacts(runDir)) {
@@ -110,9 +210,15 @@ export async function runJobOnServer(jobId: string): Promise<void> {
     catch (err: any) { void log(`artifact save failed (${a.filename}): ${err?.message}`); }
   }
 
+  if ((await AutomationJobs.get(jobId))?.status === 'cancelled') return;
+
   const summary = parseSummary(runDir);
   const status = exitCode === 0 ? 'done' : 'failed';
-  await setJobStatus(jobId, status, { exitCode, summary, error: exitCode === 0 ? '' : 'Test run reported failures.', finishedAt: new Date().toISOString() });
+  const current = await AutomationJobs.get(jobId);
+  const outputFailure = output.join('\n').slice(-4000);
+  const failure = exitCode === 0 ? '' : parseFailure(runDir, scriptSource) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : 'Test run reported failures.');
+  await setJobStatus(jobId, status, { exitCode, summary: { ...(current?.summary || {}), ...summary }, error: failure, finishedAt: new Date().toISOString() });
+  await closeOpenPausesForJob(jobId);
   // Keep server-scheduled execution in parity with agent execution: the linked Test Run is what
   // powers durable dashboard/test-management outcome views.
   await syncLinkedRun(jobId, status, summary);

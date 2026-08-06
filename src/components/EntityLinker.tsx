@@ -225,7 +225,7 @@ export function EntityLinker({
             disabled={!items.length}
             className="rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--bg-secondary)] disabled:opacity-40"
           >
-            {allShownSelected ? 'Clear matching' : 'Select all matching'}
+            {allShownSelected ? 'Clear Matching' : 'Select All Matching'}
           </button>
         </div>
 

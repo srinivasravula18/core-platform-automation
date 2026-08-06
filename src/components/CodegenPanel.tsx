@@ -1,13 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil, Video } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
-import { useRemoteAgentFlag, useAgents, useRecordingSession, type RecordingCaseMeta } from '@/src/lib/useAutomation';
+import { useRemoteAgentFlag, useAgents, useRecordingSession, type BrowserPermissionSettings, type RecordingCaseMeta } from '@/src/lib/useAutomation';
+import { AUTOMATION_BROWSER_PERMISSIONS, type AutomationBrowserPermission } from '@/core/shared/browserPermissions';
 import { NoAgentState } from '@/src/components/NoAgentState';
+import { can } from '@/src/components/AuthGate';
+import { createClientRunId } from '@/src/lib/startSelectedRun';
+import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
+import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
+import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
-const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
+const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD', 'staging'] as const;
+
+function currentLocation(): Promise<GeolocationCoordinates> {
+  if (!navigator.geolocation) return Promise.reject(new Error('This browser does not support location services.'));
+  return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+    (position) => resolve(position.coords),
+    () => reject(new Error('Location access is required to use your current location.')),
+    { timeout: 10_000 },
+  ));
+}
 
 /**
  * The Playwright codegen record flow (setup → recording → summary) as an embeddable panel. Used by
@@ -15,20 +32,84 @@ const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
  * panel owns URL/browser/environment/agent and the record lifecycle. On finish the backend has
  * already created the linked Automated test case, so we hand its id back via onDone.
  */
-export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
+export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, selectedEnvironment, onEnvironmentChange }: {
   title: string;
   appUrl: string;
   caseMeta: RecordingCaseMeta;
   onDone: (caseId: string) => void;
+  footerTarget: HTMLElement;
+  selectedEnvironment?: string;
+  onEnvironmentChange?: (environment: string) => void;
 }) {
+  const navigate = useNavigate();
   const flag = useRemoteAgentFlag();
   const { agents, loading, refresh } = useAgents();
   const session = useRecordingSession({ onAgentEvent: () => { void refresh(); } });
-  const { phase, recordingId, script, stats, mmss, busy, caseId } = session;
+  const { phase, recordingId, script, stats, mmss, busy, caseId, empty } = session;
 
   const [agentId, setAgentId] = useState('');
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
+  const [permissions, setPermissions] = useState<AutomationBrowserPermission[]>([]);
+  const [geolocation, setGeolocation] = useState<{ latitude: number; longitude: number; accuracy: number }>();
+  const [locating, setLocating] = useState(false);
+  const [fakeMedia, setFakeMedia] = useState(true);
+  const [acceptDialogs, setAcceptDialogs] = useState(false);
+  const [startingRun, setStartingRun] = useState(false);
+  const [savedScript, setSavedScript] = useState('');
+  const [scriptDraft, setScriptDraft] = useState('');
+  // The finished script opens ready to edit — reviewing and correcting it is the normal next step.
+  const [editingScript, setEditingScript] = useState(true);
+  const [savingScript, setSavingScript] = useState(false);
+  const [savingRecording, setSavingRecording] = useState(false);
+  const [previewJobId, setPreviewJobId] = useState('');
+  // Spec file name for the case's linked script; editable once the recording has produced one.
+  const [specName, setSpecName] = useState('');
+  const [savedSpecName, setSavedSpecName] = useState('');
+  const normalizeSpecName = (value: string) => {
+    const base = String(value || '').trim().replace(/\.spec\.ts$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+    return base ? `${base}.spec.ts` : '';
+  };
+
+  // A late streamed chunk must not wipe an edit in progress; only a clean draft follows the script.
+  useEffect(() => {
+    setSavedScript(script);
+    setScriptDraft((draft) => (draft === savedScript ? script : draft));
+  }, [script]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
+  // Once the recording produced a case, surface its script's file name so it can be renamed here.
+  useEffect(() => {
+    if (!caseId) return;
+    let cancelled = false;
+    void fetch('/api/scripts').then((r) => r.json()).then((rows) => {
+      const linked = Array.isArray(rows) ? rows.find((item: any) => String(item.caseId || '') === caseId) : null;
+      if (!cancelled && linked?.filename) { setSpecName(linked.filename); setSavedSpecName(linked.filename); }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [caseId]);
+
+  const useCurrentLocation = async () => {
+    setLocating(true);
+    try {
+      const { latitude, longitude, accuracy } = await currentLocation();
+      setGeolocation({ latitude, longitude, accuracy });
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const selectAllBrowserSetup = () => {
+    setPermissions([...AUTOMATION_BROWSER_PERMISSIONS]);
+    setAcceptDialogs(true);
+    setFakeMedia(true);
+    if (!geolocation) void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }));
+  };
+
+  const clearAllBrowserSetup = () => {
+    setPermissions([]);
+    setAcceptDialogs(false);
+    setFakeMedia(false);
+  };
 
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
@@ -36,9 +117,16 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
 
   const startRecording = async () => {
     if (!appUrl.trim() || !title.trim() || !selectedAgent || busy) return;
-    if (!caseMeta.folderId) { showToast('Select a folder or create one first.', { tone: 'error' }); return; }
     try {
-      await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta });
+      const location = permissions.includes('geolocation') ? geolocation || await currentLocation() : undefined;
+      const browserPermissions: BrowserPermissionSettings = {
+        permissions,
+        ...(location ? { geolocation: { latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy } } : {}),
+        ...(fakeMedia ? { fakeMedia: true } : {}),
+        ...(acceptDialogs ? { acceptDialogs: true } : {}),
+      };
+      await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta, browserPermissions });
+      setPreviewJobId('');
       showToast('Recording started — interact with your app in the codegen window.', { tone: 'success' });
     } catch (err: any) { showToast(err?.message || 'Could not start recording.', { tone: 'error' }); }
   };
@@ -46,6 +134,111 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   const discard = async () => {
     if (recordingId && !(await showConfirm('Discard this recording?'))) return;
     void session.discard();
+  };
+
+  const runRecordedCase = async (headed: boolean) => {
+    if (!caseId || startingRun) return;
+    setStartingRun(true);
+    try {
+      const runId = createClientRunId();
+      const response = await fetch('/api/automation/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, runId, headed, ...(headed && selectedAgent ? { agentId: selectedAgent.id } : {}) }),
+      });
+      const data = await readAutomationRunResponse(response);
+      if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
+      onDone(caseId);
+      navigate(`/runs/${data.run.id}`, { state: { pendingRun: data.run } });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not start the recorded case.', { tone: 'error', durationMs: 5000 });
+    } finally {
+      setStartingRun(false);
+    }
+  };
+
+  // Persist an edited script to the recording (always) and to the linked case script (when one exists),
+  // so edits survive whether or not the recording produced a test case. Returns false on failure.
+  const persistScript = async (): Promise<boolean> => {
+    if (!recordingId || !scriptDraft.trim()) return true;
+    const renameOnly = scriptDraft === savedScript && normalizeSpecName(specName) !== savedSpecName && Boolean(caseId);
+    if (scriptDraft === savedScript && !renameOnly) return true;
+    const recording = await fetch(`/api/automation/recordings/${recordingId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: scriptDraft }),
+    });
+    if (!recording.ok) throw new Error((await recording.json().catch(() => ({}))).error || 'Could not save the script.');
+    if (caseId) {
+      const scripts = await fetch('/api/scripts').then((response) => response.json());
+      const linked = Array.isArray(scripts) ? scripts.find((item) => String(item.caseId || '') === caseId) : null;
+      if (linked?.id) {
+        const renamed = normalizeSpecName(specName);
+        const response = await fetch(`/api/scripts/${linked.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: scriptDraft, ...(renamed && renamed !== savedSpecName ? { filename: renamed } : {}) }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not save the script.');
+      }
+    }
+    setSavedScript(scriptDraft);
+    setSavedSpecName(normalizeSpecName(specName) || savedSpecName);
+    return true;
+  };
+
+  const saveScript = async () => {
+    if (!scriptDraft.trim() || savingScript) return;
+    setSavingScript(true);
+    try {
+      await persistScript();
+      showToast('Script saved.', { tone: 'success' });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not save the script.', { tone: 'error' });
+    } finally {
+      setSavingScript(false);
+    }
+  };
+
+  const saveRecording = async () => {
+    if (!recordingId || savingRecording) return;
+    setSavingRecording(true);
+    try {
+      await persistScript(); // an unsaved edit must never be silently dropped by the footer Save
+      const response = await fetch(`/api/automation/recordings/${recordingId}`);
+      const body = await response.json().catch(() => ({}));
+      const recording = body.recording;
+      if (!response.ok || !recording) throw new Error(body.error || 'Could not verify the recording.');
+      if (recording.status !== 'ready') throw new Error('The complete script is still being saved. Try again in a moment.');
+      if (!empty && !String(recording.script || '').trim()) throw new Error('The recorded script is empty and was not saved.');
+      // The recording flips to 'ready' before its test case is written (case creation runs the AI
+      // step-humanizer, which can take seconds). Closing now would refetch a list that does not yet
+      // contain the case, so wait for the id the server writes back onto the recording.
+      let linkedCaseId = String(recording.metadata?.caseId || caseId || '');
+      for (let attempt = 0; !empty && !linkedCaseId && attempt < 20; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const polled = await fetch(`/api/automation/recordings/${recordingId}`).then((r) => r.json()).catch(() => ({}));
+        linkedCaseId = String(polled?.recording?.metadata?.caseId || '');
+      }
+      showToast('Recording and complete script saved.', { tone: 'success' });
+      onDone(linkedCaseId);
+    } catch (error: any) {
+      showToast(error?.message || 'Could not save the recording.', { tone: 'error' });
+    } finally {
+      setSavingRecording(false);
+    }
+  };
+
+  const createVideoPreview = async () => {
+    if (!recordingId || busy) return;
+    try {
+      await persistScript();
+      const response = await fetch(`/api/automation/recordings/${encodeURIComponent(recordingId)}/video-preview`, { method: 'POST' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.job?.id) throw new Error(body.error || 'Could not create the video preview.');
+      setPreviewJobId(body.job.id);
+      showToast('Creating a video preview from the saved recording.', { tone: 'success' });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not create the video preview.', { tone: 'error' });
+    }
   };
 
   if (flag === false) return <div className="p-4 text-sm text-[var(--text-muted)]">The local desktop agent feature is not enabled on this server.</div>;
@@ -65,7 +258,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
           </label>
           <label className="block text-xs font-medium text-[var(--text-muted)]">
             Environment
-            <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
+            <select value={environment} onChange={(e) => { setEnvironment(e.target.value); onEnvironmentChange?.(e.target.value); }}
               className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
               {ENVIRONMENTS.map((e) => <option key={e} value={e}>{e}</option>)}
             </select>
@@ -80,11 +273,47 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
             </label>
           )}
         </div>
+        <fieldset className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+          <legend className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>Browser permissions and pop-ups</span>
+            <div className="flex gap-2">
+              <button type="button" onClick={selectAllBrowserSetup} className="text-xs font-medium text-[var(--accent)] hover:underline">Select all</button>
+              <button type="button" onClick={clearAllBrowserSetup} className="text-xs font-medium text-[var(--accent)] hover:underline">Clear all</button>
+            </div>
+          </legend>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {AUTOMATION_BROWSER_PERMISSIONS.map((permission) => (
+              <label key={permission} className="flex items-center gap-2 text-sm capitalize text-[var(--text-primary)]">
+                <input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => {
+                  setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission));
+                  if (permission === 'geolocation' && event.target.checked) void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }));
+                }} />
+                {permission}
+              </label>
+            ))}
+            <label className="flex items-center gap-2 text-sm text-[var(--text-primary)]">
+              <input type="checkbox" checked={acceptDialogs} onChange={(event) => setAcceptDialogs(event.target.checked)} />
+              Accept JavaScript dialogs
+            </label>
+            {(permissions.includes('camera') || permissions.includes('microphone')) && (
+              <label className="flex items-center gap-2 text-sm text-[var(--text-primary)]">
+                <input type="checkbox" checked={fakeMedia} onChange={(event) => setFakeMedia(event.target.checked)} disabled={browser !== 'chromium'} />
+                Use fake camera/microphone
+              </label>
+            )}
+          </div>
+          {permissions.includes('geolocation') && (
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-[var(--text-muted)]">
+              <span>{geolocation ? `Current location: ${geolocation.latitude.toFixed(6)}, ${geolocation.longitude.toFixed(6)}` : 'Allow location access to use your current location.'}</span>
+              <button type="button" onClick={() => void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }))} disabled={locating} className="shrink-0 text-[var(--accent)] hover:underline disabled:opacity-50">{locating ? 'Getting location…' : 'Refresh location'}</button>
+            </div>
+          )}
+          <p className="mt-2 text-[11px] text-[var(--text-muted)]">Playback grants selected permissions before navigation. Recording uses a dedicated site profile, so browser-level approvals can be remembered safely.</p>
+        </fieldset>
         {/* URL/browser/environment are always selectable; the agent just needs to be running to record. */}
         {!hasAgent && <NoAgentState onRetry={refresh} />}
         {!title.trim() && <p className="text-xs text-amber-500">Enter a Title above to name this recorded test case.</p>}
         {!appUrl.trim() && <p className="text-xs text-amber-500">Choose an Application URL above to record against.</p>}
-        {!caseMeta.folderId && <p className="text-xs text-amber-500">Select a repository folder above before recording.</p>}
         <button onClick={startRecording} disabled={busy || !appUrl.trim() || !title.trim() || !hasAgent}
           title={!hasAgent ? 'Start your local agent to begin recording' : undefined}
           className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
@@ -122,27 +351,91 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
     );
   }
 
+  if (phase === 'finalizing') {
+    return <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center"><Loader2 className="h-7 w-7 animate-spin text-[var(--accent)]" /><div className="text-sm font-semibold text-[var(--text-primary)]">Generating your Playwright script…</div><p className="text-xs text-[var(--text-muted)]">Your recording is being finalized. This screen will update when it is ready.</p></div>;
+  }
+
   // summary
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-500">
-        <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
-      </div>
-      <ScriptPane script={script} placeholder="No script was generated." />
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => onDone(caseId)}
-          className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
-          Done
+      {empty ? (
+        // Nothing was captured, so no case was created — say so plainly instead of a green tick.
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-500">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>No steps were recorded, so no test case was created. Record again and interact with your app — clicks, typing and navigation are captured.</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-500">
+          <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
+        </div>
+      )}
+      {caseId && savedSpecName && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Script file name</label>
+          <input
+            value={specName}
+            onChange={(event) => setSpecName(event.target.value)}
+            onBlur={() => setSpecName((value) => normalizeSpecName(value) || savedSpecName)}
+            placeholder="login-and-create-account.spec.ts"
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+          />
+        </div>
+      )}
+      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]"><span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-500">Stage 1</span> Playwright code created <CheckCircle2 className="h-4 w-4 text-emerald-500" /></div>
+      <ScriptPane
+        script={savedScript}
+        placeholder="No script was generated."
+        editing={editingScript}
+        draft={scriptDraft}
+        onDraftChange={setScriptDraft}
+        actions={!empty ? (editingScript ? <>
+          {scriptDraft !== savedScript && <span className="text-xs text-[var(--text-muted)]">Unsaved changes</span>}
+          <button type="button" onClick={() => { setScriptDraft(savedScript); setEditingScript(false); }} disabled={savingScript} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
+          <button type="button" onClick={() => void saveScript()} disabled={savingScript || !scriptDraft.trim()} className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{savingScript ? 'Saving…' : 'Save'}</button>
+        </> : <button type="button" onClick={() => setEditingScript(true)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"><Pencil className="h-3.5 w-3.5" /> Edit</button>) : undefined}
+      />
+      </section>
+      {!empty && recordingId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]"><span className="rounded bg-[var(--accent)]/15 px-2 py-0.5 text-xs text-[var(--accent)]">Stage 2</span> Video preview</div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Replays this saved script with the same video artifacts used in Test Runs. It does not create a Test Run.</p>
+          </div>
+          <button type="button" onClick={() => void createVideoPreview()} disabled={busy || !can('record-play:execute')} title={!can('record-play:execute') ? 'You do not have permission to run recordings.' : undefined} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+            <Video className="h-4 w-4" /> Create video preview
+          </button>
+        </div>
+        {previewJobId && <div className="mt-3"><AutomationRunArtifacts jobId={previewJobId} videoOnly /></div>}
+      </div>}
+      {!empty && caseId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+        <div className="text-sm font-semibold text-[var(--text-primary)]">Run this recorded case now?</div>
+        <p className="mt-1 text-xs text-[var(--text-muted)]">Recording always uses the headed local agent. Choose how the generated script should execute.</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={() => void runRecordedCase(true)} disabled={startingRun || !selectedAgent}
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+            {startingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <Monitor className="h-4 w-4" />} Run Headed
+          </button>
+          <button onClick={() => void runRecordedCase(false)} disabled={startingRun}
+            className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+            <Server className="h-4 w-4" /> Run Headless
+          </button>
+        </div>
+      </div>}
+      {createPortal(<div className="flex flex-wrap gap-2">
+        <button onClick={() => void saveRecording()} disabled={startingRun || savingRecording}
+          className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+          {savingRecording && <Loader2 className="h-4 w-4 animate-spin" />} {savingRecording ? 'Saving...' : 'Save'}
         </button>
-        <button onClick={session.reset} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]">
-          Record again
+        <button onClick={session.reset} disabled={startingRun || savingRecording} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+          Record Again
         </button>
-      </div>
+      </div>, footerTarget)}
     </div>
   );
 }
 
-/** Application URL selector (saved-URL dropdown + free text + inline Add URL). Controlled. */
+/** Application URL selector (saved-URL dropdown + inline Add URL). Controlled. */
 export function AppUrlField({ value, onChange, onEnvironment }: {
   value: string;
   onChange: (url: string) => void;
@@ -157,7 +450,7 @@ export function AppUrlField({ value, onChange, onEnvironment }: {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <label className="block text-xs font-medium text-[var(--text-muted)]">Application URL</label>
+        <label className="block text-xs font-medium text-[var(--text-muted)]">Application URL<RequiredMark /></label>
         <button type="button" onClick={() => setAddUrlOpen(true)} className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline">
           <Plus className="h-3.5 w-3.5" /> Add URL
         </button>
@@ -176,8 +469,6 @@ export function AppUrlField({ value, onChange, onEnvironment }: {
           {websites.map((w) => <option key={w.id} value={w.baseUrl}>{w.name} — {w.baseUrl}</option>)}
         </select>
       )}
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="https://app.example.com"
-        className="mt-2 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
       <AddUrlModal isOpen={addUrlOpen} onClose={() => setAddUrlOpen(false)} onCreated={(w) => { onChange(w.baseUrl); void loadWebsites(); }} />
     </div>
   );
@@ -192,11 +483,31 @@ export function StatTile({ label, value }: { label: string; value: number | stri
   );
 }
 
-export function ScriptPane({ script, placeholder, tall }: { script: string; placeholder: string; tall?: boolean }) {
+export function ScriptPane({ script, placeholder, tall, editing, draft, onDraftChange, actions }: {
+  script: string;
+  placeholder: string;
+  tall?: boolean;
+  editing?: boolean;
+  draft?: string;
+  onDraftChange?: (value: string) => void;
+  actions?: React.ReactNode;
+}) {
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
-      <div className="border-b border-[var(--border)] px-4 py-3 text-sm font-semibold text-[var(--text-primary)]">Generated Playwright Script</div>
-      {script ? (
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-2.5">
+        <span className="text-sm font-semibold text-[var(--text-primary)]">Generated Playwright Script</span>
+        {actions && <div className="flex items-center gap-2">{actions}</div>}
+      </div>
+      {editing && onDraftChange ? (
+        <textarea
+          aria-label="Edit generated Playwright script"
+          value={draft ?? ''}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => handleCodeEditorKeyDown(event, draft ?? '', onDraftChange)}
+          spellCheck={false}
+          className={`${tall ? 'h-[calc(100dvh-15rem)]' : 'h-96'} w-full resize-y bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200 outline-none focus:ring-1 focus:ring-inset focus:ring-[var(--accent)]`}
+        />
+      ) : script ? (
         <pre className={`${tall ? 'max-h-[calc(100dvh-15rem)]' : 'max-h-[24rem]'} overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200`}><code>{script}</code></pre>
       ) : (
         <div className={`flex ${tall ? 'h-80' : 'h-40'} items-center justify-center px-6 text-center text-sm text-[var(--text-muted)]`}>{placeholder}</div>
@@ -224,7 +535,7 @@ export function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; o
       onCreated(data.website || { name: name.trim(), baseUrl: baseUrl.trim(), environment });
       setName(''); setBaseUrl('');
       onClose();
-    } catch { showToast('Could not add the URL.', { tone: 'error' }); }
+    } catch (error) { showToast(error instanceof Error && error.message ? error.message : 'Could not add the URL.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
   return (
@@ -249,7 +560,7 @@ export function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; o
         Environment
         <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {['QA', 'DEV', 'TEST', 'PROD', 'staging'].map((e) => <option key={e} value={e}>{e}</option>)}
+          {ENVIRONMENTS.map((e) => <option key={e} value={e}>{e}</option>)}
         </select>
       </label>
       <p className="mt-4 text-xs text-[var(--text-muted)]">Saved URLs are shared with Settings → credentials and reusable across recordings.</p>

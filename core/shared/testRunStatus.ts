@@ -23,8 +23,17 @@ export function agentRunStatusForList(status: unknown): string {
     case 'review_required': return 'Review Required';
     case 'coverage_options': return 'Coverage Options';
     case 'running': return 'In Progress';
+    case 'awaiting_user': return 'Waiting for you';
     default: return 'Draft';
   }
+}
+
+export function withoutAutomationJobMeta(triggerMeta: any): any {
+  const next = { ...(triggerMeta || {}) };
+  delete next.automationJobId;
+  delete next.agentId;
+  delete next.automationExecution;
+  return next;
 }
 
 /**

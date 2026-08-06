@@ -87,7 +87,7 @@ export function RunnablePicker({ selectedKey, onSelect }: { selectedKey: string;
     const byCase = new Map<string, { id: string; name: string; items: Runnable[] }>();
     for (const item of filtered) {
       const id = item.caseId || UNGROUPED;
-      const name = item.caseName || (item.caseId ? 'Untitled case' : 'Ungrouped');
+      const name = item.caseName || (item.caseId ? 'Untitled Case' : 'Ungrouped');
       const group = byCase.get(id) || byCase.set(id, { id, name, items: [] }).get(id)!;
       group.items.push(item);
     }
@@ -97,7 +97,7 @@ export function RunnablePicker({ selectedKey, onSelect }: { selectedKey: string;
 
   return <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
     <div className="shrink-0 border-b border-[var(--border)] p-2">
-      <div className="mb-2 px-1 text-sm font-semibold">Run what<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">by test case · tag</span></div>
+      <div className="mb-2 px-1 text-sm font-semibold">Run What<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">by test case · tag</span></div>
       <label className="relative block">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
         <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by test case, name, or tag (e.g. regression)" aria-label="Search runnables by test case, name, or tag"
@@ -116,7 +116,7 @@ export function RunnablePicker({ selectedKey, onSelect }: { selectedKey: string;
     <div className="min-h-0 flex-1 overflow-y-auto p-1">
       {loading ? <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />Loading…</div>
         : !runnables.length ? <div className="p-4 text-sm text-[var(--text-muted)]">No test cases, scripts, or recordings yet.</div>
-        : !groups.length ? <div className="p-4 text-sm text-[var(--text-muted)]">No runnables match{activeTags.length ? ` tag ${activeTags.map((t) => `“${t}”`).join(', ')}` : ' your search'}.</div>
+        : !groups.length ? <div className="p-4 text-sm text-[var(--text-muted)]">No Runnables Match{activeTags.length ? ` tag ${activeTags.map((t) => `“${t}”`).join(', ')}` : ' your search'}.</div>
         : groups.map((group) => <CaseGroup key={group.id} group={group} selectedKey={selectedKey} onSelect={onSelect} />)}
     </div>
   </div>;

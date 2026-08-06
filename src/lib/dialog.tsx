@@ -145,7 +145,7 @@ function DialogModal({ dialog, resolveTop }: { dialog: DialogRequest; resolveTop
             onClick={() => resolveTop(true)}
             className={cn(
               'rounded-lg px-3 py-1.5 text-sm font-semibold text-white',
-              danger ? 'bg-red-600 hover:bg-red-500' : 'bg-[var(--accent)] hover:opacity-90',
+              danger ? 'delete-action' : 'bg-[var(--accent)] hover:opacity-90',
             )}
           >
             {dialog.confirmText}

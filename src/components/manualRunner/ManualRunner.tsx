@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bug, Check, X, Circle, Clock, Play, Square } from 'lucide-react';
+import { Bug, Check, X, Circle, Clock, PanelLeftClose, PanelLeftOpen, Play, Square } from 'lucide-react';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
@@ -36,10 +36,10 @@ function formatDuration(result: any, now?: number): string {
 
 // The large Azure-style result status derived from a case outcome.
 function resultStatus(outcome: string) {
-  if (outcome === 'Passed') return { Icon: Check, label: 'Test passed', cls: 'text-emerald-500' };
-  if (outcome === 'Failed') return { Icon: X, label: 'Test failed', cls: 'text-red-500' };
-  if (!outcome || outcome === 'Not Run') return { Icon: Circle, label: 'Not run', cls: 'text-[var(--text-muted)]' };
-  return { Icon: Clock, label: 'In progress', cls: 'text-amber-500' };
+  if (outcome === 'Passed') return { Icon: Check, label: 'Test Passed', cls: 'text-emerald-500' };
+  if (outcome === 'Failed') return { Icon: X, label: 'Test Failed', cls: 'text-red-500' };
+  if (!outcome || outcome === 'Not Run') return { Icon: Circle, label: 'Not Run', cls: 'text-[var(--text-muted)]' };
+  return { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' };
 }
 
 // Manual test runner: master (test-points list + bulk toolbar) / detail (selected case result) view,
@@ -66,6 +66,7 @@ export function ManualRunner({
   const [bulkOutcome, setBulkOutcome] = useState<ManualOutcome>('Passed');
   const [busy, setBusy] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [isCasePanelMinimized, setIsCasePanelMinimized] = useState(false);
   const [now, setNow] = useState(() => Date.now()); // live clock for the in-progress duration
 
   const editable = can('runs:execute');
@@ -184,22 +185,26 @@ export function ManualRunner({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* LEFT: bulk toolbar + test-points list (hidden for a standalone step-authored run) */}
-        {!standalone && (
+        {!standalone && !isCasePanelMinimized && (
         <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--border)]">
           {editable && (
-            <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5">
-              <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <div className="flex flex-nowrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5">
+              <label className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--text-muted)]">
                 <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(results.map((r) => r.caseId)))} />
                 {selected.size ? `${selected.size} selected` : 'All'}
               </label>
-              <select value={bulkOutcome} onChange={(e) => setBulkOutcome(e.target.value as ManualOutcome)} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs outline-none">
+              <select value={bulkOutcome} onChange={(e) => setBulkOutcome(e.target.value as ManualOutcome)} className="w-0 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs outline-none">
                 {MANUAL_OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
-              <button type="button" disabled={busy} onClick={bulkSet} className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+              <button type="button" disabled={busy} onClick={bulkSet} className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                 Apply{selected.size ? ` (${selected.size})` : ' all'}
+              </button>
+              <button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]">
+                <PanelLeftClose className="h-4 w-4" />
               </button>
             </div>
           )}
+          {!editable && <div className="flex justify-end border-b border-[var(--border)] px-3 py-2"><button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"><PanelLeftClose className="h-4 w-4" /></button></div>}
           <div className="border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
             <span className="font-medium text-[var(--text-primary)]">{rollup.status}</span> · {rollup.progress}
           </div>
@@ -240,6 +245,7 @@ export function ManualRunner({
 
         {/* RIGHT: selected case result detail */}
         <section className="flex min-w-0 flex-1 flex-col overflow-auto">
+          {!standalone && isCasePanelMinimized && <div className="border-b border-[var(--border)] px-3 py-2"><button type="button" onClick={() => setIsCasePanelMinimized(false)} className="inline-flex items-center gap-1.5 rounded px-1 py-1 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"><PanelLeftOpen className="h-4 w-4" /> Show test cases</button></div>}
           {!selectedResult ? (
             <div className="p-8 text-sm text-[var(--text-muted)]">Select a test case to view its result.</div>
           ) : (
@@ -331,7 +337,7 @@ function ResultDetail({
   const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
   // A started-but-unevaluated case reads "In progress", not "Not run".
   const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
-    ? { Icon: Clock, label: 'In progress', cls: 'text-amber-500' }
+    ? { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
 
   return (
@@ -358,7 +364,7 @@ function ResultDetail({
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-          <span className="whitespace-nowrap">Start time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
+          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
           <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(result, now)}</span></span>
           <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[var(--text-primary)]">
             {/* Self-contained switch: inline-flex track + inline-block knob (no absolute), so the knob
@@ -372,7 +378,7 @@ function ResultDetail({
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-4' : 'translate-x-0.5'}`} />
             </button>
-            Show images
+            Show Images
           </label>
           {editable && (
             <button type="button" disabled={busy} onClick={onCreateBug} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-primary)] hover:text-red-500 disabled:opacity-50">

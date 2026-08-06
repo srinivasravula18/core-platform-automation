@@ -5,6 +5,7 @@ import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
+import { downloadFile, reportMetrics, reportTypeLabel, toReportHTML } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -15,6 +16,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
 import { showConfirm } from '@/src/lib/dialog';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { TESTING_TYPES } from '@/core/shared/testCaseTypes';
 
 interface Step {
   step: string;
@@ -22,11 +24,17 @@ interface Step {
   expected: string;
   outcome: 'Pass' | 'Fail' | 'Skipped';
   reason?: string;
+  actual?: string;
+  durationMs?: number;
+  testCaseTitle?: string;
+  testCaseId?: string;
   screenshot: string;
 }
 
 interface Report {
   id: string;
+  runId?: string;
+  planId?: string;
   name: string;
   folderId?: string;
   planName: string;
@@ -36,6 +44,7 @@ interface Report {
   totalExecutions: number;
   status: 'Passed' | 'Failed' | 'Skipped';
   failureReason?: string;
+  targetUrl?: string;
   date: string;
   steps: Step[];
   evidence?: any[];
@@ -75,7 +84,7 @@ function evidenceGalleryItems(report: Report | null): EvidenceGalleryItem[] {
   };
 
   (report.steps || []).forEach((step, index) => {
-    add(stepEvidence(report, step, index), `Step ${index + 1}: ${step.action || 'Captured screenshot'}`);
+    add(stepEvidence(report, step, index), `Step ${index + 1}: ${step.action || 'Captured Screenshot'}`);
   });
   (Array.isArray(report.evidence) ? report.evidence : []).forEach((entry, index) => {
     const title = entry?.title || `Evidence ${index + 1}`;
@@ -248,7 +257,7 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
           </div>
         </div>
         <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 text-right">
-          Authorized account
+          Authorized Account
         </div>
       </div>
     )
@@ -277,6 +286,8 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
 export default function Reports() {
   const [reports, setReports] = useState<Report[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
+  const [runs, setRuns] = useState<any[]>([]);
+  const [cases, setCases] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   
@@ -335,6 +346,21 @@ export default function Reports() {
     catch { /* clipboard unavailable */ }
   };
 
+  const handleHtmlReportExport = async (report: Report) => {
+    let run: any;
+    let results: any[] = [];
+    if (report.runId) {
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(report.runId)}/results`);
+        if (response.ok) ({ run, results = [] } = await response.json());
+      } catch (error) {
+        console.error('Unable to load linked run details for report export.', error);
+      }
+    }
+    const plan = plans.find((item: any) => String(item.id) === String(report.planId || run?.testPlanId));
+    downloadFile(toReportHTML(report, { run, results, plan, cases, suites }), `report-${report.id}.html`, 'text/html;charset=utf-8');
+  };
+
   const fetchReports = (showLoading = true) => {
     if (showLoading) setLoading(true);
     fetch('/api/reports')
@@ -357,9 +383,16 @@ export default function Reports() {
   };
 
   const fetchDataConfigs = () => {
-    fetch('/api/plans').then(r => r.json()).then(data => setPlans(data)).catch(console.error);
-    fetch('/api/suites').then(r => r.json()).then(data => setSuites(data)).catch(console.error);
-    fetch('/api/folders').then(r => r.json()).then(data => setFolders(Array.isArray(data) ? data : [])).catch(console.error);
+    const load = (url: string) => fetch(url).then((response) => response.json()).then((data) => Array.isArray(data) ? data : []);
+    void Promise.all([load('/api/plans'), load('/api/runs'), load('/api/cases'), load('/api/suites'), load('/api/folders')])
+      .then(([nextPlans, nextRuns, nextCases, nextSuites, nextFolders]) => {
+        setPlans(nextPlans);
+        setRuns(nextRuns);
+        setCases(nextCases);
+        setSuites(nextSuites);
+        setFolders(nextFolders);
+      })
+      .catch(console.error);
   };
 
   useEffect(() => {
@@ -377,7 +410,7 @@ export default function Reports() {
   }, []);
 
   const handleCreateReport = () => {
-    if (!newReportName.trim()) return;
+    if (!newReportName.trim() || !newReportSteps.length) return;
 
     const reportPayload = {
       name: newReportName,
@@ -452,7 +485,6 @@ export default function Reports() {
   };
 
   const removeFormStep = (index: number) => {
-    if (newReportSteps.length <= 1) return;
     const filtered = newReportSteps.filter((_, i) => i !== index);
     // re-index steps
     const reindexed = filtered.map((st, i) => ({ ...st, step: (i + 1).toString() }));
@@ -469,7 +501,13 @@ export default function Reports() {
     const matchesUpdated = passesTimeFilter(r.metadata?.updatedAt || r.updatedAt || r.date, updatedFilter);
     return matchesSearch && matchesStatus && matchesUpdated;
   }), timeSort);
-  const totalReportSteps = filteredReports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
+  const runById = useMemo(() => new Map(runs.map((run) => [String(run.id), run])), [runs]);
+  const reportMetricsById = useMemo(() => new Map(reports.map((report) => [report.id, reportMetrics(report, {
+    run: runById.get(String(report.runId || '')),
+    cases,
+  })])), [reports, runById, cases]);
+  const totalReportCases = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.caseCount || 0), 0);
+  const totalReportSteps = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.stepCount || 0), 0);
   const passedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
     if (steps.length > 0) return total + steps.filter(step => /pass/i.test(String(step.outcome || ''))).length;
@@ -480,14 +518,6 @@ export default function Reports() {
     if (steps.length > 0) return total + steps.filter(step => /fail/i.test(String(step.outcome || ''))).length;
     return total + (report.status === 'Failed' ? 1 : 0);
   }, 0);
-  const requestedBySummary = filteredReports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
-  const uniqueDurations = Array.from(new Set(filteredReports.map(report => report.executionTime).filter(Boolean)));
-  const executionDurationSummary = filteredReports.length > 0
-    ? uniqueDurations.length
-      ? uniqueDurations.slice(0, 3).join(', ') + (uniqueDurations.length > 3 ? ` +${uniqueDurations.length - 3} more` : '')
-      : 'Not specified'
-    : 'No reports logged';
-
   return (
     <div className="flex h-full min-h-0 w-full flex-col px-4 pb-4">
       {/* Header Info */}
@@ -504,16 +534,18 @@ export default function Reports() {
             rows={filteredReports}
             columns={[
               { key: 'id', label: 'ID' },
+              { key: 'runId', label: 'Run ID' },
               { key: 'name', label: 'Name' },
+              { key: 'type', label: 'Type', get: (r) => reportTypeLabel(r, { run: runById.get(String(r.runId || '')), cases }) },
               { key: 'status', label: 'Status' },
               { key: 'planName', label: 'Plan' },
               { key: 'suiteName', label: 'Suite' },
               { key: 'requestedBy', label: 'Requested By' },
               { key: 'executionTime', label: 'Execution Time' },
-              { key: 'totalExecutions', label: 'Total Executions' },
+              { key: 'caseCount', label: 'Executed Cases', get: (r) => reportMetricsById.get(r.id)?.caseCount || 0 },
+              { key: 'stepCount', label: 'Executed Steps', get: (r) => reportMetricsById.get(r.id)?.stepCount || 0 },
               { key: 'failureReason', label: 'Failure Reason' },
               { key: 'date', label: 'Date' },
-              { key: 'stepCount', label: 'Steps', get: (r) => (r.steps || []).length },
               { key: 'updatedAt', label: 'Updated', get: (r: any) => r.metadata?.updatedAt || r.updatedAt || '' },
               { key: 'updatedBy', label: 'Updated By', get: (r: any) => r.metadata?.updatedBy?.name || '' },
               { key: 'createdAt', label: 'Created', get: (r: any) => r.metadata?.createdAt || r.createdAt || '' },
@@ -529,25 +561,17 @@ export default function Reports() {
       <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden mb-2">
         
         {/* Statistics Executive Summary Row */}
-        <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-4 gap-4 text-left">
+        <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
-            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Requested By</span>
-            <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-[var(--accent)]" />
-              <span className="text-xs truncate">{requestedBySummary}</span>
-            </span>
-          </div>
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
-            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Overall Execution Duration</span>
-            <span className="block text-sm font-semibold text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
-              <span className="text-xs truncate">{executionDurationSummary}</span>
-            </span>
-          </div>
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
-            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total Executed Cases (Steps)</span>
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Executed Cases</span>
             <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
-              {totalReportSteps} Verification Steps in {filteredReports.length} Scenarios
+              {totalReportCases} Test Cases
+            </span>
+          </div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Executed Steps</span>
+            <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
+              {totalReportSteps} Verification Steps
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
@@ -597,7 +621,7 @@ export default function Reports() {
             </div>
           {bulk.selectedCount > 0 ? (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
             </button>
           ) : (
             <div className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs text-slate-500">
@@ -608,13 +632,14 @@ export default function Reports() {
 
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
-          <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[940px] border-collapse text-left text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
                   <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
                 </th>
                 <th className="w-24 px-4 py-3">ID</th>
+                <th className="w-28 px-4 py-3">Run ID</th>
                 <th className="px-4 py-3">Test Scenario</th>
                 <th className="w-28 px-4 py-3">Type</th>
                 <th className="w-32 px-4 py-3">Pass / Fail</th>
@@ -626,16 +651,17 @@ export default function Reports() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {filteredReports.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
+                <tr><td colSpan={10} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
               ) : filteredReports.map((r) => {
                 const c = stepCounts(r);
-                const type = r.suiteName?.includes('Regression') ? 'Regression' : r.suiteName?.includes('Sanity') ? 'Sanity' : 'BVT';
+                const type = reportTypeLabel(r, { run: runById.get(String(r.runId || '')), cases });
                 return (
                   <tr key={r.id} onClick={() => setDetailReport(r)} className="cursor-pointer align-top hover:bg-[var(--bg-secondary)]/40 transition-colors">
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.id}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.runId || '—'}</td>
                     <td className="px-4 py-3">
                       <div className="font-semibold text-[var(--text-primary)]">{r.name}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><FolderBadge folders={folders} folderId={r.folderId} />{r.planName ? <span>· {r.planName}</span> : null}<span>· {r.date}</span></div>
@@ -661,7 +687,7 @@ export default function Reports() {
       <Modal isOpen={!!detailReport} onClose={() => setDetailReport(null)} title={detailReport?.name || 'Report'} size="xl"
         footer={
           <div className="flex w-full items-center justify-between gap-3">
-            <div className="text-xs text-[var(--text-muted)]">Requested by {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
+            <div className="text-xs text-[var(--text-muted)]">Requested By {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
             <div className="flex gap-2">
               <button onClick={() => detailReport && handleShareReport(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><ExternalLink className="h-4 w-4" /> Share</button>
               {detailReport && (
@@ -670,10 +696,11 @@ export default function Reports() {
                   dropUp
                   filename={`report-${detailReport.id}`}
                   title={detailReport.name}
-                  formats={['pdf', 'csv', 'md', 'json', 'html']}
+                  formats={['pdf', 'csv', 'md', 'json']}
+                  extraItems={[{ label: 'HTML Report (.html)', onClick: () => void handleHtmlReportExport(detailReport) }]}
                   rows={(detailReport.steps || []).map((step, index) => ({
                     ...step,
-                    evidence: stepEvidence(detailReport, step, index),
+                    evidence: stepEvidence(detailReport, step, index) ? evidenceImageSource(stepEvidence(detailReport, step, index)) : '',
                   }))}
                   columns={[
                     { key: 'step', label: '#' },
@@ -681,7 +708,7 @@ export default function Reports() {
                     { key: 'expected', label: 'Expected Result' },
                     { key: 'outcome', label: 'Outcome' },
                     { key: 'reason', label: 'Reason' },
-                    { key: 'evidence', label: 'Evidence' },
+                    { key: 'evidence', label: 'Evidence', kind: 'image' },
                   ]}
                 />
               )}
@@ -698,6 +725,16 @@ export default function Reports() {
                 {detailReport.planName && <span className="text-[var(--text-muted)]">· Plan: {detailReport.planName}</span>}
                 {detailReport.suiteName && <span className="text-[var(--text-muted)]">· Suite: {detailReport.suiteName}</span>}
               </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Requested By</span>
+                  <span className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><User className="h-3.5 w-3.5 text-[var(--accent)]" />{detailReport.requestedBy || '—'}</span>
+                </div>
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Overall Execution Duration</span>
+                  <span className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Clock className="h-3.5 w-3.5 text-blue-500" />{detailReport.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'}</span>
+                </div>
+              </div>
               {detailReport.failureReason && (
                 <div className="whitespace-pre-wrap rounded-md border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">{detailReport.failureReason}</div>
               )}
@@ -713,7 +750,7 @@ export default function Reports() {
                         <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
                         <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
                         <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
-                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => selectScreenshot(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
+                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => selectScreenshot(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not Captured</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -743,14 +780,14 @@ export default function Reports() {
               </button>
             </div>
             <div className="flex shrink-0 gap-1 border-b border-[var(--border)] bg-[var(--bg-card)] px-4 pt-2">
-              <button type="button" onClick={() => setLightboxTab('current')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'current' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>Current screenshot</button>
-              <button type="button" onClick={() => setLightboxTab('all')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'all' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>All screenshots ({galleryItems.length || 1})</button>
+              <button type="button" onClick={() => setLightboxTab('current')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'current' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>Current Screenshot</button>
+              <button type="button" onClick={() => setLightboxTab('all')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'all' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>All Screenshots ({galleryItems.length || 1})</button>
             </div>
             {/* Browser body canvas content context */}
             <div className="p-0 bg-slate-900 overflow-auto flex-1 min-h-0">
               {lightboxTab === 'all' ? (
                 <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
-                  {(galleryItems.length ? galleryItems : [{ key: lightboxKey, title: 'Current screenshot' }]).map((item, index) => (
+                  {(galleryItems.length ? galleryItems : [{ key: lightboxKey, title: 'Current Screenshot' }]).map((item, index) => (
                     <button key={`${item.key}-${index}`} type="button" onClick={() => selectScreenshot(item.key)} className={cn('overflow-hidden rounded-lg border text-left transition-colors', item.key === lightboxKey ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)] hover:border-[var(--accent)]')}>
                       <img src={evidenceImageSource(item.key)} alt={item.title} className="h-40 w-full bg-black object-cover" referrerPolicy="no-referrer" />
                       <span className="block truncate bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)]">{item.title}</span>
@@ -794,7 +831,7 @@ export default function Reports() {
             <button
               type="button"
               onClick={handleCreateReport}
-              disabled={!newReportName.trim()}
+              disabled={!newReportName.trim() || !newReportSteps.length}
               className="px-4 py-2 bg-[var(--accent)] text-white text-xs font-semibold rounded hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
             >
                Save Verification Report
@@ -829,7 +866,7 @@ export default function Reports() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Plan context</label>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Plan Context</label>
                 <select 
                   value={newReportPlan} 
                   onChange={(e) => setNewReportPlan(e.target.value)} 
@@ -849,8 +886,8 @@ export default function Reports() {
                   className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
                 >
                   <option value="">-- Choose Category --</option>
-                  {suites.map(s => (
-                    <option key={s.id} value={s.name}>{s.name}</option>
+                  {TESTING_TYPES.map(type => (
+                    <option key={type} value={type}>{type}</option>
                   ))}
                 </select>
              </div>
@@ -910,13 +947,14 @@ export default function Reports() {
 
           <div className="border-t border-[var(--border)] pt-4 mt-2">
              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-bold uppercase text-[var(--text-muted)] tracking-wider">Verification Steps ({newReportSteps.length})</span>
+                <span className="text-xs font-bold uppercase text-[var(--text-muted)] tracking-wider">Verification Steps ({newReportSteps.length})<RequiredMark /></span>
                 <button type="button" onClick={addFormStep} className="text-xs font-semibold text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors flex items-center gap-1.5">
                   <Plus className="w-3.5 h-3.5" /> Append Step
                 </button>
              </div>
 
              <div className="space-y-4 max-h-[30vh] overflow-y-auto pr-1">
+                {newReportSteps.length === 0 && <p className="rounded border border-dashed border-[var(--border)] p-3 text-center text-xs text-[var(--text-muted)]">Add at least one verification step before saving.</p>}
                 {newReportSteps.map((st, i) => (
                   <div key={i} className="p-3 rounded bg-[var(--bg-secondary)] border border-[var(--border)] relative space-y-3 text-left">
                      <button type="button" onClick={() => removeFormStep(i)} className="absolute top-2 right-2 text-[var(--text-muted)] hover:text-red-500 transition-colors p-1" title="Remove Step">
@@ -926,7 +964,7 @@ export default function Reports() {
                      
                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
-                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Action / Input details</label>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Action / Input Details</label>
                            <input 
                              type="text" 
                              value={st.action} 
@@ -949,7 +987,7 @@ export default function Reports() {
 
                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
-                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Step outcome</label>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Step Outcome</label>
                             <select 
                               value={st.outcome} 
                               onChange={(e) => updateFormStep(i, { outcome: e.target.value as any })} 

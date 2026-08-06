@@ -34,6 +34,7 @@ const connections = new Map<string, Conn>();
 // Frame handlers registered by jobService / recordingService (avoids a hard import cycle at load).
 type FrameHandler = (agentId: string, frame: AgentFrame) => void | Promise<void>;
 const frameHandlers = new Map<string, Set<FrameHandler>>();
+const frameQueues = new Map<string, Promise<void>>();
 
 export function onAgentFrame(type: string, handler: FrameHandler): void {
   if (!frameHandlers.has(type)) frameHandlers.set(type, new Set());
@@ -50,7 +51,10 @@ async function dispatchFrame(agentId: string, frame: AgentFrame): Promise<void> 
 
 /** Deliver a parsed agent frame to its registered handlers. Used by the WS message pump (and tests). */
 export function deliverAgentFrame(agentId: string, frame: AgentFrame): Promise<void> {
-  return dispatchFrame(agentId, frame);
+  const queued = (frameQueues.get(agentId) || Promise.resolve()).then(() => dispatchFrame(agentId, frame));
+  frameQueues.set(agentId, queued);
+  void queued.finally(() => { if (frameQueues.get(agentId) === queued) frameQueues.delete(agentId); });
+  return queued;
 }
 
 export function isAgentConnected(agentId: string): boolean {
@@ -132,7 +136,7 @@ export function attachAutomationGateway(httpServer: HttpServer): void {
         void Agents.get(agentId).then((a) => a && Agents.upsert({ ...a, status: frame.payload?.status === 'busy' ? 'busy' : 'online', lastHeartbeatAt: new Date().toISOString() }));
         return;
       }
-      void dispatchFrame(agentId, frame);
+      void deliverAgentFrame(agentId, frame);
     });
 
     ws.on('close', () => {

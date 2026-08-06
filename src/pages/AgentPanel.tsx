@@ -10,6 +10,7 @@ import { MarkdownText } from '@/src/components/MarkdownText';
 import { useProjects } from '@/src/store/project';
 import { normalizeTags } from '@/src/lib/tags';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -92,6 +93,8 @@ export default function AgentPanel() {
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
   const [caseFeedback, setCaseFeedback] = useState('');
+  const [caseReworkAttachments, setCaseReworkAttachments] = useState<AIImageAttachment[]>([]);
+  const [caseReworkAttachmentError, setCaseReworkAttachmentError] = useState('');
   const [expandStepCount, setExpandStepCount] = useState(8);
   const [expandStepTarget, setExpandStepTarget] = useState<'all' | number>('all');
   const [expandingCaseIndex, setExpandingCaseIndex] = useState<number | null>(null);
@@ -300,12 +303,15 @@ export default function AgentPanel() {
           testCase: currentCase,
           feedback: caseFeedback,
           targetUrl: runData?.app_url,
+          attachments: caseReworkAttachments.length ? caseReworkAttachments : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to rework test case');
       updateGeneratedCase(caseIndex, data);
       setCaseFeedback('');
+      setCaseReworkAttachments([]);
+      setCaseReworkAttachmentError('');
     } catch (err: any) {
       void showAlert(err.message || 'Failed to rework test case.');
     } finally {
@@ -415,7 +421,7 @@ export default function AgentPanel() {
           <div className="p-3 border-t border-[var(--border)] bg-[var(--bg-primary)]">
             <div className="mb-3 flex items-center justify-between gap-3 text-xs text-[var(--text-muted)]">
               <div>
-                <span>Test cases</span>
+                <span>Test Cases</span>
                 <div className="mt-1 flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden">
                   {[0, 3, 5, 8].map((count) => (
                     <button
@@ -477,7 +483,7 @@ export default function AgentPanel() {
                     onClick={() => { setSelectedFolderId(''); setIsFolderPickerOpen(false); }}
                     className="block w-full rounded px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
                   >
-                    Auto-create from prompt
+                    Auto-create from Prompt
                   </button>
                   {folders.map((folder) => (
                     <button
@@ -573,7 +579,7 @@ export default function AgentPanel() {
                    onChange={(e) => setAllCaseEvidence(e.target.checked)}
                    className="accent-[var(--accent)]"
                  />
-                 Screenshots for all
+                 Screenshots for All
                </label>
                {runData.status === 'review_required' && (
                  <button onClick={continueAgentFlow} disabled={isGenerating} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50">
@@ -717,7 +723,7 @@ export default function AgentPanel() {
                       </div>
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test steps</div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test Steps</div>
                           <div className="flex flex-wrap items-center gap-2">
                             <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
                               Target
@@ -726,14 +732,14 @@ export default function AgentPanel() {
                                 onChange={(e) => setExpandStepTarget(e.target.value === 'all' ? 'all' : Number(e.target.value))}
                                 className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-2 py-1 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
                               >
-                                <option value="all">All steps</option>
+                                <option value="all">All Steps</option>
                                 {(c.steps || []).map((_: any, stepIndex: number) => (
                                   <option key={stepIndex} value={stepIndex}>Step {stepIndex + 1}</option>
                                 ))}
                               </select>
                             </label>
                             <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                              Expand to
+                              Expand To
                               <select
                                 value={expandStepCount}
                                 onChange={(e) => setExpandStepCount(Number(e.target.value))}
@@ -750,7 +756,7 @@ export default function AgentPanel() {
                               className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                             >
                               {expandingCaseIndex === i ? <Loader2 className="w-3 h-3 animate-spin" /> : <SplitSquareHorizontal className="w-3 h-3" />}
-                              Expand steps
+                              Expand Steps
                             </button>
                           </div>
                         </div>
@@ -780,7 +786,7 @@ export default function AgentPanel() {
                           </div>
                         ))}
                         <button onClick={() => addGeneratedCaseStep(i)} className="text-xs text-[var(--accent)] hover:underline">
-                          Add step
+                          Add Step
                         </button>
                       </div>
                       <textarea
@@ -788,6 +794,13 @@ export default function AgentPanel() {
                         onChange={(e) => setCaseFeedback(e.target.value)}
                         className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16"
                         placeholder="Feedback for AI rework, e.g. add negative validation and contact form checks..."
+                      />
+                      <AIImageAttachmentPicker
+                        attachments={caseReworkAttachments}
+                        error={caseReworkAttachmentError}
+                        disabled={isReworkingCase}
+                        onAdd={(files) => { void appendAIImageAttachments(caseReworkAttachments, files).then(({ next, error }) => { setCaseReworkAttachments(next); setCaseReworkAttachmentError(error); }); }}
+                        onRemove={(index) => setCaseReworkAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
                       />
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setEditingCaseIndex(null)} className="px-3 py-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]">
@@ -831,7 +844,7 @@ export default function AgentPanel() {
               {runData.evidence_screenshots.map((shot: any, i: number) => (
                 <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg overflow-hidden">
                   <div className="px-4 py-3 border-b border-[var(--border)] flex flex-col gap-1">
-                    <div className="text-sm font-semibold text-[var(--text-primary)]">Evidence: {shot.title || 'Playwright screenshot evidence'}</div>
+                    <div className="text-sm font-semibold text-[var(--text-primary)]">Evidence: {shot.title || 'Playwright Screenshot Evidence'}</div>
                     <div className="text-xs text-[var(--text-muted)] break-all">{shot.url}</div>
                   </div>
                   <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />
@@ -867,7 +880,7 @@ export default function AgentPanel() {
               </div>
               {runData && (
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
-                  <div className="mb-2 font-mono text-xs font-semibold text-[var(--text-primary)]">Run request</div>
+                  <div className="mb-2 font-mono text-xs font-semibold text-[var(--text-primary)]">Run Request</div>
                   <pre className="custom-scrollbar max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]">
                     {renderAgentOutput({
                       prompt: runData.prompt,
@@ -900,7 +913,7 @@ export default function AgentPanel() {
                       {renderAgentOutput(message.output)}
                     </pre>
                     <details className="mt-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                      <summary className="cursor-pointer font-semibold text-[var(--text-primary)]">Recorded details</summary>
+                      <summary className="cursor-pointer font-semibold text-[var(--text-primary)]">Recorded Details</summary>
                       <pre className="custom-scrollbar mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--text-primary)]">
                         {renderAgentOutput(message)}
                       </pre>

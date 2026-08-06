@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Code2, Folder, Loader2, Search, Trash2, CalendarClock, Plus } from 'lucide-react';
+import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil, Eye } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
-import { useRemoteAgentFlag, useSchedules, useRecordings } from '@/src/lib/useAutomation';
+import { useRemoteAgentFlag, useSchedules, useRecordings, type Schedule } from '@/src/lib/useAutomation';
 
 function fmt(iso: string | null): string {
   if (!iso) return '—';
@@ -11,19 +11,90 @@ function fmt(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-const CRON_PRESETS = [
-  { label: 'Every 15 minutes', value: '*/15 * * * *' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Daily at 2:00 AM', value: '0 2 * * *' },
-  { label: 'Weekdays at 9:00 AM', value: '0 9 * * 1-5' },
-  { label: 'Weekly on Monday at 9:00 AM', value: '0 9 * * 1' },
+type ScheduleTab = 'daily' | 'weekly' | 'monthly' | 'once' | 'cron';
+
+const SCHEDULE_TABS: Array<{ id: ScheduleTab; label: string }> = [
+  { id: 'daily', label: 'Daily' },
+  { id: 'weekly', label: 'Weekly' },
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'once', label: 'Specific Date' },
+  { id: 'cron', label: 'Cron' },
 ];
+
+/** `datetime-local` is timezone-naive; this modal is UTC throughout, so read it as UTC. */
+function runAtFromUtcInput(value: string): string {
+  const parsed = Date.parse(`${value}:00Z`);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
+}
+
+/** Default the picker to the next whole hour, in UTC, so it is never a past instant. */
+function nextHourUtcInput(): string {
+  const d = new Date();
+  d.setUTCMinutes(0, 0, 0);
+  d.setUTCHours(d.getUTCHours() + 1);
+  return d.toISOString().slice(0, 16);
+}
+
+// Cron day-of-week is 0=Sunday. Letters repeat (S/T), so each pill carries the full name for a11y.
+const WEEKDAYS = [
+  { value: 0, letter: 'S', name: 'Sunday' },
+  { value: 1, letter: 'M', name: 'Monday' },
+  { value: 2, letter: 'T', name: 'Tuesday' },
+  { value: 3, letter: 'W', name: 'Wednesday' },
+  { value: 4, letter: 'T', name: 'Thursday' },
+  { value: 5, letter: 'F', name: 'Friday' },
+  { value: 6, letter: 'S', name: 'Saturday' },
+];
+
+const ordinal = (n: number) => `${n}${['th', 'st', 'nd', 'rd'][(n % 100 - n % 10 !== 10 && n % 10 < 4) ? n % 10 : 0]}`;
+
+/**
+ * Build the cron expression for a tab.
+ *
+ * Everything submits as kind 'cron' on purpose: the backend's 'daily'/'weekly'/'monthly' kinds are
+ * plain interval arithmetic (now + 24h / 7d / 1 month) that ignores time-of-day and day selection,
+ * so a "Daily at 09:00" schedule sent as kind 'daily' would fire at whatever time it was created.
+ */
+function buildCron(tab: ScheduleTab, time: string, weekdays: number[], monthDay: number): string {
+  if (tab === 'once') return '';
+  const [hours, minutes] = time.split(':');
+  const h = Number(hours);
+  const m = Number(minutes);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return '';
+  if (tab === 'daily') return `${m} ${h} * * *`;
+  if (tab === 'weekly') return weekdays.length ? `${m} ${h} * * ${[...weekdays].sort((a, b) => a - b).join(',')}` : '';
+  return `${m} ${h} ${monthDay} * *`;
+}
+
+/** Plain-English echo of the current selection, so nobody has to read the cron to trust it. */
+function describeSchedule(tab: ScheduleTab, time: string, weekdays: number[], monthDay: number): string {
+  if (tab === 'daily') return `Everyday at ${time} UTC`;
+  if (tab === 'weekly') {
+    if (!weekdays.length) return 'Pick at least one day';
+    const names = [...weekdays].sort((a, b) => a - b).map((d) => WEEKDAYS[d].name);
+    return `Every ${names.join(', ')} at ${time} UTC`;
+  }
+  if (tab === 'monthly') return `On the ${ordinal(monthDay)} of every month at ${time} UTC`;
+  return '';
+}
+
+/** Human echo for a one-off, rendered from the UTC instant that will actually be stored. */
+function describeRunAt(runAt: string): string {
+  if (!runAt) return 'Pick a date and time';
+  const d = new Date(runAt);
+  return `Once on ${d.toISOString().slice(0, 10)} at ${d.toISOString().slice(11, 16)} UTC`;
+}
 
 export default function Schedules() {
   const flag = useRemoteAgentFlag();
   const { schedules, loading, refresh } = useSchedules();
   const { recordings } = useRecordings();
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Schedule | null>(null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+
+  const selectedSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId) || null;
+  const selectedRecording = selectedSchedule ? recordings.find((recording) => recording.id === selectedSchedule.recordingId) || null : null;
 
   const nameFor = useMemo(() => {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
@@ -31,7 +102,7 @@ export default function Schedules() {
   }, [recordings]);
 
   const toggle = async (id: string, enabled: boolean) => {
-    try { await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); void refresh(); }
+    try { const response = await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); if (!response.ok) throw new Error(); void refresh(); }
     catch { showToast('Could not update the schedule.', { tone: 'error' }); }
   };
 
@@ -48,7 +119,7 @@ export default function Schedules() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">Schedules</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">Pick repository scripts and a date &amp; time — they run on the server headless, no agent needed.</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Pick your scripts and when to run them. TestFlow runs them for you, so your computer does not need to be switched on.</p>
         </div>
         <button onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
           <Plus className="h-4 w-4" /> New Schedule
@@ -68,25 +139,30 @@ export default function Schedules() {
             <thead>
               <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
                 <th className="px-4 py-2.5 font-medium">Recording</th>
-                <th className="px-4 py-2.5 font-medium">Runs at</th>
-                <th className="px-4 py-2.5 font-medium">Last run</th>
+                <th className="px-4 py-2.5 font-medium">Runs At</th>
+                <th className="px-4 py-2.5 font-medium">Last Run</th>
                 <th className="px-4 py-2.5 font-medium">Enabled</th>
                 <th className="px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {schedules.map((s) => (
-                <tr key={s.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)]">
-                  <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">{nameFor(s.recordingId)}</td>
+                <tr key={s.id} onClick={() => setSelectedScheduleId(s.id)} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
+                  <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">
+                    <button type="button" onClick={() => setSelectedScheduleId(s.id)} className="inline-flex items-center gap-1.5 text-left hover:text-[var(--accent)]" title="Open scheduled test">
+                      {nameFor(s.recordingId)} <Eye className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
                   <td className="px-4 py-2.5">
-                    <button onClick={() => toggle(s.id, s.enabled)} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
+                    <button onClick={(event) => { event.stopPropagation(); void toggle(s.id, s.enabled); }} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
                       <span className={`h-4 w-4 rounded-full bg-white transition-transform ${s.enabled ? 'translate-x-4' : ''}`} />
                     </button>
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => remove(s.id)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                    <button onClick={(event) => { event.stopPropagation(); setEditing(s); }} className="mr-2 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)]" title="Edit schedule"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={(event) => { event.stopPropagation(); void remove(s.id); }} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                   </td>
                 </tr>
               ))}
@@ -96,8 +172,52 @@ export default function Schedules() {
       </div>
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} />
+      {editing && <EditScheduleModal schedule={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
+      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
+}
+
+function ScheduleRecordingModal({ schedule, recording, onClose }: { schedule: Schedule | null; recording: any | null; onClose: () => void }) {
+  return <Modal isOpen={!!schedule} onClose={onClose} title="Scheduled test" size="xl"
+    footer={<div className="flex justify-end"><button type="button" onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Close</button></div>}>
+    {!schedule ? null : <div className="space-y-4">
+      <div><div className="text-lg font-medium text-[var(--text-primary)]">{recording?.name || schedule.recordingId}</div><p className="mt-1 text-sm text-[var(--text-muted)]">This recording runs when the schedule fires.</p></div>
+      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Next run</dt><dd className="mt-1 text-[var(--text-primary)]">{fmt(schedule.nextRunAt)}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Schedule</dt><dd className="mt-1 font-mono text-[var(--text-primary)]">{schedule.cron || schedule.kind}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Target URL</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Test case</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
+      </dl>
+      {recording?.script ? <pre className="max-h-80 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{recording.script}</code></pre> : <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">The recording is no longer available.</div>}
+    </div>}
+  </Modal>;
+}
+
+function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule; onClose: () => void; onSaved: () => void }) {
+  const [kind, setKind] = useState<'once' | 'cron'>(schedule.kind === 'once' ? 'once' : 'cron');
+  const [cron, setCron] = useState(schedule.cron || '');
+  const [runAt, setRunAt] = useState(schedule.nextRunAt ? schedule.nextRunAt.slice(0, 16) : nextHourUtcInput());
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const nextRunAt = kind === 'once' ? runAtFromUtcInput(runAt) : '';
+    if (kind === 'once' && (!nextRunAt || Date.parse(nextRunAt) <= Date.now())) { showToast('Pick a future date and time (UTC).', { tone: 'error' }); return; }
+    if (kind === 'cron' && !cron.trim()) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kind === 'once' ? { kind, runAt: nextRunAt, timezone: 'UTC', enabled: true } : { kind, cron: cron.trim(), timezone: 'UTC', enabled: true }) });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not update the schedule.');
+      showToast('Schedule updated.', { tone: 'success' });
+      onSaved();
+    } catch (error: any) { showToast(error?.message || 'Could not update the schedule.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return <Modal isOpen onClose={onClose} title="Edit schedule" size="md" footer={<div className="flex justify-end gap-2"><button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button><button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{busy && <Loader2 className="h-4 w-4 animate-spin" />} Save Changes</button></div>}>
+    <label className="block text-xs font-medium text-[var(--text-muted)]">Schedule type
+      <select value={kind} onChange={(event) => setKind(event.target.value as 'once' | 'cron')} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"><option value="cron">Recurring (cron)</option><option value="once">Specific date</option></select>
+    </label>
+    {kind === 'once' ? <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Date &amp; Time (UTC)<input type="datetime-local" value={runAt} onChange={(event) => setRunAt(event.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]" /></label> : <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Cron expression (UTC)<input value={cron} onChange={(event) => setCron(event.target.value)} placeholder="0 9 * * 1-5" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" /><span className="mt-1 block font-normal">Minute hour day-of-month month day-of-week</span></label>}
+  </Modal>;
 }
 
 type FolderNode = { id: string; name: string; parentId?: string | null; children: FolderNode[] };
@@ -136,8 +256,15 @@ function FolderPicker({ node, selectedId, counts, onSelect, depth = 0 }: { key?:
 
 function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose: () => void; onCreated: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [cronPreset, setCronPreset] = useState(CRON_PRESETS[2].value);
-  const [customCron, setCustomCron] = useState('');
+  const [tab, setTab] = useState<ScheduleTab>('daily');
+  const [time, setTime] = useState('02:00');
+  const [weekdays, setWeekdays] = useState<number[]>([1]);
+  const [monthDay, setMonthDay] = useState(1);
+  const [onceAt, setOnceAt] = useState(nextHourUtcInput());
+  const [cronInput, setCronInput] = useState('At 04:05 on day-of-month 5');
+  const [cronResolved, setCronResolved] = useState<{ expression: string; description: string; nextRuns: string[]; error?: string }>({ expression: '', description: '', nextRuns: [] });
+  const [cronResolving, setCronResolving] = useState(false);
+  const [showCronHelp, setShowCronHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -166,6 +293,22 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       .finally(() => setLoading(false));
   }, [isOpen]);
 
+  // Resolve through the server so the preview uses the same parser the scheduler fires on.
+  useEffect(() => {
+    if (tab !== 'cron') return;
+    const text = cronInput.trim();
+    if (!text) { setCronResolved({ expression: '', description: '', nextRuns: [] }); return; }
+    setCronResolving(true);
+    const timer = setTimeout(() => {
+      fetch('/api/automation/cron/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: text }) })
+        .then((r) => r.json())
+        .then((data) => setCronResolved(data))
+        .catch(() => setCronResolved({ expression: '', description: '', nextRuns: [], error: 'Could not check that expression.' }))
+        .finally(() => setCronResolving(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [tab, cronInput]);
+
   const counts = useMemo(() => {
     const result = new Map<string, number>();
     scripts.forEach((script) => result.set(script.folderId || UNCATEGORIZED_ID, (result.get(script.folderId || UNCATEGORIZED_ID) || 0) + 1));
@@ -178,15 +321,21 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       : (script.folderId || UNCATEGORIZED_ID) === selectedFolderId);
   }, [scripts, search, selectedFolderId]);
   const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const cron = cronPreset === 'custom' ? customCron.trim() : cronPreset;
+  const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
+  const cron = tab === 'cron' ? cronResolved.expression : buildCron(tab, time, weekdays, monthDay);
+  const runAt = tab === 'once' ? runAtFromUtcInput(onceAt) : '';
+  const summary = tab === 'once' ? describeRunAt(runAt) : tab === 'cron' ? (cronResolved.description || cronResolved.error || 'Type a schedule or a cron expression') : describeSchedule(tab, time, weekdays, monthDay);
+  const scheduleReady = tab === 'once' ? Boolean(runAt) : Boolean(cron) && !(tab === 'cron' && cronResolved.error);
 
   const submit = async () => {
     if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
-    if (!cron) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
+    if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : tab === 'cron' ? (cronResolved.error || 'Enter a schedule we can read.') : 'Pick a date and time.', { tone: 'error' }); return; }
+    // A one-off in the past would be dispatched by the very next scheduler tick.
+    if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast('Pick a future date and time (UTC).', { tone: 'error' }); return; }
     setBusy(true);
     try {
       const results = await Promise.all([...selected].map(async (id) => {
-        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scriptId: id, kind: 'cron', cron, timezone: 'UTC' }) });
+        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tab === 'once' ? { scriptId: id, kind: 'once', runAt, timezone: 'UTC' } : { scriptId: id, kind: 'cron', cron, timezone: 'UTC' }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
         return true;
       }));
@@ -194,7 +343,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       if (ok === 0) throw new Error();
       showToast(`Created ${ok} cron schedule${ok > 1 ? 's' : ''}.`, { tone: 'success' });
       if (ok < selected.size) showToast(`${selected.size - ok} script${selected.size - ok > 1 ? 's were' : ' was'} skipped.`, { tone: 'error' });
-      setSelected(new Set()); setCustomCron('');
+      setSelected(new Set());
       onCreated();
       onClose();
     } catch (error: any) { showToast(error?.message || 'Could not create the schedule.', { tone: 'error' }); }
@@ -205,13 +354,13 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
     <Modal isOpen={isOpen} onClose={onClose} title="New schedule" size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy || selected.size === 0 || !cron} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+        <button onClick={submit} disabled={busy || selected.size === 0 || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
         </button>
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Select scripts from Test Repository<RequiredMark /></div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Select Scripts from Test Repository<RequiredMark /></div>
           <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected</div>
         </div>
         <label className="relative block w-full max-w-xs">
@@ -239,19 +388,141 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
             ))}
         </div>
       </div>
-      <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Schedule (UTC)<RequiredMark />
-        <select value={cronPreset} onChange={(e) => setCronPreset(e.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {CRON_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
-          <option value="custom">Custom cron expression</option>
-        </select>
-      </label>
-      {cronPreset === 'custom' && <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Custom cron expression
-        <input value={customCron} onChange={(e) => setCustomCron(e.target.value)} placeholder="0 2 * * *" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-        <span className="mt-1 block font-normal">Five space-separated values: minute, hour, day of month, month, day of week.</span>
-        <span className="mt-1 block font-normal">Examples: <code>0 2 * * *</code> every day at 2 AM; <code>0 9 * * 1-5</code> weekdays at 9 AM; <code>*/15 * * * *</code> every 15 minutes.</span>
-      </label>}
-      <p className="mt-3 text-xs text-[var(--text-muted)]">Cron uses minute, hour, day of month, month, and day of week. Snapshots and video appear under Test Runs.</p>
+      <div className="mt-4 text-sm font-medium text-[var(--text-primary)]">Schedule (UTC)<RequiredMark /></div>
+      <div className="mt-2 flex gap-6 border-b border-[var(--border)] text-sm" role="tablist" aria-label="Schedule frequency">
+        {SCHEDULE_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            onClick={() => setTab(item.id)}
+            className={`border-b-2 pb-2 ${tab === item.id ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-3">
+        {tab === 'weekly' && (
+          <div className="mb-3">
+            <div className="mb-1.5 text-xs font-medium text-[var(--text-muted)]">Repeat On</div>
+            <div className="flex gap-1.5">
+              {WEEKDAYS.map((day) => (
+                <button
+                  key={day.value}
+                  type="button"
+                  aria-label={day.name}
+                  aria-pressed={weekdays.includes(day.value)}
+                  onClick={() => toggleWeekday(day.value)}
+                  className={`h-9 w-9 rounded-full border text-sm font-medium transition-colors ${weekdays.includes(day.value)
+                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                    : 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]'}`}
+                >
+                  {day.letter}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab === 'monthly' && (
+          <label className="mb-3 block text-xs font-medium text-[var(--text-muted)]">
+            Day Of Month
+            <select
+              value={monthDay}
+              onChange={(e) => setMonthDay(Number(e.target.value))}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            >
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => <option key={day} value={day}>{ordinal(day)}</option>)}
+            </select>
+            {monthDay > 28 && <span className="mt-1 block font-normal">Months without day {monthDay} are skipped.</span>}
+          </label>
+        )}
+
+        {tab === 'cron' ? (
+          <div>
+            <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">
+              <label htmlFor="cron-expression">Schedule or cron expression</label>
+              <button type="button" onClick={() => setShowCronHelp((open) => !open)} aria-label="Show cron expression examples" aria-expanded={showCronHelp} className="rounded p-0.5 text-[var(--accent)] hover:bg-[var(--bg-secondary)]">
+                <Info className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">
+              <input
+                id="cron-expression"
+                value={cronInput}
+                onChange={(e) => setCronInput(e.target.value)}
+                placeholder="At 04:05 on day-of-month 5   —   or   —   5 4 5 * *"
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              />
+              <span className="mt-1 block font-normal">Write it in plain English or as a five-part cron expression. Times use UTC.</span>
+            </label>
+            {showCronHelp && (
+              <div role="note" className="mt-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text-muted)]">
+                <div className="font-medium text-[var(--text-primary)]">English examples</div>
+                <ul className="mt-1 space-y-1">
+                  <li><code>every 15 minutes</code> — runs every 15 minutes</li>
+                  <li><code>at 9am</code> — runs daily at 09:00</li>
+                  <li><code>at 5pm on Monday</code> — runs every Monday at 17:00</li>
+                  <li><code>at 09:00 on weekdays</code> — runs Monday through Friday</li>
+                  <li><code>at 04:05 on day-of-month 5</code> — runs on the 5th of every month</li>
+                </ul>
+                <div className="mt-2">Cron format: <code>minute hour day-of-month month day-of-week</code>. Example: <code>0 9 * * 1-5</code>.</div>
+              </div>
+            )}
+
+            <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+              {cronResolving ? (
+                <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking…</div>
+              ) : cronResolved.error ? (
+                <div className="text-xs text-red-400">{cronResolved.error}</div>
+              ) : cronResolved.expression ? (
+                <>
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Cron</span>
+                    <code className="rounded bg-[var(--bg-card)] px-2 py-0.5 font-mono text-sm text-[var(--accent)]">{cronResolved.expression}</code>
+                    <span className="text-xs text-[var(--text-primary)]">{cronResolved.description}</span>
+                  </div>
+                  {cronResolved.nextRuns.length > 0 && (
+                    <div className="mt-2 text-xs text-[var(--text-muted)]">
+                      Next: {cronResolved.nextRuns.map((run) => `${run.slice(0, 10)} ${run.slice(11, 16)}`).join(' · ')} UTC
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-xs text-[var(--text-muted)]">Type a schedule above to see the exact cron expression.</div>
+              )}
+            </div>
+          </div>
+        ) : tab === 'once' ? (
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Date &amp; Time (UTC)
+            <input
+              type="datetime-local"
+              value={onceAt}
+              onChange={(e) => setOnceAt(e.target.value)}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]"
+            />
+            <span className="mt-1 block font-normal">Runs once at this UTC instant, then switches itself off.</span>
+          </label>
+        ) : (
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Time (UTC)
+            <input
+              type="time"
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]"
+            />
+          </label>
+        )}
+      </div>
+
+      <p className="mt-3 text-xs text-[var(--text-muted)]">
+        <span className="text-[var(--text-primary)]">{summary}</span> · Snapshots and video appear under Test Runs.
+      </p>
     </Modal>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -32,7 +32,6 @@ import Requirements from '@/src/pages/Requirements';
 import Traceability from '@/src/pages/Traceability';
 import RecordPlay from '@/src/pages/RecordPlay';
 import LocalAgent from '@/src/pages/automation/LocalAgent';
-import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
 import Schedules from '@/src/pages/automation/Schedules';
 import DataBindings from '@/src/pages/automation/DataBindings';
 
@@ -45,7 +44,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     ...(remoteAgent ? [
       // Record Test + Executions folded into Test Management (Test Cases → New Case → Automation, and
       // Test Runs). Their routes below redirect there for any lingering bookmarks/links.
-      { name: 'Automation', href: '/automation', icon: Gauge },
       { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
       { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
       { name: 'Automation Data', href: '/automation/data', icon: Database },
@@ -262,12 +260,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       setShowResults(false);
       return;
     }
-    if (searchResults?.intents?.length && searchResults.intents.some((i) => i.kind !== 'navigate')) {
-      runAiSearch(query);
-      return;
-    }
-    navigate(`/cases?search=${encodeURIComponent(query)}`);
-    setShowResults(false);
+    runAiSearch(query);
   };
 
   return (
@@ -295,7 +288,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
             <div className="absolute top-full left-0 right-0 mt-1 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden z-50">
               <div className="p-2 space-y-0.5">
                 <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  {searching || answering ? 'Searching...' : searchAnswer ? 'AI answer' : 'Search result'}
+                  {searching || answering ? 'Searching...' : searchAnswer ? 'AI Answer' : 'Search Result'}
                 </div>
                 {answering ? (
                   <div className="px-3 py-3 text-xs text-[var(--text-muted)]">Searching with AI...</div>
@@ -334,7 +327,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-secondary)] transition-colors"
                 >
                   <Command className="w-3.5 h-3.5" />
-                  <span>Open full command palette</span>
+                  <span>Open Full Command Palette</span>
                 </button>
               </div>
             </div>
@@ -401,7 +394,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
               >
                 <LogOut className="h-4 w-4" />
-                Sign out
+                Sign Out
               </button>
             </div>
           )}
@@ -544,9 +537,9 @@ function NoAccessMessage() {
     <div className="flex h-full min-h-0 items-center justify-center p-4 text-[var(--text-primary)]">
       <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-7 text-center shadow-xl">
         <ShieldAlert className="mx-auto mb-4 h-10 w-10 text-[var(--accent)]" />
-        <h1 className="text-xl font-semibold">No access assigned</h1>
+        <h1 className="text-xl font-semibold">No Access Assigned</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">Your account has not been assigned to an access group. Contact an administrator to request access.</p>
-        <button onClick={logout} className="mt-6 rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]">Sign out</button>
+        <button onClick={logout} className="mt-6 rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]">Sign Out</button>
       </div>
     </div>
   );
@@ -595,8 +588,8 @@ export default function App() {
           <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/record-play" element={<RecordPlay />} />
-          <Route path="/automation" element={<AutomationDashboard />} />
           {/* Folded into Test Management — redirect old automation URLs to their new homes. */}
+          <Route path="/automation" element={<Navigate to="/automation/agent" replace />} />
           <Route path="/automation/record" element={<Navigate to="/cases" replace />} />
           <Route path="/automation/executions" element={<Navigate to="/runs" replace />} />
           <Route path="/automation/schedules" element={<Schedules />} />

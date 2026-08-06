@@ -20,10 +20,14 @@ import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { hardenRecordedScript } from './scriptHardening';
 import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps, parseRecordingSteps } from './stepGrouping';
 import { humanizeRecordedSteps } from './humanizeSteps';
-import { isRecorderStepGroupingEnabled } from './flag';
+import { isPauseResumeEnabled, isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
 import type { RecordingFieldKind } from './types';
 import { nextArtifactId } from '../../shared/artifactIds';
+import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
+import { normalizePauseRequest, type PauseRequest } from '../../../core/shared/pause';
+import { proposeRecordingPauses } from './pauseDetection';
+import { specFilenameFromTitle } from '../agent/workflow/specFilename';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
 // Test Case created at finalize is classified the same as a manually-authored one.
@@ -34,13 +38,16 @@ export interface RecordingCaseMeta {
   folderId?: string;
   testPlanIds?: string[];
   testSuiteIds?: string[];
+  description?: string;
+  preconditions?: string;
+  defectIds?: string[];
 }
 
 function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
 }
 
-export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string; caseMeta?: RecordingCaseMeta }, scope: Scope) {
+export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string; caseMeta?: RecordingCaseMeta; browserPermissions?: BrowserPermissionSettings }, scope: Scope) {
   const now = new Date().toISOString();
   const rec = {
     id: uid('REC'),
@@ -53,7 +60,10 @@ export async function createRecording(input: { name: string; appUrl: string; bro
     script: '',
     // Stash the Test Case classification (from the New Case → Automation form) so finalize can
     // build a fully-classified case; caseId/scriptId get written back here for idempotency.
-    metadata: input.caseMeta ? { caseMeta: input.caseMeta } : {},
+    metadata: {
+      ...(input.caseMeta ? { caseMeta: input.caseMeta } : {}),
+      browserPermissions: normalizeBrowserPermissionSettings(input.browserPermissions),
+    },
     stats: { actions: 0, selectors: 0, assertions: 0, networkCalls: 0, consoleErrors: 0, pages: 0 },
     startedAt: null,
     completedAt: null,
@@ -72,7 +82,7 @@ export async function startRecording(recordingId: string, agentId: string) {
   if (!isAgentConnected(agentId)) return { error: 'Target agent is not connected.', status: 409 };
   await Recordings.upsert({ ...rec, agentId, status: 'recording', startedAt: new Date().toISOString() });
   persist('recording started');
-  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser } });
+  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser, browserPermissions: normalizeBrowserPermissionSettings(rec.metadata?.browserPermissions) } });
   await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.started', ownerId: rec.ownerId, data: {} });
   return { ok: true };
 }
@@ -89,7 +99,12 @@ function clearStopFallback(recordingId: string) {
 export async function finalizeRecording(recordingId: string, patch: { script?: string; stats?: any; metadata?: any }) {
   clearStopFallback(recordingId);
   const rec = await Recordings.get(recordingId);
-  if (!rec || rec.status === 'ready') return;
+  if (!rec) return;
+  // The stop fallback may finalize the last streamed (partial) script before record.done arrives.
+  // Only the agent's final file (tagged with its host) may replace that fallback; stale frames must
+  // never overwrite an already-complete recording.
+  const incomingScript = typeof patch.script === 'string' ? patch.script : '';
+  if (rec.status === 'ready' && (!incomingScript || rec.metadata?.generatedOn || !patch.metadata?.generatedOn)) return;
   // Harden the raw codegen output once, at finalization: insert post-login settle waits so the
   // recorded script doesn't race its own login redirect on replay (see scriptHardening.ts).
   const finalScript = hardenRecordedScript(String(patch.script ?? rec.script ?? ''));
@@ -103,21 +118,40 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   });
   // Keep editable data independent from the immutable recording script. Re-finalizing a ready
   // recording is already a no-op, so replacing this derived model cannot erase user edits.
-  await RecordingSteps.replaceForRecording(saved.id, parseRecordingSteps(finalScript).map((step, ordinal) => ({
-    ...step,
-    id: `${saved.id}:step:${ordinal + 1}`,
-    recordingId: saved.id,
-  })));
+  await deriveRecordingSteps(saved, patch.metadata?.stepObservations);
   // Reflect the recording into Test Management as an Automated, script-linked test case. Isolated
   // so a case-write failure never blocks the recording from finalizing.
+  // A recording that captured nothing produces no case: there is no flow to describe, so the case
+  // could only say "Run the recorded Playwright script" over an empty script — noise in Test
+  // Management that reads like a real case. The recording itself is still saved.
+  const empty = !recordingHasInteractions(finalScript);
   let caseId = '';
-  try { caseId = await reflectRecordingAsCase(saved, finalScript); } catch { /* recording still saved */ }
+  let caseError = '';
+  if (!empty) {
+    // Never swallow this silently: a failure here leaves a saved recording with no case or script,
+    // which looks to the user like the recording captured nothing.
+    try {
+      caseId = await reflectRecordingAsCase(saved, finalScript);
+    } catch (error: any) {
+      caseError = error?.message || 'Could not create the test case for this recording.';
+      console.error('[recording] case creation failed', { recordingId, error: caseError });
+    }
+  }
   persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty, caseError } });
+}
+
+/** True when the script contains at least one recorded interaction (navigation, click, input, assertion). */
+export function recordingHasInteractions(script: string): boolean {
+  // A navigation on its own is not a recorded flow — codegen emits the opening `goto` before the user
+  // does anything, so counting it would turn every started-and-abandoned recording into a test case.
+  return parseAtomicSteps(String(script || '')).some((step) => step.kind !== 'nav');
 }
 
 // Best-effort parse of a Playwright codegen spec into human-readable case steps so the created
-// test case reads meaningfully in Test Management. Falls back to a single run-the-script step.
+// test case reads meaningfully in Test Management. Falls back to a single run-the-script step —
+// only reachable for a script that HAS interactions but whose shape this parser cannot read, since
+// an empty recording never becomes a case (see finalizeRecording).
 // With RECORDER_STEP_GROUPING on, steps are coalesced + tagged with collapsible logical groups
 // (see stepGrouping.ts); off, it stays the legacy 1 script-line -> 1 flat step behavior.
 export function scriptToSteps(script: string): Array<{ action: string; expected: string; group?: string; groupIndex?: number }> {
@@ -136,6 +170,24 @@ export function scriptToSteps(script: string): Array<{ action: string; expected:
 // Create (or update, if the recording already produced one) the linked Automated test case + its
 // Playwright script row. Idempotent via metadata.caseId so record.done and the stop fallback can't
 // double-create. Returns the case id.
+/**
+ * Recording names repeat constantly ("keystone" recorded five times). The project-wide title guard
+ * rejects the duplicate, which previously lost the whole case+script for that recording — so pick the
+ * next free "<name> (n)" instead of failing.
+ */
+async function availableTitle(rows: any[], column: 'title' | 'name', base: string, selfId: string, rec: any): Promise<string> {
+  const scoped = rows.filter((row: any) => String(row.id) !== selfId && !row.deletedAt
+    && String(row.projectId || '') === String(rec.projectId || '')
+    && String(row.ownerId || '') === String(rec.ownerId || ''));
+  const taken = new Set(scoped.map((row: any) => String(row[column] || '').trim().toLocaleLowerCase()));
+  if (!taken.has(base.trim().toLocaleLowerCase())) return base;
+  for (let n = 2; n < 500; n++) {
+    const candidate = `${base} (${n})`;
+    if (!taken.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  return `${base} (${selfId.slice(-6)})`;
+}
+
 async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<string> {
   const meta: RecordingCaseMeta = rec.metadata?.caseMeta || {};
   const existingCaseId: string = rec.metadata?.caseId || '';
@@ -145,10 +197,13 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     targetUrl: rec.appUrl,
     sourceText: title,
   });
+  const caseTitle = await availableTitle((await Cases.list()) as any[], 'title', title, caseId, rec);
   const caseRow = {
     id: caseId,
-    title,
-    description: `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
+    title: caseTitle,
+    // Author-supplied description wins; fall back to naming what was recorded.
+    description: String(meta.description || '').trim() || `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
+    preconditions: String(meta.preconditions || '').trim(),
     // Stage 1 (scriptToSteps) yields clean, correctly-labelled, secret-masked steps; Stage 2
     // (humanizeRecordedSteps) rewrites them into a natural, intent-level manual case with real
     // expected results — falling back to the Stage-1 steps if no AI provider is available.
@@ -162,6 +217,7 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     folderId: meta.folderId || null,
     testPlanIds: Array.isArray(meta.testPlanIds) ? meta.testPlanIds : [],
     testSuiteIds: Array.isArray(meta.testSuiteIds) ? meta.testSuiteIds : [],
+    defectIds: Array.isArray(meta.defectIds) ? meta.defectIds : [],
     tags: normalizeCaseTags(['codegen', 'recorded']),
     createdBy: 'Codegen',
     projectId: rec.projectId || '',
@@ -172,11 +228,14 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
   // Link the hardened script to the case via the real scripts.case_id FK (title + caseId), so the
   // Test Cases viewer resolves it directly and Test Runs (Phase 2) can execute it.
   const scriptId = rec.metadata?.scriptId || `SCR-${String(rec.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}-1`;
+  const scriptName = await availableTitle((await Scripts.list()) as any[], 'name', title, scriptId, rec);
   await Scripts.upsert({
     id: scriptId,
-    name: title,
-    filename: `${scriptId.toLowerCase()}.spec.ts`,
-    title,
+    name: scriptName,
+    // Derived from the (already project-unique) script name rather than the internal id, so the
+    // artifact reads as "new-app-creation.spec.ts" instead of "scr-6999qdcq-1.spec.ts".
+    filename: specFilenameFromTitle(scriptName, scriptId),
+    title: scriptName,
     code: finalScript,
     language: 'typescript',
     framework: 'playwright',
@@ -276,6 +335,30 @@ export async function overrideRecordingStep(recordingId: string, stepId: string,
   return { step: (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId), override };
 }
 
+export async function updateRecordingStepPause(recordingId: string, stepId: string, action: string, value?: PauseRequest) {
+  const step = (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId);
+  if (!step) return { error: 'Recording step not found.', status: 404 } as const;
+  const metadata = { ...(step.metadata || {}) } as any;
+  try {
+    if (action === 'dismiss') {
+      metadata.pauseProposalDismissed = true;
+      delete metadata.pauseProposal;
+    } else if (action === 'remove') {
+      delete metadata.pause;
+    } else {
+      const request = action === 'accept' ? metadata.pauseProposal : value;
+      metadata.pause = normalizePauseRequest(request);
+      delete metadata.pauseProposal;
+      delete metadata.pauseProposalDismissed;
+    }
+  } catch (error: any) {
+    return { error: error?.message || 'Invalid pause.', status: 400 } as const;
+  }
+  await RecordingSteps.setMetadata(recordingId, stepId, metadata);
+  persist('recording pause updated');
+  return { step: (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId) };
+}
+
 export async function undoRecordingStepOverride(recordingId: string, stepId: string) {
   const changed = await RecordingSteps.undo(recordingId, stepId);
   if (changed) persist('recording step override undo');
@@ -288,15 +371,37 @@ export async function redoRecordingStepOverride(recordingId: string, stepId: str
   return changed;
 }
 
-export async function updateRecording(id: string, patch: { name?: string }) {
+export async function updateRecording(id: string, patch: { name?: string; script?: string }) {
   const rec = await Recordings.get(id);
   if (!rec) return null;
-  const saved = await Recordings.upsert({ ...rec, name: patch.name ?? rec.name });
+  const script = typeof patch.script === 'string' ? patch.script : undefined;
+  const saved = await Recordings.upsert({ ...rec, name: patch.name ?? rec.name, script: script ?? rec.script });
+  // An edited script invalidates the derived step model, so re-derive it (pause gates included)
+  // exactly as finalization does — otherwise data bindings would point at stale actions.
+  if (script !== undefined && script !== rec.script) await deriveRecordingSteps(saved);
   persist('recording updated');
   return saved;
 }
 
+/** Rebuild the editable step model from a recording's current script. */
+async function deriveRecordingSteps(rec: any, stepObservations?: Record<number, any>) {
+  const parsed = parseRecordingSteps(rec.script || '');
+  const steps = isPauseResumeEnabled()
+    ? proposeRecordingPauses(rec.script || '', parsed, rec.appUrl, stepObservations)
+    : parsed;
+  await RecordingSteps.replaceForRecording(rec.id, steps.map((step, ordinal) => ({
+    ...step,
+    id: `${rec.id}:step:${ordinal + 1}`,
+    recordingId: rec.id,
+  })));
+}
+
 export async function removeRecording(id: string) {
+  const recording = await Recordings.get(id);
+  clearStopFallback(id);
+  if (recording?.status === 'recording' && recording.agentId && isAgentConnected(recording.agentId)) {
+    dispatchToAgent(recording.agentId, { type: 'record.stop', payload: { recordingId: id } });
+  }
   const ok = await Recordings.remove(id);
   persist('recording removed');
   return ok;

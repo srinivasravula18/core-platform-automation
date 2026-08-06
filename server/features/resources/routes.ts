@@ -16,14 +16,17 @@ import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
+import { createJob, tryDispatch } from '../automation/jobService';
+import { isAgentConnected } from '../automation/agentGateway';
+import { recordingForScript } from '../automation/recordingService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
-import { isManualOutcome, rollupCaseOutcome, computeRunRollup } from '../../../core/shared/manualRun';
+import { isManualOutcome, rollupCaseOutcome, computeRunRollup, caseHasScript } from '../../../core/shared/manualRun';
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
-import { isPendingReviewTestRun, isStaleManualTestRun } from '../../../core/shared/testRunStatus';
+import { isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -48,11 +51,13 @@ import {
   Defects,
   Reports,
   Scripts,
+  Recordings,
   ScriptRevisions,
   Folders,
   Requirements,
   Activity,
   AgentRuns,
+  Agents,
   isPgEnabled,
 } from '../../db/repository';
 
@@ -236,15 +241,18 @@ function executionSteps(tests: any[]): any[] {
   return tests.map((test: any, index: number) => ({
     step: String(index + 1),
     action: test.title || `Playwright test ${index + 1}`,
+    testCaseTitle: test.title || `Playwright test ${index + 1}`,
     expected: 'Playwright script completes successfully.',
     outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
     reason: test.error || '',
+    actual: test.error || '',
+    durationMs: Number(test.durationMs) || 0,
     screenshot: test.screenshotUrl || '',
     screenshots: Array.isArray(test.evidenceUrls) ? test.evidenceUrls : [],
   }));
 }
 
-const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed']);
+const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Cancelled']);
 
 function manualRunStatus(value: unknown): string | null {
   const status = String(value || 'Not Started').trim();
@@ -259,6 +267,18 @@ function manualRunnerEnabled(): boolean {
 
 // Roll run-level aggregate onto a shallow run copy from its per-case results. Also derives the run's
 // start/complete timestamps (earliest activity → latest completion) so duration is the actual run time.
+// Run type follows what the cases can execute: a linked script means automated, none means manual.
+// An explicit mode from the caller wins.
+async function runModeForCases(requested: unknown, selectedCases: any[]): Promise<'manual' | 'automated'> {
+  if (!manualRunnerEnabled()) return 'automated';
+  const asked = String(requested || '').toLowerCase();
+  if (asked === 'manual') return 'manual';
+  if (asked === 'automated') return 'automated';
+  if (!selectedCases.length) return 'automated';
+  const scripts = (await Scripts.list()) as any[];
+  return selectedCases.some((testCase) => caseHasScript(testCase, scripts)) ? 'automated' : 'manual';
+}
+
 function applyRunRollup(run: any, results: any[]): any {
   const rolled: any = { ...run, ...computeRunRollup(results) };
   const starts = results.map((r) => r.startedAt).filter(Boolean).sort();
@@ -300,6 +320,9 @@ async function seedManualResults(run: any, selectedCases: any[]): Promise<void> 
       revisionNo,
       caseTitle: testCase.title || '',
       priority: testCase.priority || '',
+      // Execution context now authored on the case flows into the run instead of being retyped.
+      configuration: testCase.configuration || '',
+      runBy: testCase.assignedTo || '',
       outcome: 'Not Run',
       stepResults,
     });
@@ -316,6 +339,109 @@ function saveEvidenceImage(dataUrl: string, runId: string): string {
   const file = `manual-${String(runId).replace(/[^A-Za-z0-9]/g, '')}-${randomUUID()}.${ext}`;
   fs.writeFileSync(path.join(dir, file), Buffer.from(match[2], 'base64'));
   return `/evidence/${file}`;
+}
+
+const CASE_ATTACHMENT_TYPES: Record<string, string[]> = {
+  'application/pdf': ['pdf'],
+  'application/msword': ['doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+  'application/vnd.ms-excel': ['xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['xlsx'],
+  'text/csv': ['csv'],
+  'text/plain': ['txt'],
+  'image/jpeg': ['jpg', 'jpeg'], 'image/png': ['png'], 'image/webp': ['webp'], 'image/gif': ['gif'],
+  'video/mp4': ['mp4'], 'video/webm': ['webm'], 'video/quicktime': ['mov'],
+};
+const CASE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+const CASE_ATTACHMENT_MAX_COUNT = 5;
+
+function caseAttachmentError(attachments: any): string {
+  if (!Array.isArray(attachments)) return 'Attachments must be an array.';
+  if (attachments.length > CASE_ATTACHMENT_MAX_COUNT) return `Attach up to ${CASE_ATTACHMENT_MAX_COUNT} files.`;
+  for (const attachment of attachments) {
+    const name = String(attachment?.name || '');
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const match = /^data:([^;]+);base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) {
+      if (attachment?.url) continue; // Existing persisted files are checked separately below.
+      return `Attachment "${name || 'file'}": invalid file data.`;
+    }
+    const allowedExts = CASE_ATTACHMENT_TYPES[match[1]] || [];
+    if (!allowedExts.includes(ext)) return `Attachment "${name}": unsupported file type.`;
+    if (Buffer.from(match[2], 'base64').length > CASE_ATTACHMENT_MAX_BYTES) return `Attachment "${name}": files must be 4 MB or smaller.`;
+  }
+  return '';
+}
+
+function saveCaseAttachments(attachments: any, caseId: string): any[] {
+  const error = caseAttachmentError(attachments);
+  if (error) throw new Error(error);
+  const dir = path.resolve(process.cwd(), 'evidence');
+  fs.mkdirSync(dir, { recursive: true });
+  return attachments.map((attachment: any) => {
+    const existingUrl = String(attachment?.url || '');
+    if (existingUrl) {
+      if (!/^\/evidence\/case-[A-Za-z0-9-]+\.[a-z0-9]+$/i.test(existingUrl)) throw new Error('Invalid existing attachment.');
+      return { name: String(attachment?.name || 'Attachment'), url: existingUrl, mimeType: String(attachment?.mimeType || '') };
+    }
+    const match = /^data:([^;]+);base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) throw new Error('Invalid attachment.');
+    const ext = String(attachment.name).split('.').pop()!.toLowerCase();
+    const file = `case-${String(caseId).replace(/[^A-Za-z0-9]/g, '')}-${randomUUID()}.${ext}`;
+    fs.writeFileSync(path.join(dir, file), Buffer.from(match[2], 'base64'));
+    return { name: String(attachment.name), url: `/evidence/${file}`, mimeType: match[1] };
+  });
+}
+
+const DEFECT_SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
+const DEFECT_STATUSES = new Set(['Open', 'In Progress', 'Resolved', 'Closed', 'Reopened']);
+
+export function defectInputError(body: any): string {
+  if (body?.severity != null && !DEFECT_SEVERITIES.has(String(body.severity))) return 'Select a supported defect severity.';
+  if (body?.status != null && !DEFECT_STATUSES.has(String(body.status))) return 'Select a supported defect status.';
+  if (body?.attachments != null && !Array.isArray(body.attachments)) return 'Attachments must be an array.';
+  if ((body?.attachments || []).length > 3) return 'Attach up to 3 screenshots.';
+  for (const attachment of body?.attachments || []) {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) return 'Attachments must be PNG, JPEG, WebP, or GIF images.';
+    if (Buffer.from(match[2], 'base64').length > 1024 * 1024) return 'Each attachment must be 1 MB or smaller.';
+  }
+  return '';
+}
+
+export function defectPayload(body: any, existing: any, id: string): any {
+  const text = (key: string, fallback = '') => String(body?.[key] ?? existing?.[key] ?? fallback).trim();
+  const incomingEnvironment = body?.metadata?.environment || {};
+  const uploaded = (body?.attachments || []).map((attachment: any) => ({
+    title: String(attachment?.name || 'Screenshot'),
+    screenshotUrl: saveEvidenceImage(attachment.dataUrl, id),
+  }));
+  return {
+    ...existing,
+    title: text('title', 'New Defect'),
+    description: text('description'),
+    stepsToReproduce: text('stepsToReproduce'),
+    expected: text('expected'),
+    actual: text('actual'),
+    severity: text('severity', 'Medium'),
+    status: text('status', 'Open'),
+    assignedTo: text('assignedTo'),
+    linkedCaseId: text('linkedCaseId') || null,
+    linkedRunId: text('linkedRunId') || null,
+    folderId: text('folderId') || null,
+    evidence: [...(Array.isArray(existing?.evidence) ? existing.evidence : []), ...uploaded],
+    metadata: {
+      ...(existing?.metadata || {}),
+      ...(body?.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
+      component: text('component', String(body?.metadata?.component ?? existing?.metadata?.component ?? '')),
+      environment: {
+        ...(existing?.metadata?.environment || {}),
+        ...incomingEnvironment,
+        name: text('environment', String(incomingEnvironment.name ?? existing?.metadata?.environment?.name ?? '')),
+        browser: text('browser', String(incomingEnvironment.browser ?? existing?.metadata?.environment?.browser ?? '')),
+      },
+    },
+  };
 }
 
 async function parentPlanValidationError(parentPlanId: string, currentPlanId: string, req: any): Promise<string | null> {
@@ -468,6 +594,9 @@ function driftResponse(ctx: NonNullable<Awaited<ReturnType<typeof loadGroupDrift
 }
 
 export function registerResourceRoutes(app: Express) {
+  // Legacy backfill is best-effort startup work; script list requests must never wait for it.
+  void reconcileAgentScriptsToRepository();
+
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(filterListByQuery(scopeFilter(await Plans.list(), reqScope(req)), req)));
   app.get('/api/suites', async (req, res) => res.json(filterListByQuery(scopeFilter(await Suites.list(), reqScope(req)), req)));
@@ -624,17 +753,70 @@ export function registerResourceRoutes(app: Express) {
       if (!runnableScripts.length) return res.status(400).json({ error: 'No linked Playwright scripts were found for this run.' });
 
       if (activeManualRunExecutions.has(run.id)) return res.status(409).json({ error: 'This run is already executing.' });
-      const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
       const targetUrl = run.targetUrl || runnableScripts.find((script: any) => script.targetUrl)?.targetUrl || '';
       const scope = reqScope(req);
+      const preferredAgentId = String(runnableScripts[0]?.preferredAgentId || '');
+      const onlineAgents = scopeFilter((await Agents.list()) as any[], scope)
+        .filter((agent: any) => !agent.revokedAt && isAgentConnected(String(agent.id)));
+      const localAgent = req.body?.preferLocalAgent !== false && runnableScripts.length === 1
+        ? onlineAgents.find((agent: any) => String(agent.id) === preferredAgentId) || onlineAgents[0]
+        : null;
+      if (localAgent) {
+        const recording = await recordingForScript(String(runnableScripts[0].id), scope);
+        if (recording) {
+          const job = await createJob({
+            recordingId: recording.id,
+            agentId: String(localAgent.id),
+            trigger: 'manual',
+            headed: true,
+            script: String(runnableScripts[0].code || ''),
+            dispatch: false,
+          }, scope);
+          const agentLabel = String(localAgent.name || localAgent.machineName || localAgent.id);
+          const runningRun = {
+            ...run,
+            status: 'Running',
+            state: 'In Progress',
+            progress: `Running headed on local agent ${agentLabel}`,
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            evidence: [],
+            steps: [],
+            passed: 0,
+            failed: 0,
+            totalExecutions: 0,
+            executionTime: '',
+            triggerType: 'automation',
+            triggerMeta: {
+              ...withoutAutomationJobMeta(run.triggerMeta),
+              automationJobId: job.id,
+              agentId: String(localAgent.id),
+              executionMode: 'headed',
+              automationExecution: { completed: 0, total: 0, percent: 5, phase: 'queued' },
+            },
+          };
+          await Runs.upsert(runningRun);
+          await tryDispatch(job.id);
+          return res.status(202).json({ run: runningRun, executionMode: 'headed', message: runningRun.progress });
+        }
+      }
+
+      const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
+      const fallbackReason = runnableScripts.length > 1 ? 'multiple scripts run together' : 'no local agent available';
       const runningRun = withManualExecutionMeta({
         ...run,
+        triggerMeta: withoutAutomationJobMeta(run.triggerMeta),
         status: 'Running',
         state: 'In Progress',
-        progress: `Starting 0/${runnableScripts.length} scripts`,
+        progress: `Running headless on server (${fallbackReason}) · Starting 0/${runnableScripts.length} scripts`,
         startedAt: new Date().toISOString(),
         completedAt: null,
         evidence: [],
+        steps: [],
+        passed: 0,
+        failed: 0,
+        totalExecutions: 0,
+        executionTime: '',
       }, {
         attemptId: executionAttemptId,
         startedAt: new Date().toISOString(),
@@ -651,7 +833,7 @@ export function registerResourceRoutes(app: Express) {
         activeManualRunExecutions.delete(run.id);
         throw error;
       }
-      res.status(202).json({ run: runningRun, executionAttemptId });
+      res.status(202).json({ run: runningRun, executionAttemptId, executionMode: 'headless', message: runningRun.progress });
 
       setImmediate(() => {
         void (async () => {
@@ -756,11 +938,7 @@ export function registerResourceRoutes(app: Express) {
     }
   });
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
-  app.get('/api/scripts', async (req, res) => {
-    // Self-heal: surface any agent-generated scripts that never made it into the repository.
-    await reconcileAgentScriptsToRepository();
-    res.json(scopeFilter(await Scripts.list(), reqScope(req)));
-  });
+  app.get('/api/scripts', async (req, res) => res.json(scopeFilter(await Scripts.list(), reqScope(req))));
   app.get('/api/reports', async (req, res) => res.json(scopeFilter(await Reports.list(), reqScope(req))));
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();
@@ -976,6 +1154,19 @@ export function registerResourceRoutes(app: Express) {
     app.put(`/api/${e.name}/:id`, asyncRoute(async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
+      if (e.name === 'defects') {
+        const inputError = defectInputError(req.body);
+        if (inputError) return res.status(400).json({ error: inputError });
+        const linkedCaseId = String(req.body?.linkedCaseId || '').trim();
+        const linkedRunId = String(req.body?.linkedRunId || '').trim();
+        const [linkedCase, linkedRun] = await Promise.all([
+          linkedCaseId ? Cases.get(linkedCaseId) : null,
+          linkedRunId ? Runs.get(linkedRunId) : null,
+        ]);
+        if (linkedCaseId && (!linkedCase || !scopeFilter([linkedCase], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test case was not found.' });
+        if (linkedRunId && (!linkedRun || !scopeFilter([linkedRun], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test run was not found.' });
+        req.body = defectPayload(req.body, existing, existing.id);
+      }
       const scheduleConflictConfirmed = req.body?.scheduleConflictConfirmed === true;
       delete req.body.scheduleConflictConfirmed;
       if (e.name === 'plans' && req.body?.status === 'In Progress' && existing.status !== 'In Progress') {
@@ -1009,6 +1200,11 @@ export function registerResourceRoutes(app: Express) {
       }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
+      if (e.name === 'scripts' && 'code' in req.body) {
+        const recording = (await Recordings.list()).find((item: any) =>
+          item.metadata?.scriptId === existing.id || (existing.caseId && item.metadata?.caseId === existing.caseId));
+        if (recording) await Recordings.upsert({ ...recording, script: updated.code });
+      }
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
       if ('tags' in req.body) await ensureTagsInCatalog(updated.tags, reqScope(req));
       logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
@@ -1125,6 +1321,7 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/reports (special: processed steps) ---------- */
   app.post('/api/reports', asyncRoute(async (req, res) => {
     const r = req.body;
+    if (!Array.isArray(r.steps) || !r.steps.length) return res.status(400).json({ error: 'Add at least one verification step.' });
     const name = r.name || 'New Execution Report';
     const reportId = `REP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = r.targetUrl || '';
@@ -1281,17 +1478,17 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- Tag-native composition: drift / accept / dismiss (Phase A1) ---------- */
   // GET the review-gated drift for a tag-defined run/suite/plan: what the query matches now, what is
   // already accepted, and the NEW matches the user should review (the notification-dot payload).
-  app.get('/api/:target/:id/tag-drift', async (req, res) => {
+  app.get('/api/:target/:id/tag-drift', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
     if (!ctx) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
     res.json(driftResponse(ctx));
-  });
+  }));
 
   // Accept tag-matched cases into the group's membership (the "add to this group" choice). With no
   // body, accepts ALL current new matches; otherwise only the given ids that still match (safety).
-  app.post('/api/:target/:id/tag-accept', async (req, res) => {
+  app.post('/api/:target/:id/tag-accept', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
@@ -1309,11 +1506,11 @@ export function registerResourceRoutes(app: Express) {
     logActivity(req, `Accepted ${changed} tag-matched case(s) into ${target.slice(0, -1)}: ${ctx.group.name}`, { type: target.slice(0, -1), entityId: ctx.group.id });
     const after = await loadGroupDrift(target, req.params.id, req);
     res.json({ success: true, changed, ...(after ? driftResponse(after) : {}) });
-  });
+  }));
 
   // Dismiss tag-matched cases so they stop resurfacing as drift (the "ignore" choice). Recorded on
   // definition.dismissed; execution is unaffected (dismissed cases were never in the accepted set).
-  app.post('/api/:target/:id/tag-dismiss', async (req, res) => {
+  app.post('/api/:target/:id/tag-dismiss', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
@@ -1324,7 +1521,7 @@ export function registerResourceRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('tag-dismiss');
     const after = await loadGroupDrift(target, req.params.id, req);
     res.json({ success: true, ...(after ? driftResponse(after) : {}) });
-  });
+  }));
 
   // Pin a case in a run/suite to a specific version (@vN), or clear the pin to follow latest. Stored
   // in case_pins as {caseId, revisionNo, revisionId} (immutable id = truth; number = display). Manual
@@ -1365,6 +1562,8 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/cases ---------- */
   app.post('/api/cases', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const c = req.body;
+    const attachmentError = caseAttachmentError(c.attachments || []);
+    if (attachmentError) return res.status(400).json({ error: attachmentError });
     const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
       ...scopeStamp(reqScope(req)),
@@ -1384,16 +1583,37 @@ export function registerResourceRoutes(app: Express) {
       testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
       ...typeFields,
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
+      defectIds: uniqueStrings(Array.isArray(c.defectIds) ? c.defectIds : String(c.defectIds || '').split(/[\s,]+/)),
+      assignedTo: c.assignedTo || '',
+      requestedBy: c.requestedBy || '',
+      configuration: c.configuration || '',
+      targetUrl: c.targetUrl || '',
+      attachments: [],
       folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',
       createdAt: new Date(),
     };
     const savedCase = await Cases.upsert(newCase);
+    if (c.attachments?.length) await Cases.upsert({ ...savedCase, attachments: saveCaseAttachments(c.attachments, savedCase.id) });
     if (!isPgEnabled()) persistDataInBackground('case');
     await ensureTagsInCatalog(newCase.tags, reqScope(req));
     logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
     res.json({ success: true, id: savedCase.id });
+  }));
+
+  app.put('/api/cases/:id', asyncRoute(async (req, res) => {
+    const existing = await Cases.get(req.params.id);
+    if (!existing || !scopeFilter([existing], reqScope(req)).length) return res.status(404).json({ error: 'Test case not found.' });
+    const c = { ...req.body, folderId: req.body?.folderId ?? existing.folderId };
+    const attachmentError = caseAttachmentError(c.attachments || []);
+    if (attachmentError) return res.status(400).json({ error: attachmentError });
+    const merged = { ...existing, ...c };
+    const saved = await Cases.upsert({ ...merged, ...scopeStamp(reqScope(req)), id: existing.id, description: buildCaseDescription(merged), steps: normalizeCaseSteps(merged.steps), tags: normalizeCaseTags(merged.tags || []), attachments: saveCaseAttachments(merged.attachments || [], existing.id) });
+    if (!isPgEnabled()) persistDataInBackground('case');
+    await ensureTagsInCatalog(saved.tags, reqScope(req));
+    logActivity(req, `Updated Case: ${saved.title}`, { type: 'case', entityId: saved.id });
+    res.json({ success: true, id: saved.id });
   }));
 
   /* ---------- POST /api/cases/ai-action ---------- */
@@ -1552,7 +1772,8 @@ Rules:
     const caseIds = new Set(selectedCaseIds.filter((id) => cases.some((testCase: any) => testCase.id === id)));
     cases.forEach((testCase: any) => {
       const testSuiteIds = uniqueStrings(testCase.testSuiteIds?.length ? testCase.testSuiteIds : [testCase.testSuiteId]);
-      if (planIds.has(testCase.testPlanId) || testSuiteIds.some((id) => suiteIds.has(id))) {
+      const testPlanIds = uniqueStrings(testCase.testPlanIds?.length ? testCase.testPlanIds : [testCase.testPlanId]);
+      if (testPlanIds.some((id) => planIds.has(id)) || testSuiteIds.some((id) => suiteIds.has(id))) {
         caseIds.add(testCase.id);
       }
     });
@@ -1562,7 +1783,10 @@ Rules:
       return res.status(400).json({ error: 'No test cases are linked to the selected item(s).' });
     }
 
-    const runId = `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const requestedRunId = String(req.body?.runId || '');
+    if (requestedRunId && !/^RUN-[A-F0-9]{16}$/.test(requestedRunId)) return res.status(400).json({ error: 'Invalid run ID.' });
+    if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
+    const runId = requestedRunId || `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = normalizeTargetUrl(req.body?.targetUrl || findSettingsPlaywrightTargetUrl() || '');
     const selectedPlans = plans.filter((plan: any) => planIds.has(plan.id));
     const selectedSuites = suites.filter((suite: any) => suiteIds.has(suite.id));
@@ -1623,7 +1847,7 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
-    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
+    const runMode = await runModeForCases(req.body?.mode, selectedCases);
     const newRun = {
       ...scopeStamp(scope),
       id: runId,
@@ -1660,6 +1884,9 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
+    // Same as POST /api/runs: a tag typed here must enter the catalog, or it never comes back as a
+    // suggestion and the tester retypes it on every run.
+    await ensureTagsInCatalog(newRun.tags, scope);
     if (runMode === 'manual') await seedManualResults(newRun, selectedCases);
     if (!isPgEnabled()) persistDataInBackground('selection run');
     logActivity(req, `Created ${runMode} run: ${name}`, { type: 'run', entityId: newRun.id });
@@ -1695,7 +1922,7 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
-    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
+    const runMode = await runModeForCases(req.body?.mode, selectedCase ? [selectedCase] : []);
     const newRun = {
       ...scopeStamp(reqScope(req)),
       id: runId,
@@ -1784,8 +2011,8 @@ Rules:
     res.json({ success: true, run: started });
   });
 
-  // Stop/finish a MANUAL run — freezes the duration clock and marks it Completed (keeping the rolled-up
-  // pass/fail status when the run was fully evaluated).
+  // Stopping an active manual run is a cancellation, not a successful completion. Case outcomes remain
+  // available for review, but must not make a user-stopped run look like it passed.
   app.post('/api/runs/:id/stop', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
@@ -1793,8 +2020,7 @@ Rules:
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (r.startedAt && !r.completedAt) await RunCaseResults.upsert({ ...r, completedAt: now });
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
-    const status = rolled.status === 'In Progress' || rolled.status === 'Not Started' ? 'Completed' : rolled.status;
-    const stopped = { ...rolled, state: 'Completed', status, completedAt: now, progress: 'Run completed' };
+    const stopped = { ...rolled, state: 'Cancelled', status: 'Cancelled', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
@@ -1858,12 +2084,19 @@ Rules:
     if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) return res.status(400).json({ error: 'Step index out of range.' });
     if ('outcome' in req.body && !isManualOutcome(req.body.outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
     const step = { ...steps[idx] };
+    const now = new Date().toISOString();
     if ('outcome' in req.body) step.outcome = String(req.body.outcome);
     if ('action' in req.body) step.action = String(req.body.action ?? '');       // authoring the step text
     if ('expected' in req.body) step.expected = String(req.body.expected ?? '');  // authoring the step text
     if ('actual' in req.body) step.actual = String(req.body.actual ?? '');
     if ('comment' in req.body) step.comment = String(req.body.comment ?? '');
     if ('captureEvidence' in req.body) step.captureEvidence = req.body.captureEvidence !== false; // attachment on/off
+    const touchedExecution = ['outcome', 'actual', 'comment'].some((field) => field in req.body);
+    if (touchedExecution && !step.startedAt) step.startedAt = now;
+    if ('outcome' in req.body && !/^(Not Run|Paused)$/i.test(step.outcome)) {
+      step.completedAt = now;
+      step.durationMs = Math.max(0, new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime());
+    }
     steps[idx] = step;
     const outcome = rollupCaseOutcome(steps);
     // Timing is stamped only when an OUTCOME is recorded (execution), not when authoring action/expected text.
@@ -1970,19 +2203,27 @@ Rules:
 
   /* ---------- POST /api/defects ---------- */
   app.post('/api/defects', asyncRoute(async (req, res) => {
-    const title = req.body.title || 'New Defect';
+    const inputError = defectInputError(req.body);
+    if (inputError) return res.status(400).json({ error: inputError });
+    const linkedCaseId = String(req.body?.linkedCaseId || '').trim();
+    const linkedRunId = String(req.body?.linkedRunId || '').trim();
+    const [linkedCase, linkedRun] = await Promise.all([
+      linkedCaseId ? Cases.get(linkedCaseId) : null,
+      linkedRunId ? Runs.get(linkedRunId) : null,
+    ]);
+    if (linkedCaseId && (!linkedCase || !scopeFilter([linkedCase], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test case was not found.' });
+    if (linkedRunId && (!linkedRun || !scopeFilter([linkedRun], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test run was not found.' });
+    const id = `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const title = String(req.body?.title || 'New Defect').trim() || 'New Defect';
     const newDefect = {
       ...scopeStamp(reqScope(req)),
-      id: `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
-      title,
-      severity: req.body.severity || 'High',
-      status: 'Open',
-      folderId: req.body.folderId || '',
+      ...defectPayload({ ...req.body, title }, {}, id),
+      id,
     };
     await Defects.upsert(newDefect);
     if (!isPgEnabled()) persistDataInBackground('defect');
     logActivity(req, `Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, meta: { severity: newDefect.severity } });
-    res.json({ success: true });
+    res.json({ success: true, defect: newDefect });
   }));
 
   /* ---------- unused import suppression (referenced only for type docs) ---------- */

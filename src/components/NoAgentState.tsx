@@ -2,18 +2,21 @@ import { useState } from 'react';
 import { Download, BookOpen, RefreshCcw, Loader2, MonitorOff } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
 import { showToast } from '@/src/lib/dialog';
+import { withBasePath } from '@/src/lib/base-path';
 
-/** Downloads the agent bundle (auth-carrying fetch, not a bare anchor) and saves it. */
+/**
+ * Starts the agent download in the browser itself.
+ *
+ * The bundle is ~300 MB. Fetching it into a blob would hold all of it in the tab's memory and show
+ * nothing until the last byte arrived; instead we mint a ticket and navigate, so the browser streams
+ * it to disk immediately with its own download indicator, progress and resume.
+ */
 export async function downloadAgent(): Promise<void> {
-  const res = await fetch('/api/automation/agent/download');
+  const res = await fetch('/api/automation/agent/download-ticket', { method: 'POST' });
   if (!res.ok) throw new Error('Download failed');
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'TestFlow-Agent.zip';
-  a.click();
-  URL.revokeObjectURL(url);
+  const { ticket } = await res.json();
+  if (!ticket) throw new Error('Download failed');
+  window.location.href = withBasePath(`/api/automation/agent/download?ticket=${encodeURIComponent(ticket)}`);
 }
 
 /** Shown when the caller has no connected agent — the mandated download / guide / retry actions. */
@@ -23,8 +26,8 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
   const handleDownload = async () => {
     setBusy(true);
-    try { await downloadAgent(); showToast('Agent bundle downloaded. Unzip and run install.bat.', { tone: 'success' }); }
-    catch { showToast('Could not download the agent bundle.', { tone: 'error' }); }
+    try { await downloadAgent(); showToast('Download started — watch your browser downloads. Unzip it and run start.bat.', { tone: 'success' }); }
+    catch { showToast('Could not start the agent download.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
 
@@ -62,12 +65,14 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
       <Modal isOpen={guideOpen} onClose={() => setGuideOpen(false)} title="Install the TestFlow Agent" size="md">
         <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--text-primary)]">
-          <li>Click <strong>Download Agent</strong> to get <code>TestFlow-Agent.zip</code> (it contains a one-time pairing token valid for 10 minutes).</li>
-          <li>Unzip it to a folder you control, e.g. <code>C:\TestFlow-Agent</code>.</li>
-          <li>Double-click <strong>install.bat</strong> — it installs Node dependencies and Playwright browsers locally.</li>
-          <li>Double-click <strong>start.bat</strong> — the agent connects to TestFlow AI and this page turns green.</li>
+          <li>Click <strong>Download Agent</strong>. You get a file called <code>TestFlow-Agent.zip</code> with a one-time setup code inside — start it within 10 minutes or download it again.</li>
+          <li>Unzip it into a folder of your own, for example <code>C:\TestFlow-Agent</code>.</li>
+          <li>Double-click <strong>start.bat</strong> and leave that window open. This page turns green once it connects.</li>
+          <li>A browser is already included, so there is nothing else to install.</li>
         </ol>
-        <p className="mt-4 text-xs text-[var(--text-muted)]">Requires Node.js 18+ on your machine. The agent connects outbound only and opens no inbound ports.</p>
+        <p className="mt-4 text-xs text-[var(--text-muted)]">
+          Needs Node.js 18 or newer on your computer. The agent only reaches out to TestFlow AI — nothing from the internet can reach your computer through it, so you do not need to change any firewall or network settings.
+        </p>
       </Modal>
     </div>
   );

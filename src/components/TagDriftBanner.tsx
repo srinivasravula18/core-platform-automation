@@ -96,6 +96,7 @@ export function TagDriftBanner({
   const [drift, setDrift] = useState<TagDrift | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openDiff, setOpenDiff] = useState<Set<string>>(new Set()); // outdated caseIds whose diff is expanded
@@ -121,19 +122,31 @@ export function TagDriftBanner({
   const doAccept = async () => {
     const ids = chosen(); if (!ids.length) return;
     setBusy(true);
-    const after = await acceptTagMatches(target, id, ids);
-    if (after) setDrift(after);
-    setSelected(new Set((after?.newMatches || []).map((c) => c.id)));
-    setBusy(false);
-    onChanged?.();
+    setActionError('');
+    try {
+      const after = await acceptTagMatches(target, id, ids);
+      if (after) setDrift(after);
+      setSelected(new Set((after?.newMatches || []).map((c) => c.id)));
+      onChanged?.();
+    } catch (error: any) {
+      setActionError(error?.message || 'Could not add the selected cases.');
+    } finally {
+      setBusy(false);
+    }
   };
   const doDismiss = async () => {
     const ids = chosen(); if (!ids.length) return;
     setBusy(true);
-    const after = await dismissTagMatches(target, id, ids);
-    if (after) setDrift(after);
-    setSelected(new Set((after?.newMatches || []).map((c) => c.id)));
-    setBusy(false);
+    setActionError('');
+    try {
+      const after = await dismissTagMatches(target, id, ids);
+      if (after) setDrift(after);
+      setSelected(new Set((after?.newMatches || []).map((c) => c.id)));
+    } catch (error: any) {
+      setActionError(error?.message || 'Could not dismiss the selected cases.');
+    } finally {
+      setBusy(false);
+    }
   };
   const doCreateNew = async () => {
     const ids = chosen(); if (!ids.length || !onCreateNew) return;
@@ -221,7 +234,7 @@ export function TagDriftBanner({
             disabled={busy || !selected.size}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" /> Create new {noun}
+            <Plus className="h-3.5 w-3.5" /> Create New {noun}
           </button>
         )}
         <button
@@ -233,6 +246,7 @@ export function TagDriftBanner({
           <X className="h-3.5 w-3.5" /> Dismiss
         </button>
       </div>
+      {actionError && <p role="alert" className="mt-2 text-xs text-red-400">{actionError}</p>}
     </div>
     )}
 
@@ -257,7 +271,7 @@ export function TagDriftBanner({
                   onClick={() => setOpenDiff((cur) => { const n = new Set(cur); n.has(p.caseId) ? n.delete(p.caseId) : n.add(p.caseId); return n; })}
                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
-                  {showing ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} View changes
+                  {showing ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} View Changes
                 </button>
                 <button
                   type="button"

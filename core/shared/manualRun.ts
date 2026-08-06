@@ -1,6 +1,20 @@
 // Manual step-runner shared logic (Phase B1). Pure + framework-free so the backend routes and the
 // frontend runner reuse one source of truth for the outcome vocabulary and roll-up rules.
 
+// A case's script may be linked by caseId, or (for agent output) by title within its run, or be that
+// run's only script. Mirrors scriptsForCases in src/lib/manualTestRun.ts.
+export function caseHasScript(testCase: any, scripts: any[]): boolean {
+  const live = scripts.filter((script) => !script?.deletedAt);
+  if (live.some((script) => String(script?.caseId || '') === String(testCase?.id || ''))) return true;
+  const runId = String(testCase?.agentRunId || testCase?.sourceRunId || '');
+  if (!runId) return false;
+  const candidates = live.filter((script) => String(script?.agentRunId || script?.sourceRunId || '') === runId);
+  const title = String(testCase?.title || '').trim().toLowerCase();
+  if (title && candidates.some((script) => [script?.title, script?.test_case_title]
+    .some((value) => String(value || '').trim().toLowerCase() === title))) return true;
+  return candidates.length === 1;
+}
+
 // Per-step + per-case outcome vocabulary (generic QA, not app-specific). "Attention needed" == Blocked.
 export const MANUAL_OUTCOMES = ['Not Run', 'Passed', 'Failed', 'Blocked', 'Retest', 'Not Applicable', 'Paused'] as const;
 export type ManualOutcome = (typeof MANUAL_OUTCOMES)[number];

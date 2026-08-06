@@ -66,8 +66,11 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
           className="min-w-[8rem] flex-1 bg-transparent px-0.5 py-0.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
         />
       </div>
+      {/* Suggestions flow in the layout rather than sitting absolute: an absolute list contributes no
+          height, so inside a scrollable modal body it was clipped and unreachable. Flowing lets the
+          container grow while the list is open and collapse when it closes — no reserved empty space. */}
       {open && (suggestions.length > 0 || canCreate) ? (
-        <div className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+        <div className="z-30 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
           {canCreate ? (
             <button type="button" onClick={() => add(query)} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[var(--accent)] hover:bg-[var(--bg-secondary)]">
               <Plus className="h-3.5 w-3.5" /> Create “{query.trim()}”

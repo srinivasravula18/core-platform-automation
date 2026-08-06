@@ -22,6 +22,7 @@ const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${
 
 async function main() {
   const svc = await import('../server/features/automation/agentService');
+  const { bundledTestRuntime } = await import('../agent/src/runner');
   const { db } = await import('../server/shared/storage');
   db.agents = [];
 
@@ -58,6 +59,10 @@ async function main() {
   ok(hb.version === '1.1.0' && hb.status === 'busy', 'heartbeat updates telemetry + status');
   ok(!!hb.lastHeartbeatAt, 'lastHeartbeatAt set');
 
+  console.log('rename');
+  const renamed = await svc.renameAgent(authed!, 'CI Agent');
+  ok(renamed.name === 'CI Agent' && db.agents[0]?.name === 'CI Agent', 'rename persists the card title');
+
   console.log('token refresh rotates the access token');
   const refreshed = await svc.refreshAgentToken(reg.refreshToken);
   ok(!!refreshed && refreshed.agentToken.startsWith(`${reg.agentId}.`), 'refresh issues a new access token');
@@ -69,6 +74,22 @@ async function main() {
   ok(stale.status === 'offline', 'stale heartbeat → offline regardless of stored status');
   const fresh = svc.withLiveStatus({ ...hb, status: 'online', lastHeartbeatAt: new Date().toISOString() });
   ok(fresh.status === 'online', 'fresh heartbeat stays online');
+
+  console.log('bundled Playwright runtime');
+  ok(bundledTestRuntime(`import { test } from '@playwright/test';`) === `import { test } from 'playwright/test';`, 'recorded scripts use the bundled test runtime');
+
+  console.log('local agent port collision');
+  const { startLocalApi } = await import('../agent/src/localApi');
+  const log = { info() {}, warn() {}, error() {} } as any;
+  const localDeps = { log, loggerHandle: { currentLogFile: () => '' }, config: { localKey: 'test' }, conn: {} } as any;
+  const firstApi = await startLocalApi(localDeps, 0);
+  const firstAddress = firstApi.address();
+  const occupiedPort = typeof firstAddress === 'object' && firstAddress ? firstAddress.port : 0;
+  const secondApi = await startLocalApi(localDeps, occupiedPort);
+  const secondAddress = secondApi.address();
+  const fallbackPort = typeof secondAddress === 'object' && secondAddress ? secondAddress.port : 0;
+  ok(occupiedPort > 0 && fallbackPort > 0 && fallbackPort !== occupiedPort, 'second local agent falls back when its preferred port is occupied');
+  await Promise.all([new Promise<void>((resolve) => firstApi.close(() => resolve())), new Promise<void>((resolve) => secondApi.close(() => resolve()))]);
 
   console.log('revocation');
   ok(await svc.revokeAgent(reg.agentId), 'revoke succeeds');

@@ -265,14 +265,14 @@ export function WorkflowRunner({ plan, onExecutePlan, onCancelPlan, onClose, com
       {plan.status === 'completed' && (
         <div className={cn('flex items-center gap-2 text-xs text-emerald-400', compact ? 'mt-2' : 'mt-4')}>
           <CheckCircle2 className="w-3.5 h-3.5" />
-          <span>All steps completed</span>
+          <span>All Steps Completed</span>
         </div>
       )}
 
       {plan.status === 'failed' && (
         <div className={cn('flex items-center gap-2 text-xs text-red-400', compact ? 'mt-2' : 'mt-4')}>
           <XCircle className="w-3.5 h-3.5" />
-          <span>Plan execution failed</span>
+          <span>Plan Execution Failed</span>
           <button onClick={() => onCancelPlan?.(plan.id)} className="underline hover:no-underline">Dismiss</button>
         </div>
       )}
@@ -286,7 +286,7 @@ export function PlanList({ plans, onExecutePlan, onCancelPlan }: { plans: Plan[]
     return (
       <div className="flex flex-col items-center justify-center py-12 text-[var(--text-muted)]">
         <Bot className="w-10 h-10 mb-3 opacity-50" />
-        <p className="text-sm">No AI workflows yet</p>
+        <p className="text-sm">No AI Workflows Yet</p>
         <p className="text-xs mt-1">Press Cmd+K to create one</p>
       </div>
     );

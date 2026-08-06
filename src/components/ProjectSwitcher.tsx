@@ -113,9 +113,9 @@ export function ProjectSwitcher() {
       >
         <FolderGit2 className="w-4 h-4 text-[var(--accent)] shrink-0" />
         <span className="flex flex-col items-start leading-tight min-w-0">
-          <span className="truncate max-w-[10rem]">{selProject ? selProject.name : 'Select project'}</span>
+          <span className="truncate max-w-[10rem]">{selProject ? selProject.name : 'Select Project'}</span>
           <span className="text-[9px] uppercase tracking-wide text-[var(--text-muted)] truncate max-w-[10rem]">
-            {selProject ? (selApp ? selApp.name : 'All apps') : 'no project'}
+            {selProject ? (selApp ? selApp.name : 'All Apps') : 'no project'}
           </span>
         </span>
         <ChevronDown className={cn('w-3.5 h-3.5 text-[var(--text-muted)] shrink-0 transition-transform', open && 'rotate-180')} />
@@ -132,14 +132,14 @@ export function ProjectSwitcher() {
                   <button
                     onClick={selectAllProjects}
                     className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
-                    title={selectedProjects.size === projects.length ? 'Deselect all projects' : 'Select all projects'}
+                    title={selectedProjects.size === projects.length ? 'Deselect All Projects' : 'Select All Projects'}
                   >
                     {selectedProjects.size === projects.length ? (
                       <CheckSquare className="w-3.5 h-3.5 text-[var(--accent)]" />
                     ) : (
                       <Square className="w-3.5 h-3.5" />
                     )}
-                    Select all
+                    Select All
                   </button>
                 )}
                 {canCapability('project:create') && (
@@ -284,7 +284,7 @@ export function ProjectSwitcher() {
                         ) : (
                           <Square className="w-3.5 h-3.5" />
                         )}
-                        <span className="font-medium">Select all ({project.apps.length})</span>
+                        <span className="font-medium">Select All ({project.apps.length})</span>
                       </button>
 
                       {/* Project-level (all apps) */}
@@ -296,7 +296,7 @@ export function ProjectSwitcher() {
                         )}
                       >
                         <Layers className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-                        <span className="flex-1 text-xs font-medium text-[var(--text-primary)]">All apps</span>
+                        <span className="flex-1 text-xs font-medium text-[var(--text-primary)]">All Apps</span>
                         <span className="text-[9px] uppercase tracking-wide text-[var(--text-muted)]">project-level</span>
                         {isSelectedProject && !selectedAppId && <Check className="w-3 h-3 text-[var(--accent)]" />}
                       </button>
@@ -391,7 +391,7 @@ export function ProjectSwitcher() {
               <button onClick={() => setConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 Cancel
               </button>
-              <button onClick={() => void doDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
+              <button onClick={() => void doDelete()} className="delete-action rounded-md border px-3 py-1.5 text-xs font-semibold">
                 Delete
               </button>
             </div>
@@ -428,8 +428,8 @@ export function ProjectSwitcher() {
               <button onClick={() => setBulkConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 Cancel
               </button>
-              <button onClick={() => void doBulkDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
-                Delete all
+              <button onClick={() => void doBulkDelete()} className="delete-action rounded-md border px-3 py-1.5 text-xs font-semibold">
+                Delete All
               </button>
             </div>
           </div>
