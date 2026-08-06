@@ -15,7 +15,12 @@ export interface ContextBudgetEntry {
   included: boolean;
   reason: string;
   tokenEstimate: number;
+  truncated?: boolean;
 }
+
+const CHARS_PER_TOKEN = 4;
+/** Below this many remaining tokens, a truncated snippet isn't worth including — exclude instead. */
+const MIN_TRUNCATED_TOKENS = 50;
 
 export function assemblePromptBudget(
   candidates: ContextCandidate[],
@@ -34,15 +39,22 @@ export function assemblePromptBudget(
     if (fits) {
       totalTokens += tokenEstimate;
       included.push(candidate);
+      entries.push({ key: candidate.key, included: true, reason: `included - ${tokenEstimate} tokens, ${available - totalTokens} remaining`, tokenEstimate });
+    } else if (remaining >= MIN_TRUNCATED_TOKENS) {
+      // Doesn't fully fit but there's meaningful room left — truncate rather than silently drop.
+      const truncatedContent = `${candidate.content.slice(0, remaining * CHARS_PER_TOKEN)}\n[...truncated to fit context budget]`;
+      const truncatedTokens = estimateTokens(truncatedContent);
+      totalTokens += truncatedTokens;
+      included.push({ ...candidate, content: truncatedContent, tokenEstimate: truncatedTokens });
+      entries.push({ key: candidate.key, included: true, truncated: true, reason: `truncated - ${tokenEstimate} tokens needed, ${remaining} available`, tokenEstimate: truncatedTokens });
+    } else {
+      entries.push({
+        key: candidate.key,
+        included: false,
+        reason: `excluded - would exceed budget by ${tokenEstimate - remaining} tokens (${Math.max(0, remaining)} remaining)`,
+        tokenEstimate,
+      });
     }
-    entries.push({
-      key: candidate.key,
-      included: fits,
-      reason: fits
-        ? `included - ${tokenEstimate} tokens, ${available - totalTokens} remaining`
-        : `excluded - would exceed budget by ${tokenEstimate - remaining} tokens (${Math.max(0, remaining)} remaining)`,
-      tokenEstimate,
-    });
   }
   return { included, entries, totalTokens };
 }

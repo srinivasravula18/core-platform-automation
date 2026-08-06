@@ -5,7 +5,7 @@
  * never-throws behavior.
  *   npx tsx scripts/test-analyst.ts   (npm run test:analyst)
  */
-import { buildAnalystFeatures, buildAnalystReport, isAnalystEnabled } from '../server/features/agent/workflow/analyst';
+import { buildAnalystFeatures, buildAnalystReport } from '../server/features/agent/workflow/analyst';
 import { runAnalyst } from '../server/features/agent/workflow/runtime';
 import { stashArtifacts, clearArtifacts } from '../server/features/agent/workflow/artifactStash';
 import { createInitialWorkflowState } from '../server/features/agent/workflow/state';
@@ -101,11 +101,10 @@ async function main() {
   ok(String(withNarr.narrative).startsWith('Risk '), 'injected narrator runs over the deterministic report');
   const narrThrow = await buildAnalystReport({ ...baseInput({}), narrate: async () => { throw new Error('down'); } });
   ok(narrThrow.narrative === null && narrThrow.riskScore >= 0, 'narrator failure leaves the deterministic report standing');
-  delete process.env.AGENT_ANALYST;
-  const noNarr = await buildAnalystReport(baseInput({}));
-  eq(noNarr.narrative, null, 'flag off + no injected narrator → no LLM narrative');
+  const defaultNarr = await buildAnalystReport(baseInput({}));
+  ok(typeof defaultNarr.narrative === 'string' && defaultNarr.narrative.startsWith('Recommendation:'), 'default narrative is the deterministic template, no LLM call');
 
-  console.log('runtime hook: flag-gated, lands on the run record');
+  console.log('runtime hook: always runs, lands on the run record');
   {
     const runId = 'AGENT-analyst-hook';
     const state = createInitialWorkflowState({
@@ -115,25 +114,13 @@ async function main() {
     (state as any).execution = { attempts: [], aggregate: { totalCases: 2, passed: 1, failed: 1, durationMs: 500 }, evidenceRefs: [] };
     stashArtifacts(runId, { executionTests: [T('A', 'passed'), T('B', 'failed')] });
 
-    delete process.env.AGENT_ANALYST;
-    const seedOff: any = { messages: [] };
-    eq(await runAnalyst(state as any, seedOff, null), null, 'flag off → null, no side effects');
-    eq(seedOff.analyst_report, undefined, 'flag off → seed untouched');
-
-    process.env.AGENT_ANALYST = '1';
     const seedOn: any = { messages: [] };
     const rep = await runAnalyst(state as any, seedOn, null);
-    ok(!!rep && typeof rep.riskScore === 'number', 'flag on → report produced');
+    ok(!!rep && typeof rep.riskScore === 'number', 'report produced');
     ok(seedOn.analyst_report === rep, 'report lands on the run seed (persists via projection into raw)');
     ok(seedOn.messages.some((m: any) => m.agent === 'QAAnalyst' && /Release risk \d+\/100/.test(m.output)), 'run message carries the risk line');
     clearArtifacts(runId);
-    delete process.env.AGENT_ANALYST;
   }
-
-  console.log('flag helper');
-  ok(!isAnalystEnabled(), 'flag absent → disabled');
-  process.env.AGENT_ANALYST = 'true';
-  ok(isAnalystEnabled(), 'flag=true → enabled');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   // Let import-time async handles (checkpointer/db) settle — exiting mid-teardown aborts node on Windows.

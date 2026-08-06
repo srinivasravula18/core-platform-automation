@@ -35,6 +35,7 @@ export const observePageTool: AgentTool = {
 };
 
 export const actOnPageTool: AgentTool = {
+  capability: { effect: 'write', permissions: ['agent:execute'] },
   spec: {
     name: 'act_on_page',
     description: 'Perform ONE action on the live page by element id from the latest observe_page result: click a button/link/tab, type into a field (text + Enter), or select a dropdown option. Returns whether it worked, a screenshot path, and the FRESH observation after the action — always ground your next step in that fresh observation.',

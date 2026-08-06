@@ -239,19 +239,8 @@ export const queryRecordsTool: AgentTool = {
   },
 };
 
-export const countRecordsTool: AgentTool = {
-  spec: {
-    name: 'count_records',
-    description: 'Return the exact, access-correct COUNT of records matching optional filters. Use for "how many" questions.',
-    parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object' } }, required: ['app_id', 'object_api_name'] },
-  },
-  async execute(args) {
-    const data = (await cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
-      pagination: { page_size: 1 }, summary: { operations: ['count'] }, filters: asFilters(args.filters),
-    })) as any;
-    return { count: data?.summary?.count ?? data?.total_count ?? null };
-  },
-};
+// count_records and create_record live in corePlatformMeta.ts (declared capability, ctx-aware) —
+// this file used to duplicate both under the same tool names; removed to stop the name collision.
 
 export const aggregateRecordsTool: AgentTool = {
   spec: {
@@ -270,17 +259,6 @@ export const aggregateRecordsTool: AgentTool = {
       group_by: chart.group_by, operation: chart.operation,
       groups: buckets.map((b: any) => ({ group: b.group_key === null || b.group_key === undefined || b.group_key === '' ? '(blank)' : b.group_key, value: b.value ?? null })),
     };
-  },
-};
-
-export const createRecordTool: AgentTool = {
-  spec: {
-    name: 'create_record',
-    description: 'Create a REAL record in an object (subject to the user\'s create permission + validations). Use to seed test data. WRITE operation — only when the task asks to create data.',
-    parameters: { type: 'object', properties: { app_id: str, object_api_name: str, values: { type: 'object', description: 'field api_name -> value map for the new record.' } }, required: ['app_id', 'object_api_name', 'values'] },
-  },
-  async execute(args) {
-    return cpRequest('POST', await cpApiPath('createRecord', { appId: String(args.app_id), object: String(args.object_api_name) }), args.values);
   },
 };
 
@@ -925,14 +903,13 @@ export function corePlatformDataConfigured(): boolean {
   return !!(String(process.env.TARGET_USERNAME || '').trim() && String(process.env.TARGET_PASSWORD || '').trim());
 }
 
-/** Read-only data tools (safe to always offer). create_record is a write — added separately. */
-export const corePlatformReadTools: AgentTool[] = [listAppsTool, describeAppSchemaTool, queryRecordsTool, countRecordsTool, aggregateRecordsTool];
-export const corePlatformWriteTools: AgentTool[] = [createRecordTool];
+/** Read-only data tools (safe to always offer). count_records/create_record live in corePlatformMeta.ts. */
+export const corePlatformReadTools: AgentTool[] = [listAppsTool, describeAppSchemaTool, queryRecordsTool, aggregateRecordsTool];
 
 /** All data tools, only when configured (else the agent shouldn't see broken tools). */
-export function corePlatformDataTools(includeWrite = true): AgentTool[] {
+export function corePlatformDataTools(): AgentTool[] {
   if (!corePlatformDataConfigured()) return [];
-  return includeWrite ? [...corePlatformReadTools, ...corePlatformWriteTools] : [...corePlatformReadTools];
+  return [...corePlatformReadTools];
 }
 
 // `ToolContext` is part of the AgentTool execute signature even where unused here.

@@ -11,6 +11,7 @@ export async function runMemoryRetention() {
   const manifestDays = days('MEMORY_MANIFEST_RETENTION_DAYS', 90);
   const planDays = days('CONTROLLER_PLAN_RETENTION_DAYS', 90);
   const runMemoryDays = days('RUN_MEMORY_RETENTION_DAYS', 180);
+  const agentMemoryDays = days('AGENT_MEMORY_RETENTION_DAYS', 180);
   const checkpointDays = days('WORKFLOW_CHECKPOINT_RETENTION_DAYS', 90);
   const segmentDays = days('MEMORY_SEGMENT_RETENTION_DAYS', 0); // 0 keeps conversation summaries indefinitely.
 
@@ -33,6 +34,9 @@ export async function runMemoryRetention() {
     : [];
   const runMemories = runMemoryDays > 0
     ? await query(`DELETE FROM run_memories WHERE created_at < now() - ($1 * interval '1 day') RETURNING id`, [runMemoryDays])
+    : [];
+  const agentMemories = agentMemoryDays > 0
+    ? await query(`DELETE FROM agent_memory WHERE created_at < now() - ($1 * interval '1 day') RETURNING id`, [agentMemoryDays])
     : [];
   const segments = segmentDays > 0
     ? await query(`DELETE FROM chat_summary_segments WHERE created_at < now() - ($1 * interval '1 day') RETURNING conversation_id`, [segmentDays])
@@ -66,6 +70,7 @@ export async function runMemoryRetention() {
     manifests: manifests.length,
     plans: plans.length,
     runMemories: runMemories.length,
+    agentMemories: agentMemories.length,
     segments: segments.length,
     checkpointThreads: checkpoints,
   };

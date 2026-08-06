@@ -78,38 +78,22 @@ function testSanitizer() {
 
 // ---------------------------------------------------------------------------
 async function testRequestRouting() {
-  console.log('2. Request router — deterministic kind → engine dispatch (AGENT_GRAPH_V2 gate)');
+  console.log('2. Request router — deterministic kind → engine dispatch');
 
-  const saved = process.env.AGENT_GRAPH_V2;
-  try {
-    process.env.AGENT_GRAPH_V2 = '1';
+  {
     let r = await routeRequest({ kind: 'test_run', payload: { goal: 'generate cases' } });
-    eq(r.route, 'test_run_graph', 'flag on: test_run → test_run_graph');
+    eq(r.route, 'test_run_graph', 'test_run → test_run_graph');
     ok(r.reason.length > 0, 'route decision carries a reason');
     r = await routeRequest({ kind: 'source_research', payload: { question: 'q' } });
     eq(r.route, 'source_research_graph', 'flag on: source_research → source_research_graph');
     r = await routeRequest({ kind: 'chat', payload: {} });
-    eq(r.route, 'legacy_chat', 'flag on: chat stays on legacy_chat');
+    eq(r.route, 'legacy_chat', 'chat stays on legacy_chat');
 
-    // Hardcoded-on default: unset flag now routes to the graph engine; only the '0'/'false' kill switch disables.
-    delete process.env.AGENT_GRAPH_V2;
-    r = await routeRequest({ kind: 'test_run', payload: {} });
-    eq(r.route, 'test_run_graph', 'flag unset: test_run routes to the graph engine (hardcoded on)');
-    process.env.AGENT_GRAPH_V2 = '0';
-    r = await routeRequest({ kind: 'test_run', payload: {} });
-    eq(r.route, 'legacy_chat', 'kill switch AGENT_GRAPH_V2=0: test_run falls back to legacy_chat');
-    ok(/disabled/i.test(r.reason), 'kill-switch reason says the flag is disabled');
     r = await routeRequest({ kind: 'source_research', payload: {} });
-    eq(r.route, 'source_research_graph', 'kill switch: source_research still routes to the research graph');
-
-    process.env.AGENT_GRAPH_V2 = 'false';
-    r = await routeRequest({ kind: 'test_run', payload: {} });
-    eq(r.route, 'legacy_chat', 'AGENT_GRAPH_V2=false also reads as disabled');
+    eq(r.route, 'source_research_graph', 'source_research routes to the research graph');
 
     r = await routeRequest({ kind: 'bogus' as never, payload: {} });
     eq(r.route, 'legacy_chat', 'unknown kind fails safe to legacy_chat');
-  } finally {
-    if (saved === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = saved;
   }
 }
 

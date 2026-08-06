@@ -162,6 +162,7 @@ export const searchRelevantObjectsTool: AgentTool = {
       required: ['query'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     try {
       const kws = keywords(String(args.query || ''));
@@ -213,6 +214,7 @@ export const getObjectFieldsTool: AgentTool = {
       required: ['object_api_name', 'app_id'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     try {
       const apiName = String(args.object_api_name || '').trim();
@@ -299,6 +301,7 @@ export const querySampleRecordsTool: AgentTool = {
       required: ['app_id', 'object_api_name'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     try {
       const appId = String(args.app_id || '').trim();
@@ -410,6 +413,7 @@ export const getApiRoutesTool: AgentTool = {
       required: ['query'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args) {
     try {
       const repoPath = (process.env.TARGET_REPO_PATH || 'D:/core-platform').replace(/[/\\]$/, '');

@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react
 /** Authoring shape for a case step; captureEvidence gates screenshots in the manual runner. */
 type CaseStep = { action: string; expected: string; captureEvidence?: boolean };
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Paperclip, X, Video } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Video } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -42,9 +42,6 @@ const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprec
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
 type CaseAttachment = { name: string; dataUrl?: string; url?: string; mimeType?: string };
-const CASE_ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime';
-const CASE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
-const CASE_ATTACHMENT_MAX_COUNT = 5;
 const TESTING_SCOPES = ['Manual', 'Automation'];
 function InlineCaseSelect({ children, ...props }: ComponentProps<'select'>) {
   return (
@@ -130,8 +127,6 @@ export default function TestCases() {
   const emptyStep: CaseStep = { action: '', expected: '', captureEvidence: true };
   const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, assignedTo: '', requestedBy: '', configuration: '', targetUrl: '', defectIds: '', steps: [emptyStep] as CaseStep[] };
   const [formData, setFormData] = useState(blankForm);
-  const [attachments, setAttachments] = useState<CaseAttachment[]>([]);
-  const [attachmentError, setAttachmentError] = useState('');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
@@ -328,8 +323,6 @@ export default function TestCases() {
     setSelectedCaseId(null);
     setFormData(blankForm);
     setAutomationUrl('');
-    setAttachments([]);
-    setAttachmentError('');
     setIsCaseModalOpen(true);
   };
 
@@ -353,22 +346,7 @@ export default function TestCases() {
       defectIds: Array.isArray(testCase.defectIds) ? testCase.defectIds.join(', ') : String(testCase.defectIds || ''),
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
-    setAttachments(Array.isArray(testCase.attachments) ? testCase.attachments : []);
-    setAttachmentError('');
     setIsCaseModalOpen(true);
-  };
-
-  const addAttachments = async (files: FileList | null) => {
-    if (!files) return;
-    const next = [...attachments];
-    const errors: string[] = [];
-    for (const file of Array.from(files)) {
-      if (next.length >= CASE_ATTACHMENT_MAX_COUNT) { errors.push(`Attach up to ${CASE_ATTACHMENT_MAX_COUNT} files.`); break; }
-      if (file.size > CASE_ATTACHMENT_MAX_BYTES) { errors.push(`${file.name} is larger than 4 MB.`); continue; }
-      next.push({ name: file.name, dataUrl: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('Could not read file.')); reader.readAsDataURL(file); }) });
-    }
-    setAttachments(next);
-    setAttachmentError(errors.join(' '));
   };
 
   const handleSaveCase = async () => {
@@ -384,7 +362,6 @@ export default function TestCases() {
       tags,
       steps,
       type: formData.testingScope === 'Automation' ? 'Automated' : 'Manual',
-      attachments,
       testPlanId: formData.testPlanIds[0] || '',
       testSuiteId: formData.testSuiteIds[0] || '',
       defectIds: formData.defectIds.split(/[\s,]+/).filter(Boolean),
@@ -1026,23 +1003,6 @@ export default function TestCases() {
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Pre Conditions</label>
             <textarea value={formData.preconditions} onChange={(e) => setFormData({...formData, preconditions: e.target.value})} placeholder="State that must be true before running this case (e.g. user is logged in as Admin, an app exists)…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20 resize-y" />
-          </div>
-          <div>
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <label className="block text-sm font-medium text-[var(--text-muted)]">Attachments</label>
-              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
-                <Paperclip className="h-3.5 w-3.5" /> Add files
-                <input type="file" multiple accept={CASE_ATTACHMENT_ACCEPT} className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.target.value = ''; }} />
-              </label>
-            </div>
-            <p className="text-xs text-[var(--text-muted)]">PDF, Word, Excel, CSV, text, photos, and MP4/WebM/MOV videos. Up to 5 files, 4 MB each.</p>
-            {attachments.length > 0 && <div className="mt-2 flex flex-wrap gap-2">
-              {attachments.map((attachment, index) => <span key={`${attachment.name}-${index}`} className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-muted)]">
-                {attachment.url ? <a href={attachment.url} target="_blank" rel="noreferrer" className="truncate hover:text-[var(--accent)]">{attachment.name}</a> : <span className="truncate">{attachment.name}</span>}
-                <button type="button" onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${attachment.name}`} className="shrink-0 hover:text-red-500"><X className="h-3.5 w-3.5" /></button>
-              </span>)}
-            </div>}
-            {attachmentError && <p role="alert" className="mt-1 text-xs text-red-500">{attachmentError}</p>}
           </div>
           {/* Steps: same compact table as Create Manual Run (# / Action / Expected Result / Evidence). */}
           <div>

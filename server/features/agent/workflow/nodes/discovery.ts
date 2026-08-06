@@ -154,11 +154,10 @@ async function markOpenFormOverlay(page: any): Promise<string | null> {
   return found ? '[data-tf-form-scope="1"]' : null;
 }
 
-/** Goal-aware discovery — ON by default; GOAL_AWARE_DISCOVERY_V1=0/false/off reverts to the goal-blind
- * single-page scrape. App-agnostic: it only matches captured control labels against the goal's OWN terms. */
+/** Goal-aware discovery — permanently on, no env flag. App-agnostic: it only matches captured
+ * control labels against the goal's OWN terms. */
 function isGoalAwareDiscoveryEnabled(): boolean {
-  const raw = String(process.env.GOAL_AWARE_DISCOVERY_V1 ?? '').trim().toLowerCase();
-  return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
+  return true;
 }
 
 /** Object-affinity: how many goal terms appear (as substrings) in a control's accessible name. */

@@ -38,6 +38,7 @@ async function verifyRepository(
   args: Record<string, unknown>,
   result: any,
 ): Promise<ToolVerification | null> {
+  if (toolName === 'generate_script' && !args.persist) return { ok: true, status: 'not_applicable', detail: 'persist was not requested.' };
   const specs = repositorySpecs[toolName];
   if (!specs) return null;
   const checks: Array<{ id: string; read: Reader }> = [];

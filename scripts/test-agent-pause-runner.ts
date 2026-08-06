@@ -4,10 +4,8 @@ import http from 'node:http';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Runner } from '../agent/src/runner';
-import { setPauseResumeV1 } from '../server/features/automation/flag';
 
 process.env.DISABLE_POSTGRES = '1';
-setPauseResumeV1(1);
 const scratch = path.resolve(process.cwd(), 'agent', 'playwright', 'pause-runner-test');
 fs.mkdirSync(scratch, { recursive: true });
 

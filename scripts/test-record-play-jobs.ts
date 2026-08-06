@@ -23,8 +23,6 @@ const SCOPE = { projectId: 'p1', appId: 'a1' as string | null, userId: 'u1', rol
 async function main() {
   const rec = await import('../server/features/automation/recordingService');
   const jobs = await import('../server/features/automation/jobService');
-  const { setPauseResumeV1 } = await import('../server/features/automation/flag');
-  setPauseResumeV1(1);
   const sched = await import('../server/features/automation/schedulerService');
   const artifacts = await import('../server/features/automation/artifactService');
   const gateway = await import('../server/features/automation/agentGateway');

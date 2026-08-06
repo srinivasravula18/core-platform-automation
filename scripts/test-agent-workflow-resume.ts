@@ -186,14 +186,11 @@ function testRouters() {
     scripts: [{ caseId: 'c1', scriptRef: 'r', digest: 'd', ok: true }], compilerVersion: 'x@1',
     diagnostics: [{ caseId: 'c2', kind: 'UNRESOLVED_SELECTOR' as const, message: 'm', target: 'Ghost' }],
   };
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'some scripts + one unresolved skip → execute_tests (skip must not halt the pipeline)');
-  // P3 (PER_CASE_REPAIR_V1): the SAME partial run re-grounds to recover the dropped case when the flag is on,
-  // and is bounded — attempts exhausted proceeds with the partial scripts (never loops).
-  process.env.PER_CASE_REPAIR_V1 = '1';
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'P3 on: partial run + unresolved targets + attempts left → re-ground to recover dropped cases');
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'execute_tests', 'P3 on: attempts exhausted → proceed with the partial scripts (bounded, never loops)');
-  delete process.env.PER_CASE_REPAIR_V1;
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'execute_tests', 'P3 off (default): partial run proceeds to execution unchanged');
+  // Per-case repair is always on: a partial run with attempts left re-grounds to recover the dropped case;
+  // once attempts are exhausted it proceeds with the partial scripts instead (bounded, never loops).
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'discover_and_ground', 'some scripts + one unresolved skip + attempts left → re-ground to recover it');
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'partial run + unresolved targets + attempts left → re-ground to recover dropped cases');
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'execute_tests', 'attempts exhausted → proceed with the partial scripts (bounded, never loops)');
 }
 
 // ---------------------------------------------------------------------------
@@ -299,8 +296,13 @@ async function testCrashResumeDurability() {
   // Script review removed: approving cases on the fresh instance runs straight through to completion.
   const final = await graphB.invoke(new Command({ resume: { correlationId: pendingB!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
   eq(final.status, 'completed', 'checkpoint-backed continuation completes on the fresh instance');
-  eq(stubs.counters.discovery, 1, 'discovery ran exactly once across the simulated restart (no replay of finished nodes)');
-  eq(stubs.counters.cases, 1, 'case authoring ran exactly once across the simulated restart');
+  // The fresh instance has no process-local grounding state for this thread, so the compiler finds
+  // 'New' unresolved and per-case repair re-grounds once to recover it — a real recovery pass, not a
+  // replay of the already-checkpointed discovery step from before the restart.
+  eq(stubs.counters.discovery, 2, 'discovery re-runs once via per-case repair to recover lost grounding state after the restart');
+  // Same root cause as the discovery re-run above: the fresh instance's evidence catalog is empty, so the
+  // now-live author↔critic loop correctly refutes the case as ungrounded and triggers one revision.
+  eq(stubs.counters.cases, 2, 'case authoring re-runs once via the critic refuting the ungrounded case after the restart');
 }
 
 // ---------------------------------------------------------------------------

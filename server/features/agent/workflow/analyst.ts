@@ -1,23 +1,15 @@
 /**
- * Autonomous QA Analyst (bug-investigation framework, Phase 8; flag `AGENT_ANALYST`) — per-run release
- * intelligence. Deterministic feature extraction answers, with evidence: what changed vs prior runs
- * (pass-rate/duration deltas), what regressed, what looks suspicious (intent mismatches on passes), what's
- * flaky vs product bug, which business rules were violated, and what visually drifted. The numbers come
- * from data; an optional ONE-call LLM narrative writes the judgment prose. Output = AnalystReport, stored
- * on the run record (`analyst_report`). Report-only: never throws, never affects the run verdict.
+ * Autonomous QA Analyst (bug-investigation framework, Phase 8) — per-run release intelligence.
+ * Deterministic feature extraction answers, with evidence: what changed vs prior runs (pass-rate/duration
+ * deltas), what regressed, what looks suspicious (intent mismatches on passes), what's flaky vs product bug,
+ * which business rules were violated, and what visually drifted. The narrative is a deterministic template
+ * over those same facts — no LLM call. Output = AnalystReport, stored on the run record (`analyst_report`).
+ * Report-only: never throws, never affects the run verdict.
  */
-import { z } from 'zod';
-import { systemPromptFor } from '../../../ai/systemPrompts';
 import type { Observation } from '../../../shared/schemas';
 import type { DefectReport, PriorRunSummary, TestResultLike } from './defectReporter';
 import type { InvestigationSummary } from './nodes/investigation';
 import type { VisualFinding } from '../validation/visualBaseline';
-import { generateStrictObject } from './nodes/authoring';
-
-/** Flag reader (lazy, per the dotenv load-order convention). */
-export function isAnalystEnabled(): boolean {
-  return ['1', 'true'].includes(String(process.env.AGENT_ANALYST || '').toLowerCase());
-}
 
 export interface AnalystInput {
   runId: string;
@@ -29,7 +21,7 @@ export interface AnalystInput {
   defectReport?: DefectReport | null;
   investigation?: InvestigationSummary | null;
   visualFindings?: VisualFinding[] | null;
-  /** Optional ONE-call LLM narrative seam — injectable for tests; defaults to the strict loop when flagged on. */
+  /** Narrative seam — injectable for tests; defaults to the deterministic template. */
   narrate?: ((report: AnalystReport) => Promise<string | null>) | null;
 }
 
@@ -171,38 +163,17 @@ export function buildAnalystFeatures(input: AnalystInput): AnalystReport {
   };
 }
 
-const narrativeSchema = z.object({ narrative: z.string().min(1).max(2000) });
-
-/** Default ONE-call LLM narrative over the deterministic features (never invents numbers). */
-async function defaultNarrate(report: AnalystReport): Promise<string | null> {
-  const facts = {
-    totals: report.totals, passRate: report.passRate, priorPassRate: report.priorPassRate,
-    regressions: report.regressions, intentMismatches: report.intentMismatches.map((i) => i.title),
-    flaky: report.flaky, businessRuleViolations: report.businessRuleViolations.slice(0, 10),
-    visualFindings: report.visualObservations.length, defects: report.defectSummary,
-    riskScore: report.riskScore, recommendation: report.recommendation,
-  };
-  const result = await generateStrictObject<{ narrative: string }, { narrative: string }>({
-    node: 'analyst',
-    agent: 'defectTriage',
-    schema: narrativeSchema,
-    schemaName: 'analyst_narrative',
-    system: `${systemPromptFor('defectTriage')}\n--- RELEASE INTELLIGENCE NARRATIVE ---\nWrite a short executive release assessment (3-6 sentences) STRICTLY from the facts JSON you receive. Never invent numbers, names, or causes not present in the facts. State the recommendation and the top reasons. Return ONLY the JSON object.`,
-    prompt: `FACTS:\n${JSON.stringify(facts)}`,
-    validate: (wire) => {
-      const r = narrativeSchema.safeParse(wire);
-      return r.success ? { value: r.data, issues: [] } : { value: null, issues: r.error.issues.map((i) => `${i.path.join('.') || 'value'}: ${i.message}`) };
-    },
-  });
-  return result.value?.narrative ?? null;
+/** Default narrative: a template over the already-computed facts. No LLM call, never invents anything. */
+async function templateNarrate(report: AnalystReport): Promise<string | null> {
+  const verdict = report.recommendation === 'block' ? 'BLOCK' : report.recommendation === 'ship-with-caution' ? 'ship with caution' : 'ship';
+  return `Recommendation: ${verdict} (risk score ${report.riskScore}/100). ${report.rationale.join(' ')}`;
 }
 
-/** Deterministic features + optional bounded LLM narrative. Never throws. */
+/** Deterministic features + deterministic narrative. Never throws. */
 export async function buildAnalystReport(input: AnalystInput): Promise<AnalystReport> {
   const report = buildAnalystFeatures(input);
   try {
-    const narrate = input.narrate ?? (isAnalystEnabled() ? defaultNarrate : null);
-    if (narrate) report.narrative = await narrate(report);
+    report.narrative = await (input.narrate ?? templateNarrate)(report);
   } catch { /* narrative is garnish — the deterministic report stands */ }
   return report;
 }

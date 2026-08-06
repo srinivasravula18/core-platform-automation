@@ -17,15 +17,8 @@ import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/
 import { getProject, getProjectRepoPath } from '../../features/projects/projectService';
 import { findUntestedEdges } from '../exploration/edgeFinder';
 import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
-import { corePlatformDataTools } from './corePlatformData';
-import { corePlatformMetaTools } from './corePlatformMeta';
 import { expandByReferences } from '../exploration/referenceGraph';
 import { searchCodeWithContext, resolveTargetRepo } from '../../features/git-agent/gitAgentService';
-import {
-  explorePageTool, getBlackboardTool, verifySelectorsTool,
-  listSurfacesTool, discoverAppsTool,
-} from './domTools';
-import { agentWorkflowTools } from './agentTools';
 import { fetchArtifact, searchConversationMemory } from '../memory/artifactMemory';
 
 type Lister = { list: () => Promise<any[]> };
@@ -159,6 +152,7 @@ export const queryWorkspaceTool: AgentTool = {
       required: ['kind'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx: ToolContext) {
     const kind = String(args.kind || '');
     const coll = COLLECTIONS[kind];
@@ -274,6 +268,7 @@ export const searchConversationTool: AgentTool = {
       required: ['query'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     const conversationId = String(ctx.conversationId || '');
     if (!conversationId) throw new Error('No conversation is attached to this request.');
@@ -287,6 +282,7 @@ export const fetchArtifactTool: AgentTool = {
     description: 'Fetch a prior evidentiary tool result by artifact ref. Freshness is checked before reuse. Read-only.',
     parameters: { type: 'object', properties: { id: { type: 'string', description: 'Artifact ref returned by search_conversation.' } }, required: ['id'] },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     return fetchArtifact(String(args.id || ''), ctx);
   },
@@ -312,6 +308,7 @@ export const searchCodebaseTool: AgentTool = {
       required: ['terms'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     const terms = Array.isArray(args.terms) ? args.terms.map(String) : [String(args.terms || '')];
     const limit = Math.max(1, Math.min(60, Number(args.limit) || 30));
@@ -349,6 +346,7 @@ export const readCodeFileTool: AgentTool = {
       required: ['path'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx) {
     // Read the ENTIRE file — no byte cap.
     const content = await readCodeFileInScope(
@@ -379,6 +377,7 @@ export const followImportsTool: AgentTool = {
       required: ['path'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx: ToolContext) {
     const path = String(args.path || '').trim();
     if (!path) throw new Error('follow_imports requires a non-empty "path".');
@@ -417,6 +416,7 @@ export const findUntestedEdgesTool: AgentTool = {
       required: ['feature'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx: ToolContext) {
     const feature = String(args.feature || '').trim();
     if (!feature) throw new Error('find_untested_edges requires a non-empty "feature".');
@@ -466,6 +466,7 @@ export const analyzeFeatureCoverageTool: AgentTool = {
       required: ['feature'],
     },
   },
+  capability: { effect: 'read', permissions: ['agent:read'] },
   async execute(args, ctx: ToolContext) {
     const feature = String(args.feature || '').trim();
     if (!feature) throw new Error('analyze_feature_coverage requires a non-empty "feature".');
@@ -604,29 +605,6 @@ export async function quickWorkspaceAnswer(
   return null;
 }
 
-/** All registered tools by name. */
-export function coreTools(): AgentTool[] {
-  return [
-    queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
-    // DATA tools (real schema + records via the App Service) — only when configured.
-    ...corePlatformDataTools(),
-    // META tools — object discovery, field inspection, sample records, route search.
-    // Available to all models (OpenAI, Claude API, Codex, etc.) via the native tool-calling loop.
-    ...corePlatformMetaTools,
-    // DOM exploration & test execution tools (ported from agentic-test-platform)
-    ...domTools(),
-    // Agent workflow tools — run tests, generate scripts, fetch evidence, read packages
-    ...agentWorkflowTools(),
-  ];
-}
-
-export function domTools(): AgentTool[] {
-  return [explorePageTool, getBlackboardTool, verifySelectorsTool, listSurfacesTool, discoverAppsTool];
-}
-
-export function toolByName(name: string): AgentTool | undefined {
-  return coreTools().find((t) => t.spec.name === name);
-}
 
 /**
  * Compatibility evidence facade (Phase 4): the legacy supervisor/answer bridge can load a

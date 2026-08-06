@@ -23,6 +23,9 @@ import {
 
 type CliTool = 'codex' | 'claude';
 
+/** The CLI/account provider exposes no token usage — cost is genuinely unmetered here, not zero. */
+const UNMETERED_USAGE = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+
 function commandFor(tool: CliTool) {
   if (tool === 'codex') return process.platform === 'win32' ? 'codex.cmd' : 'codex';
   return process.platform === 'win32' ? 'claude.exe' : 'claude';
@@ -179,7 +182,7 @@ export class AccountCliProvider implements AIProvider {
     return {
       object: text,
       text,
-      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+      usage: UNMETERED_USAGE,
       model: this.modelId(opts),
       provider: this.name,
       latencyMs: Date.now() - start,
@@ -219,7 +222,7 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
     } catch (err: any) {
       throw classifyError(this.name, undefined, err?.message || String(err));
     }
-    const zeroUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+    const zeroUsage = UNMETERED_USAGE;
     let parsed: any;
     try {
       parsed = extractJson(raw);
@@ -254,7 +257,7 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
         return {
           object,
           text,
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+          usage: UNMETERED_USAGE,
           model: this.modelId(opts),
           provider: this.name,
           latencyMs: Date.now() - start,
@@ -265,7 +268,7 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
         return {
           object,
           text,
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+          usage: UNMETERED_USAGE,
           model: this.modelId(opts),
           provider: this.name,
           latencyMs: Date.now() - start,

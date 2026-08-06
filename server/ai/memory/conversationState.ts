@@ -8,8 +8,8 @@ export interface ConversationLedger {
 
 export async function loadConversationLedger(conversationId: string): Promise<ConversationLedger> {
   if (!conversationId) return { lines: [], runIds: [] };
-  const runs = (await AgentRuns.list()).filter((run: any) => String(run.conversationId || '') === conversationId)
-    .sort((a: any, b: any) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const runs = (await AgentRuns.listByConversation(conversationId, { limit: 200 }))
+    .sort((a: any, b: any) => String(a.createdAt || a.created_at || '').localeCompare(String(b.createdAt || b.created_at || '')));
   const runIds = runs.map((run: any) => String(run.id));
   const lines: string[] = [];
   for (const run of runs) {

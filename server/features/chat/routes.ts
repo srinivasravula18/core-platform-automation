@@ -11,37 +11,6 @@ import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
 import { reqScope, scopeFilter, ownerMismatch, scopeStamp } from '../../shared/scope';
 import { AgentRuns, ChatConversations, CanonicalMessages } from '../../db/repository';
-import { runSupervisor } from '../../ai/supervisor';
-
-// Anti-buffering pad: defeats proxies that ignore X-Accel-Buffering by filling their
-// ~4-8KB upstream buffer on every event (SSE comment lines are ignored by the client).
-// See the same constant in controller/routes.ts for the full rationale.
-const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
-
-function sse(res: any) {
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-  // Prime the proxy buffer so the FIRST real event isn't held back either.
-  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
-}
-
-function writeEvent(res: any, event: Record<string, unknown>) {
-  res.write(`data: ${JSON.stringify(event)}\n\n${STREAM_PROXY_PAD}`);
-  res.flush?.();
-}
-
-function compactHistory(history: unknown): Array<{ role: 'user' | 'assistant'; content: string }> {
-  if (!Array.isArray(history)) return [];
-  return history
-    .map((turn: any) => ({
-      role: turn?.role === 'assistant' ? 'assistant' as const : 'user' as const,
-      content: String(turn?.content ?? turn?.text ?? '').trim(),
-    }))
-    .filter((turn) => turn.content);
-}
 
 function runHistoryTitle(run: any) {
   return String(run?.prompt || run?.artifactName || run?.folderPath || 'Agent run').replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -75,64 +44,6 @@ export function runToTurns(run: any) {
 }
 
 export function registerChatRoutes(app: Express) {
-  app.post('/api/chat', async (req, res) => {
-    const { sessionId = 'default', message, history, apps, pageContext } = req.body || {};
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'message required' });
-    }
-
-    const scope = reqScope(req);
-    sse(res);
-    writeEvent(res, { type: 'session', sessionId });
-
-    let final = '';
-    try {
-      const result = await runSupervisor({
-        userMessage: message,
-        workspaceId: String(sessionId || 'default'),
-        userId: scope.userId,
-        projectId: scope.projectId,
-        appId: scope.appId,
-        conversationId: String(sessionId),
-        history: compactHistory(history),
-        pageContext,
-        apps,
-        onStep: (step) => {
-          for (const call of step.toolCalls || []) {
-            writeEvent(res, { type: 'tool_call', tool: call.name, input: call.arguments, thought: step.text });
-            writeEvent(res, {
-              type: 'tool_result',
-              tool: call.name,
-              result: call.error ? { error: call.error } : call.result,
-              isError: Boolean(call.error),
-            });
-          }
-        },
-      });
-      final = result.finalText || 'Done.';
-      writeEvent(res, { type: 'final', content: final, accepted: result.accepted });
-
-      const existing = await ChatConversations.get(String(sessionId)).catch(() => null);
-      await ChatConversations.appendMessages({
-        id: String(sessionId),
-        workspaceId: String(sessionId || 'default'),
-        title: (existing as any)?.title || message.slice(0, 120),
-        messages: [{ role: 'user', text: message }, { role: 'assistant', kind: 'text', text: final }],
-        // Stamp ownership at creation so the conversation belongs to the sender. Without this the
-        // row was left unowned; under strict per-user isolation a tester's own chats then never
-        // appeared in their history (admin still saw unowned rows, so it looked admin-only).
-        ownerId: scope.userId,
-        projectId: scope.projectId,
-        appId: scope.appId || undefined,
-      }).catch(() => null);
-      persistDataInBackground('chat turn');
-    } catch (err: any) {
-      writeEvent(res, { type: 'error', message: err?.message || 'chat failed' });
-    } finally {
-      res.end();
-    }
-  });
-
   app.get('/api/chat/conversations', async (req, res, next) => {
     try {
       const workspaceId = String(req.query.workspaceId || 'default');

@@ -37,10 +37,7 @@ import { renderBehaviorForPrompt } from '../behaviorOracle';
 import { classifyOutcomes } from '../outcomeValidator';
 import { isOutcomeValidatorEnabled } from '../outcomeValidatorFlag';
 import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
-import { isAgentNativeEnabled } from '../../../agent-core/agentNativeFlag';
 import { critiqueCases } from '../../../agent-core/critic/caseCritic';
-import { publishGroundingFacts } from '../../../agent-core/grounding/groundingFacts';
-import { recordCapabilityDelegation } from '../../../agent-core/registry/capabilities';
 import { isPerCaseRepairEnabled } from './perCaseRepairFlag';
 import { extractGoalTerms } from './goalTerms';
 import { specFilenameFromTitle } from './specFilename';
@@ -351,16 +348,6 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     stashArtifacts(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
     // Observe-then-assert (BEHAVIOR_ORACLE_V1): stash the probed form behaviour for the author + critic.
     if (discovery.behavior?.probed) stashArtifacts(state.runId, { behaviorOracle: discovery.behavior });
-    // P5 (shadow, flag-gated): publish the verified catalog + gate as SHARED facts so the author/critic read
-    // one grounding fact instead of re-deriving it. Fire-and-forget; never affects the grounding result.
-    if (isAgentNativeEnabled()) {
-      void publishGroundingFacts({
-        runId: state.runId,
-        catalogLabels: (grounding.evidenceGraph.nodes ?? []).flatMap((n) => [n.semanticName, n.label]).filter((l): l is string => typeof l === 'string'),
-        liveCount: grounding.evidence.countsByProvenance?.live ?? 0,
-        gate: grounding.evidence.gate,
-      }).catch(() => undefined);
-    }
     return {
       evidence: grounding.evidence,
       rediscoveryAttempts: attempts,
@@ -412,10 +399,10 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     };
     let result = await authorCases(authorInput);
 
-    // P4 — author ↔ critic negotiation (flag-gated by AGENT_NATIVE_V1). The CriticAgent adversarially reviews
-    // the draft against the verified evidence catalog and refutes ungrounded/duplicate/empty cases; the author
-    // then does exactly ONE revision addressing the objections. Flag off → authoring is byte-identical.
-    if (isAgentNativeEnabled() && result.cases.length) {
+    // Author ↔ critic negotiation. The CriticAgent adversarially reviews the draft against the verified
+    // evidence catalog and refutes ungrounded/duplicate/empty cases; the author then does exactly ONE
+    // revision addressing the objections.
+    if (result.cases.length) {
       const catalogLabels = (evidenceGraph?.nodes ?? []).flatMap((n) => [n.semanticName, n.label]);
       console.log(`[behavior-critic] author drafted ${result.cases.length} case(s): ${result.cases.map((c) => c.title).join(' | ')}`);
       const critique = await critiqueCases({ runId: state.runId, goal: state.request.goal, cases: result.cases, catalogLabels, behavior: behaviorOracle });
@@ -548,17 +535,6 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       objectSchema: artifacts.objectSchema, // stashed at load_context — threaded to the compiler for API-conformant data.
     });
     if (Object.keys(result.compiledSources).length) stashArtifacts(state.runId, { compiledSources: result.compiledSources });
-    // P6 (shadow, flag-gated): record the deterministic compiler as a DELEGATED capability (agents decide,
-    // the compiler executes). Fire-and-forget; never affects the compilation result.
-    if (isAgentNativeEnabled()) {
-      const okScripts = (result.compilation.scripts ?? []).filter((s) => s.ok).length;
-      void recordCapabilityDelegation({
-        runId: state.runId, capability: 'compile_scripts',
-        requestSummary: `Compile ${state.cases.length} planned case(s) into verified Playwright.`,
-        resultSummary: `Compiled ${okScripts} script(s); ${(result.compilation.diagnostics ?? []).length} diagnostic(s).`,
-        resultValue: { compiled: okScripts, diagnostics: (result.compilation.diagnostics ?? []).length },
-      }).catch(() => undefined);
-    }
     return {
       coveragePlan: result.coveragePlan,
       riskScores: result.riskScores,
@@ -618,16 +594,6 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     if (result.evidenceShots?.length) stashArtifacts(state.runId, { evidenceShots: result.evidenceShots });
     // Per-test records feed the defect reporter / investigation downstream — stash only (state carries refs).
     if (result.tests?.length) stashArtifacts(state.runId, { executionTests: result.tests });
-    // P6 (shadow, flag-gated): record the deterministic executor as a DELEGATED capability. Fire-and-forget.
-    if (isAgentNativeEnabled()) {
-      const agg = result.aggregate;
-      void recordCapabilityDelegation({
-        runId: state.runId, capability: 'execute_scripts',
-        requestSummary: `Execute ${scripts.length} compiled script(s) against ${state.mission?.targetUrl ?? 'the target'}.`,
-        resultSummary: agg ? `Ran ${agg.totalCases}: ${agg.passed} passed, ${agg.failed} failed.` : `Executed ${scripts.length} script(s).`,
-        resultValue: agg ? { total: agg.totalCases, passed: agg.passed, failed: agg.failed } : { scripts: scripts.length },
-      }).catch(() => undefined);
-    }
     // Phase 7 (VISUAL_REGRESSION, report-only): diff step screenshots vs the baseline store; seed on first run.
     if (isVisualRegressionEnabled() && result.tests?.length) {
       try {

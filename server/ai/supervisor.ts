@@ -44,7 +44,6 @@ export async function answerViaConversationalRuntime(userMessage: string, opts: 
 }): Promise<string | null> {
   const conversationId = String(opts.conversationId || '').trim();
   if (!conversationId) return null;
-  if (String(process.env.CONVERSATIONAL_RUNTIME_V1 ?? 'true').toLowerCase() === 'false') return null;
   try {
     const { routeTurn } = await import('../../services/runtime/src/application/routeTurn');
     const scope = { workspaceId: opts.workspaceId || 'default', ownerId: opts.userId || '', projectId: opts.projectId || null, appId: opts.appId || null };

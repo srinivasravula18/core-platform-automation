@@ -16,15 +16,37 @@ import { pushInboxItem } from '../inbox/routes';
 import { scanGitAgentChanges, getGitAgentDiff } from './gitAgentService';
 import { nextArtifactId } from '../../shared/artifactIds';
 
+type ChangeType = 'ui' | 'functional' | 'api' | 'db-schema' | 'config' | 'other';
+type ApiChange = 'new' | 'modified' | 'removed' | 'none';
+
+/** Deterministic change-type classification from the file path + git status — no LLM call. */
+function classifyChangeType(file: { path: string; status?: string }): { changeType: ChangeType; apiChange: ApiChange; dbChange: boolean } {
+  const p = file.path.replace(/\\/g, '/').toLowerCase();
+  const status = String(file.status || '').trim().toUpperCase();
+  const apiChangeFromStatus: ApiChange = status.startsWith('A') ? 'new' : status.startsWith('D') ? 'removed' : 'modified';
+
+  if (/\.sql$/.test(p) || /(^|\/)migrations?\//.test(p) || /schema\.sql$/.test(p)) {
+    return { changeType: 'db-schema', apiChange: 'none', dbChange: true };
+  }
+  if (/(^|\/)(routes?|controllers?)(\/|\.[a-z]+$)|(^|\/)api\//.test(p)) {
+    return { changeType: 'api', apiChange: apiChangeFromStatus, dbChange: false };
+  }
+  if (/\.(tsx|jsx|css|scss|less)$/.test(p) || /(^|\/)(components?|pages?|views?)\//.test(p)) {
+    return { changeType: 'ui', apiChange: 'none', dbChange: false };
+  }
+  if (/\.(json|ya?ml|env.*|toml|ini)$/.test(p) || /(^|\/)config(uration)?\//.test(p)) {
+    return { changeType: 'config', apiChange: 'none', dbChange: false };
+  }
+  if (/\.(ts|js|mjs|cjs)$/.test(p)) {
+    return { changeType: 'functional', apiChange: 'none', dbChange: false };
+  }
+  return { changeType: 'other', apiChange: 'none', dbChange: false };
+}
+
 const analysisSchema = z.object({
   summary: z.string(),
   changes: z.array(z.object({
     file: z.string(),
-    changeType: z.enum(['ui', 'functional', 'business-logic', 'api', 'db-schema', 'config', 'other']),
-    // For API changes: 'new' (endpoint added) | 'modified' (contract changed) | 'removed' | 'none'.
-    apiChange: z.enum(['new', 'modified', 'removed', 'none']).default('none'),
-    // True when the change adds/alters a DB table, column, migration, or model.
-    dbChange: z.boolean().default(false),
     whatChanged: z.string(),
     testFocus: z.string(),
   })).default([]),
@@ -54,11 +76,12 @@ const analysisSchema = z.object({
   })).default([]),
 });
 
-export type CodeChangeAnalysis = z.infer<typeof analysisSchema> & {
+export type CodeChangeAnalysis = Omit<z.infer<typeof analysisSchema>, 'changes'> & {
   baseRef: string;
   headCommit: string;
   branch: string;
   changedFiles: any[];
+  changes: Array<{ file: string; changeType: ChangeType; apiChange: ApiChange; dbChange: boolean; whatChanged: string; testFocus: string }>;
 };
 
 export async function analyzeCodeChanges(
@@ -67,6 +90,10 @@ export async function analyzeCodeChanges(
 ): Promise<CodeChangeAnalysis> {
   const scan = scanGitAgentChanges(baseRef);
   const diff = getGitAgentDiff(baseRef);
+
+  // Deterministic classification per file — no LLM call, no invented facts.
+  const classified = scan.changedFiles.map((f: any) => ({ ...f, ...classifyChangeType(f) }));
+  const classificationByPath = new Map(classified.map((f: any) => [f.path, f]));
 
   const existingCases = (db.cases || []).slice(0, 80).map((c: any) => ({
     id: c.id,
@@ -87,8 +114,8 @@ export async function analyzeCodeChanges(
   const result = await orch.generateObject<z.infer<typeof analysisSchema>>({
     prompt: `You are a senior QA engineer reviewing recent code changes in a repository. Test ONLY what actually changed.
 
-Changed files (path + heuristic area/risk):
-${JSON.stringify(scan.changedFiles, null, 2)}
+Changed files (path + deterministic classification, already computed — do not reclassify):
+${JSON.stringify(classified, null, 2)}
 
 Actual code diff (previous vs current; may be truncated):
 ${diff || '(no diff content available — reason from the file list and paths)'}
@@ -100,12 +127,7 @@ EXISTING Playwright scripts already in the repository:
 ${JSON.stringify(existingScripts)}
 
 Do the following and return strict JSON matching the schema:
-1) Classify each meaningful change as "ui", "functional", "business-logic", "api", "db-schema", "config", or "other":
-   - "ui": layout/interaction/visual — focus tests on rendering, interaction, and visual correctness.
-   - "functional"/"business-logic": go deeper into the diff — behavior differences vs the previous code, edge cases, validation, and data correctness.
-   - "api": a route/endpoint/controller/handler changed. Set apiChange to "new" when an endpoint is added, "modified" when an existing endpoint's path/method/request/response/validation/auth changed, "removed" when deleted. Focus tests on status codes, request/response contract, validation, auth, and backward compatibility.
-   - "db-schema": a table, column, index, migration, schema file (e.g. schema.sql), or data model changed. Set dbChange = true. Focus tests on migrations applying cleanly, data integrity, nullability/defaults, and reads/writes against the new shape.
-   Set apiChange and dbChange on every change (default "none"/false when not applicable).
+1) For each meaningful changed file, write a one-line "whatChanged" (what actually changed, from the diff) and "testFocus" (what to test, informed by its changeType/apiChange/dbChange above — e.g. db-schema → migrations applying cleanly + data integrity; api → status codes/contract/auth; ui → rendering/interaction).
 2) Reconcile against the EXISTING cases and scripts listed above. Decide whether they ALREADY adequately cover the changes. In coverage.coveredBy, list the specific existing case/script ids that cover each change and why. Set coverage.sufficient = true ONLY if existing coverage genuinely tests these changes.
 3) If coverage is NOT sufficient, in proposedCases propose the MINIMUM set of new test cases (with concrete, executable steps) and in proposedScripts the Playwright script filenames needed to close the gaps. Do NOT duplicate existing coverage. If coverage IS sufficient, leave proposedCases and proposedScripts empty.
 If there are no code changes, return an empty changes array and coverage.sufficient = true.`,
@@ -123,12 +145,19 @@ If there are no code changes, return an empty changes array and coverage.suffici
     proposedScripts: [],
   };
 
+  // Merge the LLM's per-file prose back onto the deterministic classification (never trust the LLM for facts it wasn't asked to produce).
+  const mergedChanges: CodeChangeAnalysis['changes'] = (object.changes || []).map((c: any) => {
+    const known = classificationByPath.get(c.file) || classifyChangeType({ path: c.file });
+    return { file: c.file, changeType: known.changeType, apiChange: known.apiChange, dbChange: known.dbChange, whatChanged: c.whatChanged, testFocus: c.testFocus };
+  });
+
   return {
     baseRef: scan.baseRef,
     headCommit: scan.headCommit,
     branch: scan.branch,
     changedFiles: scan.changedFiles,
     ...object,
+    changes: mergedChanges,
   };
 }
 

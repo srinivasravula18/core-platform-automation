@@ -21,7 +21,7 @@ import { AnthropicProvider } from './providers/anthropic';
 import { AccountCliProvider } from './providers/cli';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
-import { recordUsage, getDailyCost } from './costTracker';
+import { recordUsage, getDailyCost, getProjectQuota } from './costTracker';
 import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
 import { logExecutionTrace, serializePrompt } from './tracer';
@@ -238,6 +238,8 @@ export class AgentOrchestrator {
       userMessage: opts.userMessage || opts.prompt,
       workspaceId: this.workspaceId,
       userId: this.userId,
+      costUsedToday: this.workspaceId ? getDailyCost(this.workspaceId) : undefined,
+      costDailyLimit: this.workspaceId ? getProjectQuota(this.workspaceId) : undefined,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
       hasHistory: opts.hasHistory,
@@ -311,6 +313,8 @@ export class AgentOrchestrator {
       userMessage: opts.userMessage || opts.prompt,
       workspaceId: this.workspaceId,
       userId: this.userId,
+      costUsedToday: this.workspaceId ? getDailyCost(this.workspaceId) : undefined,
+      costDailyLimit: this.workspaceId ? getProjectQuota(this.workspaceId) : undefined,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
       hasHistory: opts.hasHistory,
@@ -373,6 +377,8 @@ export class AgentOrchestrator {
       userMessage: opts.userMessage || opts.prompt,
       workspaceId: this.workspaceId,
       userId: this.userId,
+      costUsedToday: this.workspaceId ? getDailyCost(this.workspaceId) : undefined,
+      costDailyLimit: this.workspaceId ? getProjectQuota(this.workspaceId) : undefined,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
       hasHistory: opts.hasHistory,
@@ -424,6 +430,8 @@ export class AgentOrchestrator {
       userMessage: opts.guardrailInput || opts.task,
       workspaceId: this.workspaceId,
       userId: this.userId,
+      costUsedToday: this.workspaceId ? getDailyCost(this.workspaceId) : undefined,
+      costDailyLimit: this.workspaceId ? getProjectQuota(this.workspaceId) : undefined,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
       hasHistory: true, // a tool loop is an ongoing task, never a bare one-liner to short-circuit
@@ -506,6 +514,7 @@ export class AgentOrchestrator {
               } else if (capabilityFor(tool).effect === 'write') {
                 inv.verification = await verifyToolMutation(call.name, call.arguments, result, ctx)
                   .catch((error) => ({ ok: false, status: 'failed' as const, detail: `Verification failed: ${error?.message || error}` }));
+                if (inv.verification.status === 'failed') inv.error = `Mutation verification failed: ${inv.verification.detail}`;
               }
               toolResults.push({ name: call.name, arguments: call.arguments, result, verification: inv.verification });
               if (ctx.conversationId) {

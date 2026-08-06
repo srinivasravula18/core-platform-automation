@@ -11,6 +11,9 @@ import { loadAdminNavModules } from '../features/agent/appTargeting';
 import { discoverApis } from '../features/api-intelligence/discovery';
 import { resolveCredentials } from '../features/credentials/credentialsService';
 
+/** How long a memory-recalled understanding is trusted before relearning from the repo/URL. */
+const UNDERSTANDING_MEMORY_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface UnderstandConnectedApp {
   projectId?: string | null;
   appId?: string | null;
@@ -125,7 +128,8 @@ export async function resolveAppUnderstanding(input: ResolveUnderstandingInput):
 
   if (!input.refresh) {
     const recalled = await memory.recall({ scope, kind: 'semantic', subject, limit: 1 }).catch(() => []);
-    if (recalled[0]?.value) {
+    const recalledAge = recalled[0]?.at ? Date.now() - new Date(recalled[0].at).getTime() : Infinity;
+    if (recalled[0]?.value && recalledAge < UNDERSTANDING_MEMORY_TTL_MS) {
       const u = recalled[0].value as AppUnderstanding;
       await blackboard.put(runId, 'app.understanding', u, agent, { causationId: 'memory-recall' }).catch(() => {});
       return u;

@@ -28,8 +28,6 @@ async function main() {
   const service = await import('../server/features/automation/recordingService');
   const { createScriptMaterializer } = await import('../server/features/automation/scriptMaterializer');
   const { proposeRecordingPauses, injectAuthChallengePauses, isAuthChallengeText } = await import('../server/features/automation/pauseDetection');
-  const { setPauseResumeV1 } = await import('../server/features/automation/flag');
-  setPauseResumeV1(1);
   const { Scripts } = await import('../server/db/repository');
   const { db } = await import('../server/shared/storage');
   db.recordings = []; db.recordingSteps = []; db.recordingStepOverrides = [];

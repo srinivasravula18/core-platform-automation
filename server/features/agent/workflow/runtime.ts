@@ -19,7 +19,7 @@ import { readArtifacts } from './artifactStash';
 import { specFilenameFromTitle } from './specFilename';
 import { getWorkflowCheckpointer } from './checkpointer';
 import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLogEntry } from './defectReporter';
-import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
+import { buildAnalystReport, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
 import { recordRunStageProgress, recordRunTerminal } from '../../../agent-core/bus/runInstrumentation';
@@ -274,7 +274,7 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
       }
       return seed?.execution_result ?? null;
     })(),
-    // Release-intelligence report (AGENT_ANALYST) — set on the seed by the runAnalyst terminal hook.
+    // Release-intelligence report — set on the seed by the runAnalyst terminal hook.
     analyst_report: seed?.analyst_report ?? null,
     all_generated_cases: seed?.all_generated_cases,
     execution_case_count: seed?.execution_case_count,
@@ -530,12 +530,11 @@ export async function fileDefectsForRun(state: WorkflowState, seed?: any): Promi
 }
 
 /**
- * Terminal hook (flag `AGENT_ANALYST`): build the per-run release-intelligence report and land it on the
- * run record (`analyst_report`) + a run message. Exported for tests. Never throws; flag off → null.
+ * Terminal hook: build the per-run release-intelligence report and land it on the run record
+ * (`analyst_report`) + a run message. Exported for tests. Never throws.
  */
 export async function runAnalyst(state: WorkflowState, seed: any, defectReport: DefectReport | null): Promise<AnalystReport | null> {
   try {
-    if (!isAnalystEnabled()) return null;
     const arts = readArtifacts(state.runId);
     const report = await buildAnalystReport({
       runId: state.runId,
@@ -877,17 +876,17 @@ export async function reconcileRunIfOrphaned(run: any): Promise<any | null> {
   return failed;
 }
 
-/** Boot-time sweep: this process's registry starts empty, so every persisted non-terminal graph run is from
- * a dead process and can't resume — fail them all up front (no staleness grace; the prior process is gone). */
+/** Boot-time sweep: this process's registry starts empty, so a live pump never counts as active here.
+ * Reuses orphanedRunFailure's staleness grace (ORPHAN_STALE_MS) so a run updated moments before this
+ * restart isn't killed instantly — same rule as the lazy read-path reconciler, applied at boot too. */
 export async function reconcileOrphanedRunsOnStartup(): Promise<number> {
   let runs: any[] = [];
   try { runs = await AgentRuns.list(); } catch { runs = Array.isArray(db.agentRuns) ? db.agentRuns : []; }
   let n = 0;
   for (const run of runs) {
-    if (String(run?.engine) !== 'langgraph') continue;
-    const status = String(run?.status || '');
-    if (status !== 'running' && status !== 'queued') continue;
-    await upsertSafe(String(run.id), buildOrphanFailedRecord(run, 'Run was interrupted by a server restart and could not resume — please start it again.'));
+    const failed = orphanedRunFailure(run);
+    if (!failed) continue;
+    await upsertSafe(String(run.id), failed);
     n += 1;
   }
   if (n) console.log(`[workflow] reconciled ${n} orphaned run(s) left non-terminal by a previous process`);
