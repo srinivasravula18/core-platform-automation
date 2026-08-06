@@ -4,8 +4,8 @@ import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
 import { Timestamp } from '@/src/components/Timestamp';
-import { MANUAL_OUTCOMES, computeRunRollup, type ManualOutcome } from '@/core/shared/manualRun';
-import { OutcomeSelect, OutcomeDot } from './OutcomeSelect';
+import { computeRunRollup, type ManualOutcome } from '@/core/shared/manualRun';
+import { OutcomeSelect, OutcomeDot, SELECTABLE_MANUAL_OUTCOMES } from './OutcomeSelect';
 import { ManualStepRunner, type StepResult } from './ManualStepRunner';
 import { RunSummaryPanel } from './RunSummaryPanel';
 import { VersionPinSelect } from '@/src/components/VersionPinSelect';
@@ -194,7 +194,7 @@ export function ManualRunner({
                 {selected.size ? `${selected.size} selected` : 'All'}
               </label>
               <select value={bulkOutcome} onChange={(e) => setBulkOutcome(e.target.value as ManualOutcome)} className="w-0 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs outline-none">
-                {MANUAL_OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
+                {SELECTABLE_MANUAL_OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
               <button type="button" disabled={busy} onClick={bulkSet} className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                 Apply{selected.size ? ` (${selected.size})` : ' all'}
@@ -332,11 +332,19 @@ function ResultDetail({
   // Start/Stop is a RUN-level action, so it follows the RUN lifecycle — NOT the selected case's
   // completion. Marking one case Passed must not remove the tester's ability to Stop; the run ends
   // only when the tester clicks Stop.
-  const runNotStarted = !run.startedAt;
-  const runInProgress = Boolean(run.startedAt) && !run.completedAt;
+  const runStopped = [run.status, run.state].some((value) => /^stopped$/i.test(String(value || '')))
+    || run.progress === 'Stopped by user';
+  const runCancelled = !runStopped && [run.status, run.state].some((value) => /^(cancelled|canceled)$/i.test(String(value || '')));
+  const runTerminal = runStopped || runCancelled;
+  const runNotStarted = !run.startedAt && !runTerminal;
+  const runInProgress = Boolean(run.startedAt) && !run.completedAt && !runTerminal;
   const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
   // A started-but-unevaluated case reads "In progress", not "Not run".
-  const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
+  const status = runStopped
+    ? { Icon: Square, label: 'Stopped', cls: 'text-[var(--text-muted)]' }
+    : runCancelled
+    ? { Icon: Square, label: 'Cancelled', cls: 'text-[var(--text-muted)]' }
+    : resultInProgress && (!result.outcome || result.outcome === 'Not Run')
     ? { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
 
@@ -364,8 +372,8 @@ function ResultDetail({
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
-          <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(result, now)}</span></span>
+          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{run.startedAt ? <Timestamp value={run.startedAt} /> : '—'}</span></span>
+          <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(run, now)}</span></span>
           <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[var(--text-primary)]">
             {/* Self-contained switch: inline-flex track + inline-block knob (no absolute), so the knob
                 can't escape and overlap the label. */}
@@ -385,7 +393,11 @@ function ResultDetail({
               <Bug className="h-4 w-4" /> Create bug
             </button>
           )}
-          {editable && (
+          {runTerminal ? (
+            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm font-medium ${status.cls}`}>
+              <status.Icon className="h-3.5 w-3.5" /> {status.label}
+            </span>
+          ) : editable && (
             <span className="shrink-0"><OutcomeSelect value={result.outcome || 'Not Run'} onChange={onCaseOutcome} /></span>
           )}
         </div>

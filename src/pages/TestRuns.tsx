@@ -56,7 +56,7 @@ function statusDot(status: string) {
 }
 
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed Script';
-const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
+const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped'] as const;
 type EditableRunStep = { action: string; expected: string; captureEvidence: boolean };
 type EditableRunResult = { caseId: string; caseTitle: string; originalCount: number; steps: EditableRunStep[] };
 

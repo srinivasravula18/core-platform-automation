@@ -1,6 +1,9 @@
 import { MANUAL_OUTCOMES, type ManualOutcome } from '@/core/shared/manualRun';
 import { cn } from '@/src/lib/utils';
 
+// Keep historical Not Applicable results readable, but don't offer it for new selections.
+export const SELECTABLE_MANUAL_OUTCOMES = MANUAL_OUTCOMES.filter((outcome) => outcome !== 'Not Applicable');
+
 // Semantic outcome colors (this is run execution status, distinct from the tag-color removal in Part A).
 const OUTCOME_STYLE: Record<string, { dot: string; text: string }> = {
   'Not Run': { dot: 'bg-[var(--text-muted)]', text: 'text-[var(--text-muted)]' },
@@ -42,7 +45,7 @@ export function OutcomeSelect({
         className={cn('cursor-pointer appearance-none bg-transparent pr-4 text-sm font-medium outline-none disabled:cursor-not-allowed disabled:opacity-60', style.text)}
         aria-label="Set outcome"
       >
-        {MANUAL_OUTCOMES.map((o) => (
+        {SELECTABLE_MANUAL_OUTCOMES.map((o) => (
           <option key={o} value={o} className="bg-[var(--bg-card)] text-[var(--text-primary)]">{o}</option>
         ))}
       </select>

@@ -1,4 +1,4 @@
-const CLOSED_RUN_STATUS = /completed|closed|failed|cancelled/i;
+const CLOSED_RUN_STATUS = /completed|closed|failed|cancelled|stopped/i;
 const PENDING_REVIEW_RUN_STATUS = /pending review|review required/i;
 export const MANUAL_RUN_STALE_MS = 15 * 60 * 1000;
 

@@ -252,7 +252,7 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
-const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Cancelled']);
+const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped', 'Cancelled']);
 
 function manualRunStatus(value: unknown): string | null {
   const status = String(value || 'Not Started').trim();
@@ -2026,7 +2026,7 @@ Rules:
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (r.startedAt && !r.completedAt) await RunCaseResults.upsert({ ...r, completedAt: now });
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
-    const stopped = { ...rolled, state: 'Cancelled', status: 'Cancelled', completedAt: now, progress: 'Stopped by user' };
+    const stopped = { ...rolled, state: 'Stopped', status: 'Stopped', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
