@@ -1241,7 +1241,7 @@ export const Cases = {
       : null;
     const row = await queryOne(
       `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, assigned_to, requested_by, configuration, target_url, attachments, defect_ids, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb,$32,$33, now(), now())
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30::jsonb,$31,$32, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1339,6 +1339,34 @@ export const CaseRevisions = {
     return mapCaseRevision(await queryOne('SELECT * FROM case_revisions WHERE case_id = $1 AND revision_no = $2', [caseId, revisionNo]));
   },
 };
+
+async function captureRunSourceVersions(run: any) {
+  const ids = (values: any[]) => Array.from(new Set(values.map((value) => String(value || '')).filter(Boolean)));
+  const planIds = ids([...(run.planIds || []), run.testPlanId]);
+  const suiteIds = ids([...(run.suiteIds || []), run.suiteId]);
+  const caseIds = ids([...(run.caseIds || []), run.testCaseId]);
+  const [plans, suites, cases] = await Promise.all([
+    Promise.all(planIds.map((id) => Plans.get(id))),
+    Promise.all(suiteIds.map((id) => Suites.get(id))),
+    Promise.all(caseIds.map((id) => Cases.get(id))),
+  ]);
+  const recordVersion = (item: any) => Number(item?.metadata?.version || item?.version || 1);
+  return {
+    capturedAt: new Date().toISOString(),
+    plans: plans.filter(Boolean).map((plan: any) => ({
+      id: plan.id, name: plan.name, version: recordVersion(plan),
+      snapshot: { name: plan.name, description: plan.description, status: plan.status, riskLevel: plan.riskLevel, tags: plan.tags, objectives: plan.objectives },
+    })),
+    suites: suites.filter(Boolean).map((suite: any) => ({
+      id: suite.id, name: suite.name, version: recordVersion(suite),
+      snapshot: { name: suite.name, description: suite.description, status: suite.status, priority: suite.priority, module: suite.module, tags: suite.tags },
+    })),
+    cases: cases.filter(Boolean).map((testCase: any) => ({
+      id: testCase.id, name: testCase.title, version: recordVersion(testCase), revision: testCase.currentRevision ?? null,
+      snapshot: { title: testCase.title, description: testCase.description, preconditions: testCase.preconditions, status: testCase.status, priority: testCase.priority, tags: testCase.tags, steps: testCase.steps },
+    })),
+  };
+}
 
 /* ---------- script revisions (append-only version history, mirrors CaseRevisions) ---------- */
 
@@ -1485,11 +1513,18 @@ export const Runs = {
     r = { ...r, name: await assertUniqueArtifactTitle({ table: 'runs', column: 'name', label: 'test run', records: db.runs }, r, 'Untitled Run') };
     if (!isPgEnabled()) {
       const idx = db.runs.findIndex((x: any) => x.id === r.id);
+      if (idx < 0 && !r.triggerMeta?.sourceVersions) {
+        r.triggerMeta = { ...(r.triggerMeta || {}), sourceVersions: await captureRunSourceVersions(r) };
+      }
       if (idx >= 0) db.runs[idx] = stampJsonWrite(r, db.runs[idx]);
       else db.runs.unshift(stampJsonWrite(r, null));
       return r;
     }
     const id = r.id || uid('RUN');
+    const existing = await queryOne<{ id: string }>('SELECT id FROM runs WHERE id = $1 AND deleted_at IS NULL', [id]);
+    if (!existing && !r.triggerMeta?.sourceVersions) {
+      r.triggerMeta = { ...(r.triggerMeta || {}), sourceVersions: await captureRunSourceVersions(r) };
+    }
     const stepsJson = JSON.stringify(r.steps || []);
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});

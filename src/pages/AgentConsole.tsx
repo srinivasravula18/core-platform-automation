@@ -76,6 +76,7 @@ import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
+import type { AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
 
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
@@ -1815,7 +1816,7 @@ export default function AgentConsole() {
     }
   }, [replaceTurn, startDeepRun, presentDeepUnderstanding]);
 
-  const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string) => {
+  const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string, attachments?: AIImageAttachment[]) => {
     const featureQuery = (query || '').trim();
     if (!featureQuery) {
       replaceTurn(thinkingId, {
@@ -1846,6 +1847,7 @@ export default function AgentConsole() {
           history: buildHistory(),
           projectId: selectedProjectId || undefined,
           appId: selectedAppId || undefined,
+          attachments: attachments?.length ? attachments : undefined,
         }),
       });
       if (!res.ok || !res.body) {
@@ -1952,7 +1954,7 @@ export default function AgentConsole() {
 
   // Explicit "Rework with AI" from the draft card: re-run the drafting agent seeded with the current
   // draft + the user's instruction so it realigns/expands in place (same path a chat follow-up uses).
-  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string) => {
+  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string, attachments: AIImageAttachment[] = []) => {
     if (busy || !instruction.trim()) return;
     const previousDraft: PendingRequirementDraft = {
       turnId: turn.id,
@@ -1966,7 +1968,7 @@ export default function AgentConsole() {
     // turn, so the reqdraft id must first become a thinking turn (runRequirementDraft swaps it back to the result).
     replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Applying your requirement changes...' });
     try {
-      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim());
+      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim(), attachments);
     } finally {
       setBusy(false);
       inputRef.current?.focus();
@@ -3421,7 +3423,7 @@ export default function AgentConsole() {
                           busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
                           onCreate={() => void confirmRequirementDraft(turn)}
                           onDiscard={() => discardRequirementDraft(turn.id)}
-                          onRework={(instruction) => void reworkRequirementDraft(turn, instruction)}
+                          onRework={(instruction, attachments) => void reworkRequirementDraft(turn, instruction, attachments)}
                           onChange={(result) => {
                             replaceTurn(turn.id, { ...turn, result });
                             setPendingRequirementDraft((current) => current?.turnId === turn.id ? { ...current, result } : current);

@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FlaskConical, Pencil, SplitSquareHorizontal, Loader2, Check, Link2Off, Paperclip, Sparkles, X } from 'lucide-react';
+import { FlaskConical, Pencil, SplitSquareHorizontal, Loader2, Check, Link2Off, Sparkles } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 import StepGroupList from '@/src/components/StepGroupList';
 import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import {
   applyAIReworkProposal,
   isAIReworkProposalStale,
@@ -45,21 +46,6 @@ export interface EditableCase {
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
 // Rework image attachments — client-side rules mirror the /api/agent/rework-case validation.
-interface ReworkAttachment { name: string; mimeType: string; dataBase64: string }
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
-
-// Reads a File into raw base64 (the data: URL prefix stripped).
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
-
 function priorityClasses(p?: string): string {
   switch ((p || '').toLowerCase()) {
     case 'high':
@@ -92,7 +78,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
   const [c, setC] = useState<EditableCase>(() => ({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }));
   const [editing, setEditing] = useState(startEditing);
   const [feedback, setFeedback] = useState('');
-  const [attachments, setAttachments] = useState<ReworkAttachment[]>([]);
+  const [attachments, setAttachments] = useState<AIImageAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -194,17 +180,9 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
   // Validate + read picked image files into base64 attachments (max 4, 5MB, png/jpeg/webp/gif).
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return;
-    const errs: string[] = [];
-    const next = [...attachments];
-    for (const f of Array.from(files)) {
-      if (next.length >= MAX_ATTACHMENTS) { errs.push(`Max ${MAX_ATTACHMENTS} images per rework.`); break; }
-      if (!ATTACH_TYPES.includes(f.type)) { errs.push(`${f.name}: only PNG, JPEG, WebP or GIF images are allowed.`); continue; }
-      if (f.size > MAX_ATTACH_BYTES) { errs.push(`${f.name}: exceeds the 5MB limit.`); continue; }
-      try { next.push({ name: f.name, mimeType: f.type, dataBase64: await readFileAsBase64(f) }); }
-      catch (e: any) { errs.push(e?.message || `Could not read ${f.name}`); }
-    }
+    const { next, error } = await appendAIImageAttachments(attachments, files);
     setAttachments(next);
-    setAttachError(errs.join(' '));
+    setAttachError(error);
   };
   const removeAttachment = (ai: number) => setAttachments((prev) => prev.filter((_, idx) => idx !== ai));
 
@@ -427,20 +405,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
               appliedMessage={reworkMessage}
               onUndo={reworkUndoStack.length ? undoRework : undefined}
               accessory={(
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <label className="inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
-                    <Paperclip className="h-3 w-3" /> Attach
-                    <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { void addAttachments(e.target.files); e.target.value = ''; }} />
-                  </label>
-                  {attachments.map((a, ai) => (
-                    <span key={ai} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 text-[11px] text-[var(--text-muted)]">
-                      {a.name}
-                      <button type="button" onClick={() => removeAttachment(ai)} aria-label={`Remove ${a.name}`} className="rounded p-1 hover:text-red-400">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                <div className="mt-2"><AIImageAttachmentPicker attachments={attachments} error={attachError} disabled={busy === 'rework'} onAdd={(files) => void addAttachments(files)} onRemove={removeAttachment} /></div>
               )}
             />}
             <div className="flex justify-end">

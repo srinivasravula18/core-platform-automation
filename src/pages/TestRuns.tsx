@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -32,6 +32,9 @@ import { normalizeTags } from '@/src/lib/tags';
 import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
 import { useUrlState } from '@/src/lib/useUrlState';
 import { useAgents } from '@/src/lib/useAutomation';
+import { LineageBreadcrumb } from '@/src/components/LineageBreadcrumb';
+import { DataTable } from '@/src/components/DataTable/DataTable';
+import { runSourceVersionChanges } from '@/src/lib/runSourceVersions';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -133,6 +136,7 @@ export default function TestRuns() {
   const [editingCase, setEditingCase] = useState<any>(null);
   const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
   const [selectedEvidenceIndex, setSelectedEvidenceIndex] = useState<number | null>(null);
+  const [groupPanelCollapsed, setGroupPanelCollapsed] = useState(false);
   const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
@@ -495,6 +499,14 @@ export default function TestRuns() {
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
     const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
+    // Resolved from the run's own cases (not a stored display string) so it reflects real composition.
+    const runLineageSuiteIds = Array.from(new Set(selectedRunCases.flatMap((testCase) => caseSuiteIds(testCase))));
+    const runLineageSuites = runLineageSuiteIds.map((id) => suites.find((suite) => String(suite.id) === String(id))).filter(Boolean);
+    const runLineagePlan = selectedRun.testPlanId ? plans.find((plan) => String(plan.id) === String(selectedRun.testPlanId)) : null;
+    const sourceVersionChanges = runSourceVersionChanges(
+      { ...selectedRun, suiteIds: runLineageSuiteIds },
+      { plans, suites, cases },
+    );
     const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
     const selectedEvidence = selectedEvidenceIndex == null ? null : evidenceItems[selectedEvidenceIndex] || null;
     const exportEvidenceItems = caseBulk.selectedCount
@@ -536,7 +548,15 @@ export default function TestRuns() {
                 <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
                 <span className="whitespace-nowrap">Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
-                {selectedRun.testPlanId && <span className="whitespace-nowrap">Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
+                {(runLineagePlan || runLineageSuites.length > 0) && (
+                  <LineageBreadcrumb
+                    crumbs={[
+                      ...(runLineagePlan ? [{ label: runLineagePlan.name, to: `/plans/${encodeURIComponent(runLineagePlan.id)}` }] : []),
+                      ...runLineageSuites.slice(0, 2).map((suite) => ({ label: suite.name, to: `/suites/${encodeURIComponent(suite.id)}` })),
+                      ...(runLineageSuites.length > 2 ? [{ label: `+${runLineageSuites.length - 2} more suites` }] : []),
+                    ]}
+                  />
+                )}
                 <span className="whitespace-nowrap">{selectedRun.date || 'No Date'}</span>
                 <span className="whitespace-nowrap">{selectedRun.executionTime || '-'}</span>
                 {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
@@ -606,6 +626,26 @@ export default function TestRuns() {
               }}
             />
           </div>
+
+          {sourceVersionChanges.length > 0 && (
+            <div className="mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                <GitCompareArrows className="h-4 w-4 text-amber-500" />
+                Source version changes ({sourceVersionChanges.length})
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">These linked plans, suites, or cases changed after this run captured them.</p>
+              <div className="mt-2 divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-card)]">
+                {sourceVersionChanges.map((change) => (
+                  <div key={`${change.kind}-${change.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-500">{change.kind}</span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]" title={`${change.name} (${change.id})`}>{change.name}</span>
+                    <span className="font-mono text-[var(--text-muted)]">{change.versionText}</span>
+                    <span className="w-full text-[var(--text-muted)] sm:w-auto">{change.fields.length ? change.fields.join(', ') : 'Version changed'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {selectedRun.mode === 'manual' ? (
             <ManualRunner run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} onChanged={refreshRunsQuiet} />
@@ -791,8 +831,24 @@ export default function TestRuns() {
             </div>
           </div>
 
-          <div className="flex min-h-[22rem] flex-col overflow-hidden md:grid md:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
+          <div
+            className="relative flex min-h-[22rem] flex-col overflow-hidden md:grid"
+            style={{ gridTemplateColumns: groupPanelCollapsed ? '0px minmax(0,1fr)' : '280px minmax(0,1fr)' }}
+          >
+            <button
+              type="button"
+              onClick={() => setGroupPanelCollapsed((collapsed) => !collapsed)}
+              aria-expanded={!groupPanelCollapsed}
+              aria-label={groupPanelCollapsed ? 'Show test case groups panel' : 'Hide test case groups panel'}
+              title={groupPanelCollapsed ? 'Show groups panel' : 'Hide groups panel'}
+              className="absolute top-3 z-10 hidden -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-card)] p-1 text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] md:flex md:items-center md:justify-center"
+              style={{ left: groupPanelCollapsed ? 12 : 280 }}
+            >
+              {groupPanelCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
+            </button>
+            {/* Stays a grid item (never display:none) even when collapsed — a hidden item would drop
+                out of grid placement entirely and shift the case table into the 0px column instead. */}
+            <div aria-hidden={groupPanelCollapsed} className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
               <div className="px-4 py-3 text-xs font-semibold uppercase text-[var(--text-muted)] border-b border-[var(--border)]">Sort by: Custom</div>
               {groupedCases.length === 0 ? (
                 <div className="px-4 py-6 text-sm text-[var(--text-muted)]">No linked test cases.</div>
@@ -1210,32 +1266,38 @@ export default function TestRuns() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
-              <tr>
-                <th className="px-4 py-3 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
-                </th>
-                <th className="px-4 py-3 w-10"></th>
-                <th className="w-80 px-4 py-3 font-medium">Run</th>
-                <th className="w-28 px-4 py-3 font-medium">Type</th>
-                <th className="w-64 px-4 py-3 font-medium">Scripts</th>
-                <th className="w-28 px-4 py-3 font-medium">Tests</th>
-                <th className="w-28 px-4 py-3 font-medium">Duration</th>
-                <th className="w-52 px-4 py-3 font-medium">Run Date &amp; Time</th>
-                <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
-                <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
-                <th className="w-32 px-4 py-3 font-medium">Updated</th>
-                <th className="w-20 px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {loading ? (
-                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
-              ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
-              ) : filteredRuns.map((run) => {
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</div>
+          ) : (
+            <DataTable
+              rowCount={filteredRuns.length}
+              rowHeight={72}
+              height="100%"
+              ariaLabel="Test runs"
+              tableClassName="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap"
+              onActivateRow={(index) => navigate(`/runs/${filteredRuns[index].id}`)}
+              emptyState={<div className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</div>}
+              renderHeaderRow={() => (
+                <tr>
+                  <th className="px-4 py-3 w-10">
+                    <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
+                  </th>
+                  <th className="px-4 py-3 w-10"></th>
+                  <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Type</th>
+                  <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
+                  <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
+                  <th className="w-52 px-4 py-3 font-medium" scope="col">Run Date &amp; Time</th>
+                  <th className="w-56 px-4 py-3 font-medium" scope="col">Tests Status</th>
+                  <th className="w-40 px-4 py-3 font-medium" scope="col">Failure Analysis</th>
+                  <th className="w-32 px-4 py-3 font-medium" scope="col">Updated</th>
+                  <th className="w-20 px-4 py-3"></th>
+                </tr>
+              )}
+              renderRow={(index, rowProps) => {
+                const run = filteredRuns[index];
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts);
                 const scriptNames = runScripts.map(scriptLabel);
@@ -1244,7 +1306,16 @@ export default function TestRuns() {
                 const progress = runProgress[run.id] || execution.label;
                 const running = execution.running || Boolean(runProgress[run.id]);
                 return (
-                  <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
+                  <tr
+                    key={run.id}
+                    ref={rowProps.ref}
+                    tabIndex={rowProps.tabIndex}
+                    onKeyDown={rowProps.onKeyDown}
+                    onFocus={rowProps.onFocus}
+                    aria-rowindex={rowProps['aria-rowindex']}
+                    onClick={() => navigate(`/runs/${run.id}`)}
+                    className="cursor-pointer transition-colors hover:bg-[var(--bg-secondary)] focus:outline focus:outline-2 focus:-outline-offset-2 focus:outline-[var(--accent)]"
+                  >
                     <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
                     </td>
@@ -1339,9 +1410,9 @@ export default function TestRuns() {
                     </td>
                   </tr>
                 );
-              })}
-            </tbody>
-          </table>
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

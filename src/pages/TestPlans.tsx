@@ -1139,13 +1139,14 @@ export default function TestPlans() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1240px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1420px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-80 px-4 py-3 font-medium">Name</th>
+                <th className="w-52 px-4 py-3 font-medium">Parent Plan</th>
                 <th className="w-32 px-4 py-3 font-medium">ID</th>
                 <th className="w-48 px-4 py-3 font-medium">Owner</th>
                 <th className="w-40 px-4 py-3 font-medium">Status</th>
@@ -1160,14 +1161,15 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : hierarchyRows.map(({ plan, depth, hasChildren }) => {
                 const planCases = getPlanCases(plan.id);
                 const planSuites = getPlanSuites(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
+                const parentPlan = plan.parentPlanId ? plans.find((candidate) => candidate.id === plan.parentPlanId) : null;
 
                 return (
                   <tr
@@ -1175,7 +1177,7 @@ export default function TestPlans() {
                     onClick={() => navigate(`/plans/${plan.id}`)}
                     className={cn(
                       "h-14 cursor-pointer align-middle transition-colors",
-                      isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
+                      isSelected ? "bg-[var(--accent)]/10" : plan.parentPlanId ? "bg-sky-500/[0.025] hover:bg-[var(--bg-secondary)]" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
@@ -1205,8 +1207,12 @@ export default function TestPlans() {
                         ) : (
                           <span className="w-5" aria-hidden="true" />
                         )}
-                        <span className="block max-w-[380px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                        <span className="block max-w-[260px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                        {plan.parentPlanId && <span className="shrink-0 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">Sub-plan</span>}
                       </div>
+                    </td>
+                    <td className="truncate px-4 py-3 text-xs">
+                      {parentPlan ? <button type="button" onClick={(event) => { event.stopPropagation(); navigate(`/plans/${parentPlan.id}`); }} className="max-w-full truncate text-left font-medium text-[var(--accent)] hover:underline" title={`Open parent plan: ${parentPlan.name}`}>{parentPlan.name}</button> : plan.parentPlanId ? <span className="text-amber-400" title={plan.parentPlanId}>Parent unavailable</span> : <span className="text-[var(--text-muted)]">Top-level</span>}
                     </td>
                     <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
@@ -1303,7 +1309,18 @@ export default function TestPlans() {
         </div>
       </div>
       )}
-      <RunModeModal isOpen={runModalOpen} count={Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => testCase.id)))).length} busy={isStartingRun} agents={runAgents} onClose={() => setRunModalOpen(false)} onRun={runPlanCases} />
+      <RunModeModal
+        isOpen={runModalOpen}
+        count={Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => testCase.id)))).length}
+        busy={isStartingRun}
+        agents={runAgents}
+        onClose={() => setRunModalOpen(false)}
+        onRun={runPlanCases}
+        previewGroups={runPlanIds.map((id) => ({
+          label: plans.find((plan) => plan.id === id)?.name || id,
+          items: getPlanCases(id).map((testCase: any) => testCase.title || testCase.id),
+        }))}
+      />
     </div>
   );
 }

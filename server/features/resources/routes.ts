@@ -1478,17 +1478,17 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- Tag-native composition: drift / accept / dismiss (Phase A1) ---------- */
   // GET the review-gated drift for a tag-defined run/suite/plan: what the query matches now, what is
   // already accepted, and the NEW matches the user should review (the notification-dot payload).
-  app.get('/api/:target/:id/tag-drift', async (req, res) => {
+  app.get('/api/:target/:id/tag-drift', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
     if (!ctx) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
     res.json(driftResponse(ctx));
-  });
+  }));
 
   // Accept tag-matched cases into the group's membership (the "add to this group" choice). With no
   // body, accepts ALL current new matches; otherwise only the given ids that still match (safety).
-  app.post('/api/:target/:id/tag-accept', async (req, res) => {
+  app.post('/api/:target/:id/tag-accept', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
@@ -1506,11 +1506,11 @@ export function registerResourceRoutes(app: Express) {
     logActivity(req, `Accepted ${changed} tag-matched case(s) into ${target.slice(0, -1)}: ${ctx.group.name}`, { type: target.slice(0, -1), entityId: ctx.group.id });
     const after = await loadGroupDrift(target, req.params.id, req);
     res.json({ success: true, changed, ...(after ? driftResponse(after) : {}) });
-  });
+  }));
 
   // Dismiss tag-matched cases so they stop resurfacing as drift (the "ignore" choice). Recorded on
   // definition.dismissed; execution is unaffected (dismissed cases were never in the accepted set).
-  app.post('/api/:target/:id/tag-dismiss', async (req, res) => {
+  app.post('/api/:target/:id/tag-dismiss', asyncRoute(async (req, res) => {
     const target = req.params.target;
     if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
     const ctx = await loadGroupDrift(target, req.params.id, req);
@@ -1521,7 +1521,7 @@ export function registerResourceRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('tag-dismiss');
     const after = await loadGroupDrift(target, req.params.id, req);
     res.json({ success: true, ...(after ? driftResponse(after) : {}) });
-  });
+  }));
 
   // Pin a case in a run/suite to a specific version (@vN), or clear the pin to follow latest. Stored
   // in case_pins as {caseId, revisionNo, revisionId} (immutable id = truth; number = display). Manual

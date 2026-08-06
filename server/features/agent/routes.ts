@@ -6,6 +6,7 @@ import { readBlackboard } from './blackboard';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { getAIErrorMessage } from '../../shared/ai';
+import { parseAIImageAttachments } from '../../shared/aiImageAttachments';
 import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -6816,33 +6817,11 @@ Rules:
     return `\nREPO CONTEXT: source lines from the selected project. Use these as the source of truth for exact behavior; if they do not prove a detail, keep it generic.\n${hits.map((h) => `FILE ${h.path}\n${h.snippet}`).join('\n\n')}\n`;
   }
 
-  // Allowed image attachment types + decoded-size cap for rework attachments.
-  const REWORK_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-  const REWORK_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-
-  // Validates optional { name, mimeType, dataBase64 } attachments; returns provider images or an error string.
-  function parseReworkAttachments(attachments: unknown): { images?: Array<{ mimeType: string; dataBase64: string }>; error?: string } {
-    if (attachments === undefined || attachments === null) return {};
-    if (!Array.isArray(attachments)) return { error: 'attachments must be an array of { name, mimeType, dataBase64 } objects.' };
-    if (attachments.length > 4) return { error: 'At most 4 image attachments are allowed per rework request.' };
-    const images: Array<{ mimeType: string; dataBase64: string }> = [];
-    for (const a of attachments) {
-      const name = String(a?.name || 'unnamed');
-      const mimeType = String(a?.mimeType || '').toLowerCase();
-      const dataBase64 = String(a?.dataBase64 || '');
-      if (!REWORK_IMAGE_TYPES.has(mimeType)) return { error: `Attachment "${name}": unsupported type "${mimeType || 'unknown'}" — only image/png, image/jpeg, image/webp, image/gif are allowed.` };
-      if (!dataBase64) return { error: `Attachment "${name}": dataBase64 is empty.` };
-      if ((dataBase64.length * 3) / 4 > REWORK_IMAGE_MAX_BYTES) return { error: `Attachment "${name}": exceeds the 5MB size limit.` };
-      images.push({ mimeType, dataBase64 });
-    }
-    return { images: images.length ? images : undefined };
-  }
-
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl, attachments } = req.body;
       const scope = reqScope(req);
-      const parsedAttachments = parseReworkAttachments(attachments);
+      const parsedAttachments = parseAIImageAttachments(attachments);
       if (parsedAttachments.error) return res.status(400).json({ error: parsedAttachments.error });
       const images = parsedAttachments.images;
       const reworkRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
@@ -6901,12 +6880,14 @@ ${images ? `The user attached ${images.length} image(s) as additional context fo
   // MODIFY existing cases and/or ADD missing coverage (e.g. "you missed this feature, please add it").
   app.post('/api/agent/rework-cases-chat', async (req, res) => {
     try {
-      const { instruction, cases, selectedIndexes, targetUrl } = req.body || {};
+      const { instruction, cases, selectedIndexes, targetUrl, attachments } = req.body || {};
       const intent = String(instruction || '').trim();
       if (!intent) return res.status(400).json({ error: 'instruction required' });
       const list = Array.isArray(cases) ? cases : [];
       if (!list.length) return res.status(400).json({ error: 'cases required' });
       const scope = reqScope(req);
+      const parsedAttachments = parseAIImageAttachments(attachments);
+      if (parsedAttachments.error) return res.status(400).json({ error: parsedAttachments.error });
       const chatRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
       const picked = [...new Set((Array.isArray(selectedIndexes) ? selectedIndexes : [])
         .map((i: any) => Number(i))
@@ -6935,6 +6916,7 @@ FULL CASES IN FOCUS:
 ${detail}
 ${repoContext}
 USER REQUEST: ${intent}
+${parsedAttachments.images ? `The user attached ${parsedAttachments.images.length} image(s). Use what they show as authoritative visual context for this rework.` : ''}
 
 Decide what the request needs:
 - MODIFY existing cases -> return each changed case in updatedCases with its index (only cases that actually change).
@@ -6946,6 +6928,7 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
           note: z.string().optional().default(''),
         }),
         userMessage: intent,
+        images: parsedAttachments.images,
       });
       const out = result.object || {};
       const updatedCases = (Array.isArray(out.updatedCases) ? out.updatedCases : [])

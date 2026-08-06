@@ -12,6 +12,7 @@ import { cn } from '@/src/lib/utils';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -49,7 +50,7 @@ export function RequirementDraftReview({
   onCreate: () => void;
   onDiscard: () => void;
   onChange: (result: any) => void;
-  onRework?: (instruction: string) => void;
+  onRework?: (instruction: string, attachments: AIImageAttachment[]) => void;
 }) {
   const requirement = result?.requirement || {};
   const srsModules: RequirementSrsModule[] = Array.isArray(result?.understanding?.srsModules) ? result.understanding.srsModules : [];
@@ -65,11 +66,15 @@ export function RequirementDraftReview({
   const [editingSrs, setEditingSrs] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
   const [reworkText, setReworkText] = useState('');
+  const [reworkAttachments, setReworkAttachments] = useState<AIImageAttachment[]>([]);
+  const [reworkAttachmentError, setReworkAttachmentError] = useState('');
   const submitRework = () => {
     const instruction = reworkText.trim();
     if (!instruction || !onRework) return;
-    onRework(instruction);
+    onRework(instruction, reworkAttachments);
     setReworkText('');
+    setReworkAttachments([]);
+    setReworkAttachmentError('');
     setReworkOpen(false);
   };
   const updateRequirement = (updates: Record<string, unknown>) =>
@@ -212,7 +217,8 @@ export function RequirementDraftReview({
 
       <div className="mt-3 border-t border-[var(--border)] pt-3">
         {onRework && reworkOpen && (
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 space-y-2">
+            <div className="flex items-center gap-2">
             <input
               value={reworkText}
               onChange={(event) => setReworkText(event.target.value)}
@@ -229,6 +235,8 @@ export function RequirementDraftReview({
             >
               <Sparkles className="h-3.5 w-3.5" /> Send
             </button>
+            </div>
+            <AIImageAttachmentPicker attachments={reworkAttachments} error={reworkAttachmentError} disabled={busy} onAdd={(files) => { void appendAIImageAttachments(reworkAttachments, files).then(({ next, error }) => { setReworkAttachments(next); setReworkAttachmentError(error); }); }} onRemove={(index) => setReworkAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} />
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-2">

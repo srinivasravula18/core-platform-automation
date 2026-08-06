@@ -15,6 +15,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { z } from 'zod';
+import type { ProviderImage } from '../../ai/providers/types';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { deepParallelResearch, relevantSourcePaths, facetCeiling } from '../../ai/research/deepResearch';
 import { expandByReferences, extractRelevantWindows } from '../../ai/exploration/referenceGraph';
@@ -693,7 +694,7 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; images?: ProviderImage[]; onProgress?: (label: string) => void } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
@@ -842,6 +843,7 @@ export async function analyzeFeatureFromSource(
     : '';
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
     prompt: `Feature/section to analyze (user query): "${cleanQuery}"
+${opts.images?.length ? `The user attached ${opts.images.length} image(s). Treat visible UI, labels, states, and annotations in them as authoritative context for the requested changes.` : ''}
 
 Search keywords used: ${keywords.join(', ')}
 
@@ -877,6 +879,7 @@ Produce the requirement understanding as strict JSON matching the schema:
 - candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario. Each scenario's steps must be DETAILED and concrete: each step a specific user/system action with the REAL on-screen label/field/button and a matching observable expected result (not vague "verify it works"). Do not pad with trivial duplicates; do not under-cover a complex feature.`,
     schema: featureAnalystSchema,
     userMessage: cleanQuery,
+    images: opts.images,
   });
 
   if ((analystRes as any).shortCircuit) {
@@ -1285,7 +1288,7 @@ function mergeInventoryIntoUnderstanding(base: FeatureUnderstanding, inventory: 
 
 export async function draftRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; requirementsOnly?: boolean; images?: ProviderImage[]; onProgress?: (label: string) => void } = {},
 ): Promise<RequirementDraftResult> {
   const ownerId = opts.userId || '';
   const cleanQuery = String(query || '').trim();

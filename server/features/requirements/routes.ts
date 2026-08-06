@@ -12,6 +12,7 @@ import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestr
 import { normalizeTestCaseTypes } from '../../../core/shared/testCaseTypes';
 import { prepareSse, sendSse } from '../../shared/sse';
 import { asyncRoute } from '../../shared/asyncRoute';
+import { parseAIImageAttachments } from '../../shared/aiImageAttachments';
 
 function routeErrorStatus(error: any): number {
   const status = Number(error?.status || (error?.code === '23505' ? 409 : 500));
@@ -65,6 +66,8 @@ export function registerRequirementRoutes(app: Express) {
   app.post('/api/requirements/draft/stream', async (req, res) => {
     const query = String(req.body?.query || '').trim();
     if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
+    const parsedAttachments = parseAIImageAttachments(req.body?.attachments);
+    if (parsedAttachments.error) return res.status(400).json({ error: parsedAttachments.error });
 
     prepareSse(res);
     const send = (obj: any) => sendSse(res, obj);
@@ -97,6 +100,7 @@ export function registerRequirementRoutes(app: Express) {
         applicationContextPrompt,
         conversationContextPrompt,
         requirementsOnly: true,
+        images: parsedAttachments.images,
         onProgress,
       });
       send({ type: 'final', result });

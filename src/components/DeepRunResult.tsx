@@ -11,6 +11,7 @@ import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import {
   applyAIReworkProposal,
   isAIReworkProposalStale,
@@ -317,6 +318,9 @@ export function DeepRunResult({
   const [editedScriptCode, setEditedScriptCode] = useState<Record<string, string>>({});
   const [editingScript, setEditingScript] = useState<{ key: string; draft: string } | null>(null);
   const [feedback, setFeedback] = useState<Record<number, string>>({});
+  const [reworkAttachments, setReworkAttachments] = useState<Record<number, AIImageAttachment[]>>({});
+  const [suiteReworkAttachments, setSuiteReworkAttachments] = useState<AIImageAttachment[]>([]);
+  const [reworkAttachmentError, setReworkAttachmentError] = useState('');
   const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
   const [selectedScripts, setSelectedScripts] = useState<Set<number>>(new Set());
   // Tracks only rows edited in this review surface. The case popover must never
@@ -643,7 +647,7 @@ export function DeepRunResult({
       const res = await fetchWithTimeout('/api/agent/rework-case', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testCase: c, feedback: instruction, targetUrl }),
+        body: JSON.stringify({ testCase: c, feedback: instruction, targetUrl, attachments: reworkAttachments[i]?.length ? reworkAttachments[i] : undefined }),
       });
       if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
@@ -668,7 +672,7 @@ export function DeepRunResult({
       const res = await fetchWithTimeout('/api/agent/rework-cases-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction: intent, cases: list, selectedIndexes: [...selectedCases], targetUrl }),
+        body: JSON.stringify({ instruction: intent, cases: list, selectedIndexes: [...selectedCases], targetUrl, attachments: suiteReworkAttachments.length ? suiteReworkAttachments : undefined }),
       }, 180_000);
       if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
@@ -747,13 +751,14 @@ export function DeepRunResult({
       onChange={(value) => setFeedback((current) => ({ ...current, [i]: value }))}
       onPreview={() => void reworkCase(i)}
       loading={busy === `rework-${i}`}
-      error={actionError}
+      error={actionError || reworkAttachmentError}
       proposal={reworkProposalOwner === `case-${i}` ? reworkProposal : null}
       stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
       onApply={applyReworkProposal}
       onDiscard={discardReworkProposal}
       appliedMessage={reworkAppliedOwner === `case-${i}` ? chatNote : null}
       onUndo={reworkAppliedOwner === `case-${i}` && reworkUndoStack.length ? undoRework : undefined}
+      accessory={<div className="mt-2"><AIImageAttachmentPicker attachments={reworkAttachments[i] || []} disabled={busy === `rework-${i}`} error="" onAdd={(files) => { void appendAIImageAttachments(reworkAttachments[i] || [], files).then(({ next, error }) => { setReworkAttachments((current) => ({ ...current, [i]: next })); setReworkAttachmentError(error); }); }} onRemove={(index) => setReworkAttachments((current) => ({ ...current, [i]: (current[i] || []).filter((_, itemIndex) => itemIndex !== index) }))} /></div>}
     />
   );
   const saveAll = async () => {
@@ -1546,15 +1551,17 @@ export function DeepRunResult({
                   onChange={setChatIntent}
                   onPreview={() => void chatRework()}
                   loading={busy === 'chat-rework'}
-                  error={actionError}
+                  error={actionError || reworkAttachmentError}
                   proposal={reworkProposalOwner === 'suite' ? reworkProposal : null}
                   stale={Boolean(reworkProposalOwner === 'suite' && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
                   onApply={applyReworkProposal}
                   onDiscard={discardReworkProposal}
                   appliedMessage={reworkAppliedOwner === 'suite' ? chatNote : null}
                   onUndo={reworkAppliedOwner === 'suite' && reworkUndoStack.length ? undoRework : undefined}
-                  accessory={selectedCases.size ? (
-                    <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
+                  accessory={(
+                    <div className="mt-2 space-y-2">
+                      <AIImageAttachmentPicker attachments={suiteReworkAttachments} disabled={busy === 'chat-rework'} error="" onAdd={(files) => { void appendAIImageAttachments(suiteReworkAttachments, files).then(({ next, error }) => { setSuiteReworkAttachments(next); setReworkAttachmentError(error); }); }} onRemove={(index) => setSuiteReworkAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} />
+                      {selectedCases.size > 0 && <div className="flex max-h-20 flex-wrap gap-1 overflow-y-auto">
                       {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
                         <span key={i} className="inline-flex max-w-[14rem] items-center gap-1 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[10px] font-medium text-[var(--accent)]">
                           <span className="truncate">@{list[i].title || `Case ${i + 1}`}</span>
@@ -1564,8 +1571,9 @@ export function DeepRunResult({
                         </span>
                       ))}
                       <button type="button" onClick={() => setSelectedCases(new Set())} className="min-h-7 rounded-full px-2 text-[10px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear</button>
+                      </div>}
                     </div>
-                  ) : null}
+                  )}
                 />
               </div>
 

@@ -34,6 +34,9 @@ import { normalizeTags } from '@/src/lib/tags';
 import { readSseJson } from '@/src/lib/sse';
 import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { allCasesHaveRunTags, readAutomationRunResponse, runTagsForCases } from '@/src/lib/manualTestRun';
+import { buildLineageIndex } from '@/src/lib/lineageIndex';
+import { LinkedEntitiesPanel } from '@/src/components/LinkedEntitiesPanel';
+import { DataTable } from '@/src/components/DataTable/DataTable';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -754,6 +757,8 @@ export default function TestCases() {
     });
     return latest;
   }, [runs]);
+  // Reverse lookup (case → runs it has executed in) for the Linked Entities panel in the edit modal.
+  const lineage = useMemo(() => buildLineageIndex(cases, suites, plans, runs), [cases, suites, plans, runs]);
   const activeDefectIdsByCase = useMemo(() => {
     const ids = new Map<string, string[]>();
     defects.forEach((defect) => {
@@ -999,6 +1004,17 @@ export default function TestCases() {
                 <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
              </div>
           </div>
+          {selectedCaseId && (
+            <LinkedEntitiesPanel
+              groups={[{
+                label: 'Ran in',
+                items: (lineage.caseRuns.get(String(selectedCaseId)) || []).map((runId) => {
+                  const run = runs.find((item) => String(item.id) === runId);
+                  return { id: runId, label: run?.name || `Run ${runId}`, to: `/runs/${runId}` };
+                }),
+              }]}
+            />
+          )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} placeholder="e.g., Login with valid credentials" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -1189,6 +1205,10 @@ export default function TestCases() {
         tagOptions={tagOptions}
         onTagsChange={setRunTags}
         onRun={(mode, headed, agentId) => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, mode, headed ? 'headed' : 'headless', agentId)}
+        previewGroups={[{
+          label: 'Selected cases',
+          items: pendingRunCaseIds.map((id) => cases.find((testCase) => String(testCase.id) === String(id))?.title || id),
+        }]}
       />
 
       <Modal
@@ -1446,222 +1466,237 @@ export default function TestCases() {
           )}
         </div>
         
-        <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[2040px] table-fixed text-left text-sm">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
-              <tr className="text-[var(--text-muted)]">
-                <th className="font-medium py-3 px-4 w-10">
-                  <input
-                    type="checkbox"
-                    checked={bulk.allSelected(filteredCases.map((testCase) => testCase.id))}
-                    onChange={() => bulk.toggleAll(filteredCases.map((testCase) => testCase.id))}
-                    className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                    title="Select all visible cases"
-                  />
-                </th>
-                <th className="font-medium py-3 px-4 w-20">ID</th>
-                <th className="font-medium py-3 px-4 w-64">Title</th>
-                <th className="font-medium py-3 px-4 w-44">Platform / App</th>
-                <th className="font-medium py-3 px-4 w-40">Test Plan</th>
-                <th className="font-medium py-3 px-4 w-40">Test Suite</th>
-                <th className="font-medium py-3 px-4 w-32">Defect IDs</th>
-                <th className="font-medium py-3 px-4 w-28">Status</th>
-                <th className="font-medium py-3 px-4 w-44">Automation Status</th>
-                <th className="font-medium py-3 px-4 w-36">Type Of Test Case</th>
-                <th className="font-medium py-3 px-4 w-32">Script</th>
-                <th className="font-medium py-3 px-4 w-32">Evidence</th>
-                <th className="font-medium py-3 px-4 w-28">Tags</th>
-                <th className="font-medium py-3 px-4 w-32">Last Run</th>
-                <th className="font-medium py-3 px-4 w-32">Updated</th>
-                <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {loading && (
-                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
-              )}
-              {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
-              )}
-              {filteredCases.map((tc) => (
-                <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
-                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</div>
+          ) : (
+            <DataTable
+              rowCount={filteredCases.length}
+              rowHeight={53}
+              height="100%"
+              ariaLabel="Test cases"
+              tableClassName="w-full min-w-[2040px] table-fixed text-left text-sm"
+              onActivateRow={(index) => openEditModal(filteredCases[index])}
+              emptyState={<div className="py-8 text-center text-[var(--text-muted)]">No test cases found.</div>}
+              renderHeaderRow={() => (
+                <tr className="text-[var(--text-muted)]">
+                  <th className="font-medium py-3 px-4 w-10">
                     <input
                       type="checkbox"
-                      checked={bulk.isSelected(tc.id)}
-                      onChange={() => bulk.toggle(tc.id)}
+                      checked={bulk.allSelected(filteredCases.map((testCase) => testCase.id))}
+                      onChange={() => bulk.toggleAll(filteredCases.map((testCase) => testCase.id))}
                       className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                      title={`Select ${tc.title}`}
+                      title="Select all visible cases"
                     />
-                  </td>
-                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
-                  <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
-                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
-                  <td className="py-3 px-4">
-                    <MultiSelectDropdown
-                      label="None"
-                      menuPortal
-                      title="Update test plans"
-                      options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))}
-                      value={resolvePlanIds(tc)}
-                      onChange={(ids) => updateCaseInline(tc, { testPlanIds: ids, testPlanId: ids[0] || '' })}
-                    />
-                  </td>
-                  <td className="py-3 px-4">
-                    <MultiSelectDropdown
-                      label="None"
-                      menuPortal
-                      title="Update test suites"
-                      options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))}
-                      value={resolveSuiteIds(tc)}
-                      onChange={(ids) => {
-                        // Adding a suite still pulls in its plan (the old single-select convenience),
-                        // but as a UNION so it can never drop plans the case already belongs to.
-                        const added = ids.filter((id) => !resolveSuiteIds(tc).includes(id));
-                        const planIds = [...resolvePlanIds(tc)];
-                        for (const id of added) {
-                          const planId = suites.find((suite) => suite.id === id)?.testPlanId;
-                          if (planId && !planIds.includes(planId)) planIds.push(planId);
-                        }
-                        updateCaseInline(tc, {
-                          testSuiteIds: ids,
-                          testSuiteId: ids[0] || '',
-                          testPlanIds: planIds,
-                          testPlanId: planIds[0] || '',
-                        });
-                      }}
-                    />
-                  </td>
-                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ')}>
-                    {(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ') || '—'}
-                  </td>
-                  <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={tc.status || 'Draft'}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { status: event.target.value })}
-                      title="Update status"
-                    >
-                      {CASE_STATUSES.map((status) => (
-                        <option key={status} value={status}>{status}</option>
-                      ))}
-                    </InlineCaseSelect>
-                  </td>
-                  <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={tc.automationStatus || 'Not Automated'}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { automationStatus: event.target.value })}
-                      title="Update automation status"
-                    >
-                      {AUTOMATION_STATUSES.map((status) => (
-                        <option key={status} value={status}>{status}</option>
-                      ))}
-                    </InlineCaseSelect>
-                  </td>
-                  <td className="py-3 px-4">
-                    <MultiSelectDropdown
-                      label="Select types"
-                      options={TESTING_TYPES.map((type) => ({ id: type, name: type }))}
-                      value={normalizeTestCaseTypes(tc)}
-                      onChange={(testingTypes) => updateCaseInline(tc, testCaseTypeFields(testingTypes))}
-                    />
-                  </td>
-                  <td className="py-3 px-4">
-                    {(() => {
-                      const script = relatedScript(tc);
-                      if (!script) return <span className="text-xs text-[var(--text-muted)]">—</span>;
-                      return <div className="flex items-center gap-1">
-                        <button
-                          onClick={(event) => { event.stopPropagation(); openScript(script, tc); }}
-                          title={script.filename || script.name || 'View generated script'}
-                          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"
-                        >
-                          View
-                        </button>
-                        <button
-                          onClick={(event) => { event.stopPropagation(); openScript(script, tc, true); }}
-                          title={`Edit ${script.filename || script.name || 'script'}`}
-                          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium hover:border-[var(--accent)]"
-                        >
-                          Edit
-                        </button>
-                      </div>;
-                    })()}
-                  </td>
-                  <td className="py-3 px-4">
-                    {(() => {
-                      const uploaded = uploadedVideo(tc);
-                      const previewJobId = previewJobByCase.get(String(tc.id));
-                      return <div className="flex items-center gap-1"><InlineCaseSelect value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })} title="Update evidence capture"><option value="on">Snapshot On</option><option value="off">Snapshot Off</option></InlineCaseSelect>{uploaded && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — ${uploaded.name}`, url: uploaded.url }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Video</button>}{previewJobId && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — Recorded preview`, jobId: previewJobId }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Preview</button>}</div>;
-                    })()}
-                  </td>
-                  <td className="py-3 px-4">
-                    <TagMultiSelect
-                      options={tagOptions}
-                      value={Array.isArray(tc.tags) ? tc.tags : []}
-                      onChange={(tags) => updateCaseInline(tc, { tags })}
-                    />
-                  </td>
-                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
-                    {lastRunAtByCase.has(String(tc.id)) ? <Timestamp value={lastRunAtByCase.get(String(tc.id))} /> : 'Never'}
-                  </td>
-                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
-                    <Timestamp value={tc.metadata?.updatedAt || tc.updatedAt} />
-                    {actorName(tc.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(tc.metadata?.updatedBy)}`}>by {actorName(tc.metadata?.updatedBy)}</div>}
-                  </td>
-                  <td className="py-3 px-4 text-right">
-                    <div className="flex justify-end gap-1">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // Its own saved tags, never whatever the modal last held.
-                        openRunModal([tc.id]);
-                      }}
-                      disabled={isStartingRun}
-                      title={isAutomationCase(tc) ? 'Run automation on server' : 'Run test case'}
-                      className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
-                    >
-                      <PlayCircle className="w-4 h-4" />
-                    </button>
-                    {can('cases:update') && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openEditModal(tc);
-                      }}
-                      title="Edit test case"
-                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setHistoryCase(tc); }}
-                      title="Version history"
-                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
-                    >
-                      <History className="w-4 h-4" />
-                    </button>
-                    {can('cases:delete') && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        bulk.deleteOne(tc.id);
-                      }}
-                      title="Delete test case"
-                      aria-label="Delete test case"
-                      className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                    )}
-                    </div>
-                  </td>
+                  </th>
+                  <th className="font-medium py-3 px-4 w-20" scope="col">ID</th>
+                  <th className="font-medium py-3 px-4 w-64" scope="col">Title</th>
+                  <th className="font-medium py-3 px-4 w-44" scope="col">Platform / App</th>
+                  <th className="font-medium py-3 px-4 w-40" scope="col">Test Plan</th>
+                  <th className="font-medium py-3 px-4 w-40" scope="col">Test Suite</th>
+                  <th className="font-medium py-3 px-4 w-32" scope="col">Defect IDs</th>
+                  <th className="font-medium py-3 px-4 w-28" scope="col">Status</th>
+                  <th className="font-medium py-3 px-4 w-44" scope="col">Automation Status</th>
+                  <th className="font-medium py-3 px-4 w-36" scope="col">Type Of Test Case</th>
+                  <th className="font-medium py-3 px-4 w-32" scope="col">Script</th>
+                  <th className="font-medium py-3 px-4 w-32" scope="col">Evidence</th>
+                  <th className="font-medium py-3 px-4 w-28" scope="col">Tags</th>
+                  <th className="font-medium py-3 px-4 w-32" scope="col">Last Run</th>
+                  <th className="font-medium py-3 px-4 w-32" scope="col">Updated</th>
+                  <th className="font-medium py-3 px-4 w-24 text-right" scope="col">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              )}
+              renderRow={(index, rowProps) => {
+                const tc = filteredCases[index];
+                return (
+                  <tr
+                    key={tc.id}
+                    ref={rowProps.ref}
+                    tabIndex={rowProps.tabIndex}
+                    onKeyDown={rowProps.onKeyDown}
+                    onFocus={rowProps.onFocus}
+                    aria-rowindex={rowProps['aria-rowindex']}
+                    onClick={() => openEditModal(tc)}
+                    className="cursor-pointer transition-colors hover:bg-[var(--bg-secondary)] focus:outline focus:outline-2 focus:-outline-offset-2 focus:outline-[var(--accent)]"
+                  >
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(tc.id)}
+                        onChange={() => bulk.toggle(tc.id)}
+                        className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                        title={`Select ${tc.title}`}
+                      />
+                    </td>
+                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
+                    <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
+                    <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
+                    <td className="py-3 px-4">
+                      <MultiSelectDropdown
+                        label="None"
+                        menuPortal
+                        title="Update test plans"
+                        options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))}
+                        value={resolvePlanIds(tc)}
+                        onChange={(ids) => updateCaseInline(tc, { testPlanIds: ids, testPlanId: ids[0] || '' })}
+                      />
+                    </td>
+                    <td className="py-3 px-4">
+                      <MultiSelectDropdown
+                        label="None"
+                        menuPortal
+                        title="Update test suites"
+                        options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))}
+                        value={resolveSuiteIds(tc)}
+                        onChange={(ids) => {
+                          // Adding a suite still pulls in its plan (the old single-select convenience),
+                          // but as a UNION so it can never drop plans the case already belongs to.
+                          const added = ids.filter((id) => !resolveSuiteIds(tc).includes(id));
+                          const planIds = [...resolvePlanIds(tc)];
+                          for (const id of added) {
+                            const planId = suites.find((suite) => suite.id === id)?.testPlanId;
+                            if (planId && !planIds.includes(planId)) planIds.push(planId);
+                          }
+                          updateCaseInline(tc, {
+                            testSuiteIds: ids,
+                            testSuiteId: ids[0] || '',
+                            testPlanIds: planIds,
+                            testPlanId: planIds[0] || '',
+                          });
+                        }}
+                      />
+                    </td>
+                    <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ')}>
+                      {(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ') || '—'}
+                    </td>
+                    <td className="py-3 px-4">
+                      <InlineCaseSelect
+                        value={tc.status || 'Draft'}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updateCaseInline(tc, { status: event.target.value })}
+                        title="Update status"
+                      >
+                        {CASE_STATUSES.map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
+                      </InlineCaseSelect>
+                    </td>
+                    <td className="py-3 px-4">
+                      <InlineCaseSelect
+                        value={tc.automationStatus || 'Not Automated'}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updateCaseInline(tc, { automationStatus: event.target.value })}
+                        title="Update automation status"
+                      >
+                        {AUTOMATION_STATUSES.map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
+                      </InlineCaseSelect>
+                    </td>
+                    <td className="py-3 px-4">
+                      <MultiSelectDropdown
+                        label="Select types"
+                        options={TESTING_TYPES.map((type) => ({ id: type, name: type }))}
+                        value={normalizeTestCaseTypes(tc)}
+                        onChange={(testingTypes) => updateCaseInline(tc, testCaseTypeFields(testingTypes))}
+                      />
+                    </td>
+                    <td className="py-3 px-4">
+                      {(() => {
+                        const script = relatedScript(tc);
+                        if (!script) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+                        return <div className="flex items-center gap-1">
+                          <button
+                            onClick={(event) => { event.stopPropagation(); openScript(script, tc); }}
+                            title={script.filename || script.name || 'View generated script'}
+                            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={(event) => { event.stopPropagation(); openScript(script, tc, true); }}
+                            title={`Edit ${script.filename || script.name || 'script'}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium hover:border-[var(--accent)]"
+                          >
+                            Edit
+                          </button>
+                        </div>;
+                      })()}
+                    </td>
+                    <td className="py-3 px-4">
+                      {(() => {
+                        const uploaded = uploadedVideo(tc);
+                        const previewJobId = previewJobByCase.get(String(tc.id));
+                        return <div className="flex items-center gap-1"><InlineCaseSelect value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })} title="Update evidence capture"><option value="on">Snapshot On</option><option value="off">Snapshot Off</option></InlineCaseSelect>{uploaded && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — ${uploaded.name}`, url: uploaded.url }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Video</button>}{previewJobId && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — Recorded preview`, jobId: previewJobId }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Preview</button>}</div>;
+                      })()}
+                    </td>
+                    <td className="py-3 px-4">
+                      <TagMultiSelect
+                        options={tagOptions}
+                        value={Array.isArray(tc.tags) ? tc.tags : []}
+                        onChange={(tags) => updateCaseInline(tc, { tags })}
+                      />
+                    </td>
+                    <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      {lastRunAtByCase.has(String(tc.id)) ? <Timestamp value={lastRunAtByCase.get(String(tc.id))} /> : 'Never'}
+                    </td>
+                    <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <Timestamp value={tc.metadata?.updatedAt || tc.updatedAt} />
+                      {actorName(tc.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(tc.metadata?.updatedBy)}`}>by {actorName(tc.metadata?.updatedBy)}</div>}
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                      <div className="flex justify-end gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // Its own saved tags, never whatever the modal last held.
+                          openRunModal([tc.id]);
+                        }}
+                        disabled={isStartingRun}
+                        title={isAutomationCase(tc) ? 'Run automation on server' : 'Run test case'}
+                        className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                      >
+                        <PlayCircle className="w-4 h-4" />
+                      </button>
+                      {can('cases:update') && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditModal(tc);
+                        }}
+                        title="Edit test case"
+                        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setHistoryCase(tc); }}
+                        title="Version history"
+                        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                      >
+                        <History className="w-4 h-4" />
+                      </button>
+                      {can('cases:delete') && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          bulk.deleteOne(tc.id);
+                        }}
+                        title="Delete test case"
+                        aria-label="Delete test case"
+                        className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

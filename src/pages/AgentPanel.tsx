@@ -10,6 +10,7 @@ import { MarkdownText } from '@/src/components/MarkdownText';
 import { useProjects } from '@/src/store/project';
 import { normalizeTags } from '@/src/lib/tags';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { AIImageAttachmentPicker, appendAIImageAttachments, type AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -92,6 +93,8 @@ export default function AgentPanel() {
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
   const [caseFeedback, setCaseFeedback] = useState('');
+  const [caseReworkAttachments, setCaseReworkAttachments] = useState<AIImageAttachment[]>([]);
+  const [caseReworkAttachmentError, setCaseReworkAttachmentError] = useState('');
   const [expandStepCount, setExpandStepCount] = useState(8);
   const [expandStepTarget, setExpandStepTarget] = useState<'all' | number>('all');
   const [expandingCaseIndex, setExpandingCaseIndex] = useState<number | null>(null);
@@ -300,12 +303,15 @@ export default function AgentPanel() {
           testCase: currentCase,
           feedback: caseFeedback,
           targetUrl: runData?.app_url,
+          attachments: caseReworkAttachments.length ? caseReworkAttachments : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to rework test case');
       updateGeneratedCase(caseIndex, data);
       setCaseFeedback('');
+      setCaseReworkAttachments([]);
+      setCaseReworkAttachmentError('');
     } catch (err: any) {
       void showAlert(err.message || 'Failed to rework test case.');
     } finally {
@@ -788,6 +794,13 @@ export default function AgentPanel() {
                         onChange={(e) => setCaseFeedback(e.target.value)}
                         className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16"
                         placeholder="Feedback for AI rework, e.g. add negative validation and contact form checks..."
+                      />
+                      <AIImageAttachmentPicker
+                        attachments={caseReworkAttachments}
+                        error={caseReworkAttachmentError}
+                        disabled={isReworkingCase}
+                        onAdd={(files) => { void appendAIImageAttachments(caseReworkAttachments, files).then(({ next, error }) => { setCaseReworkAttachments(next); setCaseReworkAttachmentError(error); }); }}
+                        onRemove={(index) => setCaseReworkAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
                       />
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setEditingCaseIndex(null)} className="px-3 py-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]">

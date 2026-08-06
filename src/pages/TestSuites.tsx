@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
@@ -34,6 +34,8 @@ import { can } from '@/src/components/AuthGate';
 import { normalizeTags } from '@/src/lib/tags';
 import { useAgents } from '@/src/lib/useAutomation';
 import { RunModeModal } from '@/src/components/RunModeModal';
+import { buildLineageIndex } from '@/src/lib/lineageIndex';
+import { LinkedEntitiesPanel } from '@/src/components/LinkedEntitiesPanel';
 
 export default function TestSuites() {
   const navigate = useNavigate();
@@ -322,6 +324,8 @@ export default function TestSuites() {
   });
   const orderedSuites = orderSuitesByHierarchy(filteredSuites, suites);
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
+  // Reverse lookup (suite → plans it's part of, runs it has executed in) for the suite detail panel.
+  const lineage = useMemo(() => buildLineageIndex(cases, suites, plans, runs), [cases, suites, plans, runs]);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -575,6 +579,24 @@ export default function TestSuites() {
                 {selectedRouteSuite.description && <p className="mt-3 text-sm text-[var(--text-muted)]">{selectedRouteSuite.description}</p>}
               </div>
               {can('suites:update') && <button onClick={() => openEditModal(selectedRouteSuite)} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--bg-secondary)]"><Pencil className="h-4 w-4" /> Edit</button>}
+            </div>
+            <div className="mt-4">
+              <LinkedEntitiesPanel
+                groups={[
+                  {
+                    label: 'Test Plans',
+                    items: (lineage.suitePlans.get(String(selectedRouteSuite.id)) || []).map((id) => ({
+                      id, label: plans.find((plan) => String(plan.id) === id)?.name || `Plan ${id}`, to: `/plans?planId=${encodeURIComponent(id)}`,
+                    })),
+                  },
+                  {
+                    label: 'Ran in',
+                    items: (lineage.suiteRuns.get(String(selectedRouteSuite.id)) || []).map((id) => ({
+                      id, label: runs.find((run) => String(run.id) === id)?.name || `Run ${id}`, to: `/runs/${id}`,
+                    })),
+                  },
+                ]}
+              />
             </div>
           </div>
           <div className="flex-1 overflow-auto p-5">
@@ -883,7 +905,18 @@ export default function TestSuites() {
         </div>
       </div>
       )}
-      <RunModeModal isOpen={runModalOpen} count={Array.from(new Set(runSuiteIds.flatMap((id) => getSuiteCases(id).map((testCase: any) => testCase.id)))).length} busy={isStartingRun} agents={runAgents} onClose={() => setRunModalOpen(false)} onRun={runSuiteCases} />
+      <RunModeModal
+        isOpen={runModalOpen}
+        count={Array.from(new Set(runSuiteIds.flatMap((id) => getSuiteCases(id).map((testCase: any) => testCase.id)))).length}
+        busy={isStartingRun}
+        agents={runAgents}
+        onClose={() => setRunModalOpen(false)}
+        onRun={runSuiteCases}
+        previewGroups={runSuiteIds.map((id) => ({
+          label: suites.find((suite) => suite.id === id)?.name || id,
+          items: getSuiteCases(id).map((testCase: any) => testCase.title || testCase.id),
+        }))}
+      />
     </div>
   );
 }

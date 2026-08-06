@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Monitor, PlayCircle, Server } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Monitor, PlayCircle, Server } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { TagEditor } from '@/src/components/TagEditor';
 
 type RunMode = 'manual' | 'automated';
 type BrowserMode = 'headless' | 'headed';
+type PreviewGroup = { label: string; items: string[] };
 
 type RunModeModalProps = {
   isOpen: boolean;
@@ -23,15 +24,18 @@ type RunModeModalProps = {
   tags?: string[];
   tagOptions?: string[];
   onTagsChange?: (tags: string[]) => void;
+  /** Resolved case titles this run will include, grouped (e.g. by suite) — shown as an expandable preview. */
+  previewGroups?: PreviewGroup[];
 };
 
 export function RunModeModal({
   isOpen, count, busy, agents, onClose, onRun,
   canAutomate = true, hasAutomation = true,
   initialMode = 'manual', initialBrowserMode = 'headless', initialAgentId = '',
-  needsTags = false, tags = [], tagOptions = [], onTagsChange,
+  needsTags = false, tags = [], tagOptions = [], onTagsChange, previewGroups = [],
 }: RunModeModalProps) {
   const [mode, setMode] = useState<RunMode>(initialMode);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [browserMode, setBrowserMode] = useState<BrowserMode>(initialBrowserMode);
   const [agentId, setAgentId] = useState(initialAgentId);
   const onlineAgents = agents.filter((agent) => !agent.revoked && (agent.status === 'online' || agent.status === 'busy'));
@@ -42,7 +46,10 @@ export function RunModeModal({
     setMode(initialMode);
     setBrowserMode(initialBrowserMode);
     setAgentId(initialAgentId);
+    setPreviewOpen(false);
   }, [isOpen, initialMode, initialBrowserMode, initialAgentId]);
+
+  const previewCount = previewGroups.reduce((sum, group) => sum + group.items.length, 0);
 
   return (
     <Modal
@@ -65,6 +72,29 @@ export function RunModeModal({
     >
       <div className="space-y-4">
         <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
+        {previewCount > 0 && (
+          <div className="rounded-md border border-[var(--border)]">
+            <button
+              type="button"
+              onClick={() => setPreviewOpen((value) => !value)}
+              aria-expanded={previewOpen}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-[var(--text-muted)]"
+            >
+              <span>Will run {previewCount} case{previewCount === 1 ? '' : 's'} across {previewGroups.length} {previewGroups.length === 1 ? 'group' : 'groups'}</span>
+              {previewOpen ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
+            </button>
+            {previewOpen && (
+              <div className="max-h-40 space-y-2 overflow-auto border-t border-[var(--border)] px-3 py-2 text-xs">
+                {previewGroups.filter((group) => group.items.length).map((group) => (
+                  <div key={group.label}>
+                    <div className="font-medium text-[var(--text-muted)]">{group.label} ({group.items.length})</div>
+                    <div className="mt-0.5 text-[var(--text-primary)]">{group.items.join(', ')}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <fieldset>
           <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Run type</legend>
           <div className="grid gap-2 sm:grid-cols-2">
