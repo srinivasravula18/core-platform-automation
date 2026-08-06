@@ -11,7 +11,7 @@
  */
 
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { getToolCapableOrchestrator } from '../../ai/orchestrator';
 import { startMcpSession, closeMcpSession, type McpSession } from '../../ai/tools/mcpClient';
@@ -19,27 +19,49 @@ import { createAuthStorageState } from '../evidence/evidenceService';
 import { normalizeTargetUrl } from '../../shared/url';
 import type { AgentTool, ToolContext } from '../../ai/tools/types';
 
-// The inspector only needs to read and interact — never close the browser, upload files,
-// manage tabs, run arbitrary unsafe code, or handle dialogs. Whitelisting keeps the loop
-// focused and safe.
-const ALLOWED_MCP_TOOLS = new Set([
-  'browser_navigate',
-  'browser_navigate_back',
-  'browser_snapshot',
-  'browser_click',
-  'browser_type',
-  'browser_fill_form',
-  'browser_select_option',
-  'browser_press_key',
-  'browser_hover',
-  'browser_wait_for',
-]);
+// Discover Microsoft's catalog at runtime; keep only the capabilities safe for an end-user
+// session. This follows upstream additions without exposing RCE, secrets, or blind coordinates.
+const MODEL_BLOCKED_MCP_TOOLS = /browser_(?:run_code_unsafe|evaluate|close|get_config|cookie_.*|localstorage_.*|sessionstorage_.*|set_storage_state|storage_state|mouse_click_xy|mouse_down|mouse_drag_xy|mouse_up)$/;
 
-function buildSystemPrompt(targetUrl: string, credentials: any): string {
+export function playwrightMcpCapabilitiesForGoal(goal: string): string[] {
+  const text = String(goal || '').toLowerCase();
+  return [
+    'testing',
+    ...(/\b(network|offline|online|mock|intercept|route|latency)\b/.test(text) ? ['network'] : []),
+    ...(/\b(pdf|print)\b/.test(text) ? ['pdf'] : []),
+    ...(/\b(trace|video|devtools|debug|highlight|annotation)\b/.test(text) ? ['devtools'] : []),
+    ...(/\b(canvas|coordinate|visual|map|chart)\b/.test(text) ? ['vision'] : []),
+  ];
+}
+
+export function isModelSafeMcpTool(name: string): boolean {
+  return name.startsWith('browser_') && !MODEL_BLOCKED_MCP_TOOLS.test(name);
+}
+
+export function isDestructiveBrowserAction(args: Record<string, unknown>): boolean {
+  return /\b(delete|remove|reset|deactivate|disable|archive|purge|destroy|revoke|terminate|recycle|trash|erase|wipe|drop)\b/i.test(JSON.stringify(args));
+}
+
+function validateMcpFileArguments(args: Record<string, unknown>) {
+  if (typeof args.filename === 'string' && (isAbsolute(args.filename) || args.filename.split(/[\\/]/).includes('..'))) {
+    throw new Error('Playwright MCP output filenames must stay inside its output directory.');
+  }
+  if (!Array.isArray(args.paths)) return;
+  const roots = [resolve(process.cwd()), resolve(tmpdir())];
+  for (const item of args.paths) {
+    const file = resolve(String(item));
+    if (!roots.some((root) => {
+      const rel = relative(root, file);
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+    })) throw new Error('Playwright MCP can upload only workspace or temporary files.');
+  }
+}
+
+function buildSystemPrompt(targetUrl: string, credentials: any, toolNames: string[], readOnly = false, blockDestructive = false): string {
   const hasCreds = !!(credentials?.username && credentials?.password);
   return `You inspect a LIVE web application through the Playwright MCP browser tools. The browser is already open at the target app (headless).
 
-Your tools include: browser_snapshot (read the current page as an accessibility tree with [ref] markers), browser_navigate, browser_click, browser_type, browser_fill_form, browser_select_option, browser_press_key, browser_hover, browser_wait_for.
+Available Microsoft Playwright MCP tools: ${toolNames.join(', ')}.
 
 Goal: reach and FULLY OBSERVE the feature named in the task, so test cases can be grounded in what is really on the page.
 
@@ -47,8 +69,8 @@ Method:
 1. Call browser_snapshot FIRST to see the current page. Always work from the latest snapshot's real elements and [ref] values — never guess a ref.
 ${hasCreds ? `2. If a sign-in form is shown (username/email + password fields), log in ONCE using these credentials: username "${credentials.username}", password "${credentials.password}". Type them into the matching fields and submit, then browser_snapshot again to confirm the app loaded.` : '2. If a sign-in form is shown and you have no credentials, stop and report that login is required.'}
 3. Navigate step by step toward the feature (menus, tabs, list rows) — ONE action per step, each grounded in the latest snapshot. browser_snapshot again after every navigation.
-4. When the feature is visible, drill INTO it: open its menus/panels/settings so hidden controls are revealed, and snapshot them. If it has a create/add or edit action, open that form ONCE and snapshot it so the fields are captured. This is a TEST ENVIRONMENT — you MAY fill and submit a form with provided test data to observe the real result/validation, then continue.
-5. NEVER use destructive controls (delete, remove, reset, deactivate...) unless the task explicitly requires it.
+4. When the feature is visible, drill INTO it: open its menus/panels/settings so hidden controls are revealed, and snapshot them. If it has a create/add or edit action, open that form ONCE and snapshot it so the fields are captured.${readOnly ? ' This is READ-ONLY inspection: apart from signing in, never fill or submit an application form and never trigger a mutation.' : ' This is a TEST ENVIRONMENT — you MAY fill and submit a form with provided test data to observe the real result/validation, then continue.'}
+5. ${blockDestructive ? 'NEVER use destructive controls, even if the task asks for them.' : 'NEVER use destructive controls unless the task explicitly requires it.'}
 6. If an action fails, take a fresh snapshot and choose a different element — do not repeat the exact failing action.
 
 Stop when the feature and its controls have been observed (or you are genuinely blocked), then answer with a short plain-text summary: what was reached, what is visible (key controls, tables, forms), and anything that blocked you. Never fabricate anything you did not observe.`;
@@ -163,6 +185,9 @@ export async function inspectApplicationFlowViaMcp(options: {
   knowledge?: string;
   testData?: string;
   workspaceId?: string;
+  userId?: string;
+  readOnly?: boolean;
+  blockDestructive?: boolean;
 }) {
   const url = normalizeTargetUrl(options.targetUrl);
   if (!url) throw new Error('No target URL was resolved for the MCP inspector.');
@@ -175,11 +200,30 @@ export async function inspectApplicationFlowViaMcp(options: {
 
     // Launch the real Playwright MCP server (headless, server-safe). Expose browser_evaluate
     // to the SESSION (for our structured extraction) but keep it OUT of the model's tool set.
+    const capabilities = playwrightMcpCapabilitiesForGoal(options.prompt);
     session = await startMcpSession({
-      toolFilter: (name) => ALLOWED_MCP_TOOLS.has(name) || name === 'browser_evaluate',
-      extraArgs: auth.storageStatePath ? ['--storage-state', auth.storageStatePath] : [],
+      extraArgs: [
+        ...(auth.storageStatePath ? ['--storage-state', auth.storageStatePath] : []),
+        '--caps',
+        capabilities.join(','),
+      ],
     });
-    const loopTools: AgentTool[] = session.tools.filter((t) => ALLOWED_MCP_TOOLS.has(t.spec.name));
+    const readOnlyExcluded = new Set(['browser_type', 'browser_fill_form', 'browser_select_option', 'browser_press_key', 'browser_drag', 'browser_drop', 'browser_file_upload', 'browser_handle_dialog']);
+    const loopTools: AgentTool[] = session.tools
+      .filter((tool) => isModelSafeMcpTool(tool.spec.name) && !(options.readOnly && readOnlyExcluded.has(tool.spec.name)))
+      .map((tool) => ({
+        ...tool,
+        async execute(args: Record<string, unknown>, ctx: ToolContext) {
+          validateMcpFileArguments(args);
+          if ((options.readOnly || options.blockDestructive) && isDestructiveBrowserAction(args)) {
+            throw new Error('Playwright MCP blocked a destructive action.');
+          }
+          if (options.blockDestructive && tool.spec.name === 'browser_handle_dialog' && args.accept === true) {
+            throw new Error('Playwright MCP blocked accepting a potentially destructive dialog.');
+          }
+          return tool.execute(args, ctx);
+        },
+      }));
 
     // Inject the captured sessionStorage token (storageState omits it) and land on the app.
     await injectSessionIntoMcp(session, url, auth.sessionItems);
@@ -187,14 +231,13 @@ export async function inspectApplicationFlowViaMcp(options: {
       await session.client.callTool({ name: 'browser_navigate', arguments: { url } });
     }
 
-    const orch = await getToolCapableOrchestrator('appInspector', { workspaceId: options.workspaceId });
+    const orch = await getToolCapableOrchestrator('appInspector', { workspaceId: options.workspaceId, userId: options.userId });
     const toolContext: ToolContext = { workspaceId: options.workspaceId, runId: options.runId, scratch: {} };
     const loop = await orch.runToolLoop({
       task: `Inspect this application for the following testing goal, then summarize what you observed:\n${options.prompt}${options.knowledge ? `\n\nKnown app context:\n${options.knowledge.slice(0, 4000)}` : ''}${options.testData ? `\n\nTEST DATA (use these exact field api_names and valid values when filling a form):\n${options.testData.slice(0, 3000)}` : ''}`,
-      system: buildSystemPrompt(url, options.credentials),
+      system: buildSystemPrompt(url, options.credentials, loopTools.map((tool) => tool.spec.name), options.readOnly, options.blockDestructive),
       tools: loopTools,
       toolContext,
-      maxSteps: 28,
       temperature: 0.2,
     });
 
@@ -206,6 +249,12 @@ export async function inspectApplicationFlowViaMcp(options: {
     // Final structured snapshot of wherever the model landed — this is the grounded page the
     // coder/verifier consume, in the SAME shape inspectApplicationFlow returns.
     const structured = await snapshotStructured(session);
+    const yamlResult: any = await session.client.callTool({ name: 'browser_snapshot', arguments: {} }).catch(() => null);
+    const accessibilitySnapshot = (Array.isArray(yamlResult?.content) ? yamlResult.content : [])
+      .map((item: any) => item?.type === 'text' ? String(item.text || '') : '')
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 20_000);
     const blocked = /\bblocked\b|\bcould not\b|\bunable to\b|login is required/i.test(loop.finalText || '')
       && (structured.headings || []).length === 0;
 
@@ -216,10 +265,11 @@ export async function inspectApplicationFlowViaMcp(options: {
 
     return {
       inspectionEngine: 'mcp',
-      goalStatus: blocked ? 'blocked' : (loop.stoppedReason === 'max_steps' ? 'partial' : 'satisfied'),
+      goalStatus: blocked ? 'blocked' : (['max_steps', 'safety_ceiling', 'repeated_call', 'consecutive_failures'].includes(loop.stoppedReason) ? 'partial' : 'satisfied'),
       currentUrl: structured.url || url,
       pageSummary: String(structured.bodyText || '').slice(0, 1200),
       agentSummary: (loop.finalText || '').slice(0, 2000),
+      accessibilitySnapshot,
       visibleNavigation: [],
       visibleTables: structured.tables || [],
       visibleForms: structured.forms || [],

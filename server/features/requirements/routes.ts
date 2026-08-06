@@ -19,6 +19,7 @@ function routeErrorStatus(error: any): number {
   return status >= 400 && status < 600 ? status : 500;
 }
 
+
 // Server-side conversation reconstruction for requirement drafting, so follow-ups
 // ("also add requirements for X") enrich the running scope instead of starting cold.
 // Best-effort: an assembly failure never blocks the draft.

@@ -12,10 +12,12 @@
 import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent, getProviderCredentials } from './orchestrator';
 import { assembleConversationContext } from './memory/contextAssembler';
 import { executeIntent, stripReasoningPreamble } from './controller';
-import type { AgentTool, ToolContext, AgentStep } from './tools/types';
+import type { AgentTool, ToolContext, AgentStep, AgentRunResult } from './tools/types';
 import { queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
-import { corePlatformDataTools } from './tools/corePlatformData';
 import { corePlatformMetaTools } from './tools/corePlatformMeta';
+import { platformApiTools } from './tools/platformApi';
+import { playwrightYamlSnapshotTool } from './tools/playwrightSnapshot';
+import { toolsForUser } from './policy';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 import { expandByReferences } from './exploration/referenceGraph';
@@ -72,6 +74,7 @@ interface IntentToolDef {
   kind: string;
   description: string;
   params: Record<string, unknown>;
+  permissions?: string[];
 }
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required });
@@ -83,24 +86,28 @@ const strArr = { type: 'array', items: { type: 'string' } };
 // executeStep's handlers consume (controller.ts). Read-only "explain" is handled as the
 // loop's final text, so it is not a tool.
 const INTENT_TOOLS: IntentToolDef[] = [
-  { kind: 'navigate', description: 'Navigate the UI to a path (e.g. /test-cases).', params: obj({ path: str }, ['path']) },
-  { kind: 'create_plan', description: 'Create a test plan. Needs a name and a scope.', params: obj({ name: str, scope: str, objectives: str, folderId: str }, ['name', 'scope']) },
-  { kind: 'create_suite', description: 'Create a test suite. Needs a name.', params: obj({ name: str, description: str, testPlanId: str, module: str, folderId: str }, ['name']) },
-  { kind: 'create_cases', description: 'Generate test cases for a feature/scope. Resolve suiteId via query_workspace when the user references an existing suite.', params: obj({ count: int, planId: str, suiteId: str, folderId: str, scope: str, requirements: str }) },
-  { kind: 'create_run', description: 'Create/execute a run for a suite or set of cases. Resolve ids via query_workspace.', params: obj({ name: str, suiteId: str, testPlanId: str, caseIds: strArr, folderId: str }) },
-  { kind: 'generate_script', description: 'Generate a Playwright script for one or more existing test cases. Resolve caseIds via query_workspace.', params: obj({ caseId: str, caseIds: strArr, framework: str, language: str }) },
-  { kind: 'generate_report', description: 'Generate a report for a run. Resolve runId via query_workspace.', params: obj({ runId: str }) },
-  { kind: 'create_defect', description: 'File a defect.', params: obj({ title: str, description: str, severity: str, linkedCaseId: str, linkedRunId: str }, ['title']) },
-  { kind: 'expand_case_steps', description: 'Add/expand the steps of an existing test case.', params: obj({ caseId: str }, ['caseId']) },
-  { kind: 'rework_case', description: 'Rework/revise an existing test case per an instruction.', params: obj({ caseId: str, instruction: str }, ['caseId']) },
-  { kind: 'analyze_run', description: 'Analyze a run (read-only) and answer a question about it.', params: obj({ runId: str, question: str }, ['runId']) },
-  { kind: 'create_folder', description: 'Create a folder to organize artifacts.', params: obj({ name: str, parentId: str, kind: str }, ['name']) },
-  { kind: 'move_to_folder', description: 'Move existing artifacts into a folder. Resolve ids via query_workspace.', params: obj({ folderName: str, folderId: str, caseIds: strArr, suiteIds: strArr, scriptIds: strArr }) },
+  { kind: 'navigate', description: 'Navigate the UI to a path (e.g. /test-cases).', params: obj({ path: str }, ['path']), permissions: ['agent:read'] },
+  { kind: 'create_plan', description: 'Create a test plan. Needs a name and a scope.', params: obj({ name: str, scope: str, objectives: str, folderId: str }, ['name', 'scope']), permissions: ['plans:create'] },
+  { kind: 'create_suite', description: 'Create a test suite. Needs a name.', params: obj({ name: str, description: str, testPlanId: str, module: str, folderId: str }, ['name']), permissions: ['suites:create'] },
+  { kind: 'create_cases', description: 'Generate test cases for a feature/scope. Resolve suiteId via query_workspace when the user references an existing suite.', params: obj({ count: int, planId: str, suiteId: str, folderId: str, scope: str, requirements: str }), permissions: ['cases:create'] },
+  { kind: 'create_run', description: 'Create/execute a run for a suite or set of cases. Resolve ids via query_workspace.', params: obj({ name: str, suiteId: str, testPlanId: str, caseIds: strArr, folderId: str }), permissions: ['runs:create'] },
+  { kind: 'generate_script', description: 'Generate a Playwright script for one or more existing test cases. Resolve caseIds via query_workspace.', params: obj({ caseId: str, caseIds: strArr, framework: str, language: str }), permissions: ['scripts:create'] },
+  { kind: 'generate_report', description: 'Generate a report for a run. Resolve runId via query_workspace.', params: obj({ runId: str }), permissions: ['reports:create'] },
+  { kind: 'create_defect', description: 'File a defect.', params: obj({ title: str, description: str, severity: str, linkedCaseId: str, linkedRunId: str }, ['title']), permissions: ['defects:create'] },
+  { kind: 'expand_case_steps', description: 'Add/expand the steps of an existing test case.', params: obj({ caseId: str }, ['caseId']), permissions: ['cases:update'] },
+  { kind: 'rework_case', description: 'Rework/revise an existing test case per an instruction.', params: obj({ caseId: str, instruction: str }, ['caseId']), permissions: ['cases:update'] },
+  { kind: 'analyze_run', description: 'Analyze a run (read-only) and answer a question about it.', params: obj({ runId: str, question: str }, ['runId']), permissions: ['runs:read'] },
+  { kind: 'create_folder', description: 'Create a folder to organize artifacts.', params: obj({ name: str, parentId: str, kind: str }, ['name']), permissions: ['folders:create'] },
+  { kind: 'move_to_folder', description: 'Move existing artifacts into a folder. Resolve ids via query_workspace.', params: obj({ folderName: str, folderId: str, caseIds: strArr, suiteIds: strArr, scriptIds: strArr }), permissions: ['folders:update'] },
 ];
 
 function buildIntentTool(def: IntentToolDef, ctx: ToolContext): AgentTool {
   return {
     spec: { name: def.kind, description: def.description, parameters: def.params },
+    capability: {
+      effect: def.kind === 'navigate' || def.kind === 'analyze_run' ? 'read' : 'write',
+      permissions: def.permissions,
+    },
     execute: (args) => executeIntent(def.kind, args, { workspaceId: ctx.workspaceId, userId: ctx.userId, userMessage: String(ctx.userMessage || '') }),
   };
 }
@@ -127,8 +134,10 @@ Operating rules:
 export interface SupervisorResult {
   finalText: string;
   steps: AgentStep[];
-  toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown }>;
+  toolResults: AgentRunResult['toolResults'];
   accepted: boolean;
+  stoppedReason: AgentRunResult['stoppedReason'];
+  totalUsage: AgentRunResult['totalUsage'];
 }
 
 // Only GRAMMATICAL fillers — NOT product nouns. Words like "list", "view", "features",
@@ -595,10 +604,14 @@ export async function runSupervisor(input: {
     userId: input.userId,
     projectId: input.projectId,
     appId: input.appId || null,
+    targetUrl: input.apps?.[0]?.baseUrl || '',
     userMessage: input.userMessage,
     conversationId: input.conversationId,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...corePlatformMetaTools, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools = toolsForUser(
+    [queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformMetaTools, ...platformApiTools, playwrightYamlSnapshotTool, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))],
+    input.userId,
+  );
 
   const provider = resolveProviderForAgent('chatAssistant');
   const assembled = await assembleConversationContext({
@@ -625,12 +638,18 @@ export async function runSupervisor(input: {
     system: SUPERVISOR_SYSTEM,
     tools,
     toolContext: ctx,
-    maxSteps: 60,
     maxTotalTokens: 120_000,
     contextManifestId: assembled.manifest.id,
     temperature: 0.2,
     onStep: input.onStep,
     signal: input.signal,
   });
-  return { finalText: result.finalText, steps: result.steps, toolResults: result.toolResults, accepted: result.accepted };
+  return {
+    finalText: result.finalText,
+    steps: result.steps,
+    toolResults: result.toolResults,
+    accepted: result.accepted,
+    stoppedReason: result.stoppedReason,
+    totalUsage: result.totalUsage,
+  };
 }

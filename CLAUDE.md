@@ -6,6 +6,22 @@ Project instructions for Claude Code working in this repo.
 
 - **No hardcoding, anywhere.** Never hardcode app/product facts (names like admin/keystone/shockwave, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
 - **Comments: precise and short.** One line where possible; no large multi-line comment blocks. Say why, not what. Match surrounding density.
+- **Never commit and never push without explicit approval for that specific action.** Approval given for one commit does NOT carry to the next one. Leave finished work in the working tree for review via `git diff`. This applies to every agent, including autonomous/looping runs.
+
+## Explaining results (applies to every answer, especially after research/code search)
+
+After any deep code search, audit, forensic trace, or multi-agent research task, **do not dump the full findings as the answer.** Lead with a version I can read in under a minute:
+
+1. **Verdict first** — 1-3 sentences. What is true, what it means for me. No preamble.
+2. **One ASCII diagram** showing the flow, the chain, or the before/after. Use it whenever there is a sequence, a pipeline, a count that changes, or a decision tree.
+3. **One concrete end-to-end example** with real values from the actual finding — walk one case all the way through. Not an abstract description of the mechanism.
+4. **Then** the detail, clearly separated, so I can stop reading once I have what I need.
+
+Rules for the summary:
+- Answer the question I actually asked before adding anything else.
+- If I ask "should I do X or not" — say yes or no in the first line, then explain. Never bury the recommendation.
+- Full `file:line` evidence still belongs in the written deliverable (`docs/`), not in the chat answer. Chat = understanding; docs = record.
+- Long output is fine in a file. In chat, brevity is the requirement, not a courtesy.
 
 ## Architecture-change process ("Principal Architect" mode)
 
