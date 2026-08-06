@@ -654,13 +654,14 @@ export function registerAutomationRoutes(app: Express) {
   // run, with the next fire times. Server-side on purpose: same parser the scheduler ticks on.
   app.post('/api/automation/cron/resolve', requireAuth, (req: Request, res: Response) => {
     const input = String(req.body?.input || '').trim();
+    const timezone = String(req.body?.timezone || 'UTC').trim() || 'UTC';
     if (!input) return res.json({ expression: '', description: '', nextRuns: [] });
     const expression = looksLikeCron(input) ? input : parseCronText(input);
     if (!expression) {
       return res.json({ expression: '', description: '', nextRuns: [], error: 'Could not read that. Try "At 04:05 on day-of-month 5" or a cron expression like 5 4 5 * *.' });
     }
     try {
-      const iterator = cronParser.parseExpression(expression, { currentDate: new Date(), tz: 'UTC' });
+      const iterator = cronParser.parseExpression(expression, { currentDate: new Date(), tz: timezone });
       const nextRuns = [0, 1, 2].map(() => iterator.next().toDate().toISOString());
       res.json({ expression, description: describeCron(expression), nextRuns });
     } catch {
