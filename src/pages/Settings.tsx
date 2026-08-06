@@ -1565,6 +1565,8 @@ type CredRow = {
   url: string;
   username: string;
   password: string;
+  /** Keeps a cleared edit field empty instead of immediately restoring the saved mask. */
+  passwordEdited?: boolean;
   revealedPassword?: string;
   passwordVisible?: boolean;
   revealing?: boolean;
@@ -1643,6 +1645,7 @@ function CredentialsSection() {
             url: w.baseUrl,
             username: user?.username || '',
             password: '',
+            passwordEdited: false,
             revealedPassword: '',
             passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
@@ -1667,7 +1670,7 @@ function CredentialsSection() {
   const addRow = () =>
     setRows((prev) => [
       ...prev,
-      { key: newKey(), name: '', url: '', username: '', password: '', revealedPassword: '', passwordVisible: false, useForPlaywright: true },
+      { key: newKey(), name: '', url: '', username: '', password: '', passwordEdited: false, revealedPassword: '', passwordVisible: false, useForPlaywright: true },
     ]);
 
   const togglePasswordVisible = async (key: string) => {
@@ -1771,6 +1774,7 @@ function CredentialsSection() {
         userId,
         revealedPassword: x.password ? x.password : x.revealedPassword,
         password: '',
+        passwordEdited: false,
         saving: false,
         saved: credentialValues(r),
       } : x)));
@@ -1841,7 +1845,9 @@ function CredentialsSection() {
               && (r.userId || r.password)
               && hasCredentialChanges(r),
             );
-            const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
+            const passwordValue = r.passwordEdited
+              ? r.password
+              : r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
             return (
               <div
                 key={r.key}
@@ -1858,7 +1864,7 @@ function CredentialsSection() {
                     const next = !r.passwordVisible && hasSavedPassword && !r.password
                       ? e.target.value.replace(SAVED_PASSWORD_MASK, '')
                       : e.target.value;
-                    patch(r.key, { password: next });
+                    patch(r.key, { password: next, passwordEdited: true });
                   }}
                   onFocus={(e) => {
                     if (!r.passwordVisible && hasSavedPassword && !r.password) e.currentTarget.select();
