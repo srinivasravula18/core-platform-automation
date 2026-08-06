@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -582,6 +582,11 @@ export default function TestRuns() {
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
                 <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
+                {selectedRun.triggerMeta?.scheduleId && (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-medium text-indigo-400">
+                    <CalendarClock className="h-3.5 w-3.5" /> Scheduled{selectedRun.triggerMeta.scheduleTitle ? `: ${selectedRun.triggerMeta.scheduleTitle}` : ''}
+                  </span>
+                )}
                 <span className="whitespace-nowrap">Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
                 {(runLineagePlan || runLineageSuites.length > 0) && (
                   <LineageBreadcrumb
@@ -1360,7 +1365,7 @@ export default function TestRuns() {
                   </th>
                   <th className="px-4 py-3 w-10"></th>
                   <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Type</th>
+                  <th className="w-52 px-4 py-3 font-medium" scope="col">Type</th>
                   <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
                   <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
                   <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
@@ -1400,7 +1405,14 @@ export default function TestRuns() {
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-semibold" title={run.name}>{run.name}</div>
-                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned To {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
+                      <div className="truncate text-xs text-[var(--text-muted)]">
+                        Assigned To {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}
+                        {run.triggerMeta?.scheduleId && (
+                          <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-400" title={`Fired by schedule${run.triggerMeta.scheduleTitle ? `: ${run.triggerMeta.scheduleTitle}` : ''}`}>
+                            <CalendarClock className="h-2.5 w-2.5" /> Scheduled{run.triggerMeta.scheduleTitle ? ` · ${run.triggerMeta.scheduleTitle}` : ''}
+                          </span>
+                        )}
+                      </div>
                         </div>
                         {/* Manual runs: Run is enabled (no scripts needed) and opens the run to start it. */}
                         {can('runs:execute') && (

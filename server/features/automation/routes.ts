@@ -822,6 +822,8 @@ export function registerAutomationRoutes(app: Express) {
   app.post('/api/automation/schedules', requireAuth, async (req: Request, res: Response) => {
     // agentId is optional now — scheduled runs execute on the server headless (not a local agent).
     const { agentId, kind, cron, timezone, enabled, runAt, caseId, suiteId, scriptId, title } = req.body || {};
+    const scheduleTitle = String(title || '').trim().slice(0, 200);
+    if (!scheduleTitle) return res.status(400).json({ error: 'Schedule title is required.' });
     let recordingId = req.body?.recordingId as string | undefined;
     if (!recordingId && scriptId) {
       const recording = await recordingForScript(String(scriptId), reqScope(req));
@@ -860,7 +862,7 @@ export function registerAutomationRoutes(app: Express) {
     }
     const sched = await AutomationSchedules.upsert({
       id: uid('SCHED'),
-      recordingId, agentId: agentId || '', title: String(title || '').trim().slice(0, 200), kind: k, cron: cron || '', timezone: timezone || 'UTC',
+      recordingId, agentId: agentId || '', title: scheduleTitle, kind: k, cron: cron || '', timezone: timezone || 'UTC',
       webhookTokenHash,
       enabled: enabled !== false,
       nextRunAt,
@@ -893,6 +895,7 @@ export function registerAutomationRoutes(app: Express) {
     const enabled = req.body?.enabled ?? s.enabled;
     const runAt = req.body?.runAt ?? s.nextRunAt;
     const title = req.body?.title !== undefined ? String(req.body.title || '').trim().slice(0, 200) : s.title;
+    if (!String(title || '').trim()) return res.status(400).json({ error: 'Schedule title is required.' });
     const next = enabled && kind !== 'once' ? computeNextRun(kind, cron, timezone, new Date()) : null;
     if (kind === 'cron' && enabled && !next) return res.status(400).json({ error: 'Invalid cron expression.' });
     if (kind === 'once' && enabled && (!runAt || Number.isNaN(new Date(runAt).getTime()))) return res.status(400).json({ error: 'A valid run date is required.' });

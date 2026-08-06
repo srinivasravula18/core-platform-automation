@@ -59,7 +59,9 @@ async function tick() {
       // Scheduled runs execute on the SERVER headless (reliable when the agent is offline).
       const job = await createServerJob({ recordingId: s.recordingId, scheduleId: s.id, trigger: 'schedule' }, scope);
       const recording = await Recordings.get(s.recordingId);
-      if (recording) await createLinkedTestRun(job, recording, scope);
+      // Carry the schedule's identity onto the Test Run it creates — Test Runs has no other way to
+      // tell "this fired from a schedule" apart from a manual Run Now click on the same recording.
+      if (recording) await createLinkedTestRun(job, recording, scope, { triggerMeta: { scheduleId: s.id, scheduleTitle: s.title || '' } });
       void runJobOnServer(job.id).catch((err) => console.error('[automation] server run failed:', err?.message || err));
       const oneShot = s.kind === 'now' || s.kind === 'once';
       const next = computeNextRun(s.kind, s.cron, s.timezone, now);

@@ -180,6 +180,20 @@ export default function Schedules() {
     return map;
   }, [jobs]);
 
+  // The most recent job regardless of status — this is how "how do I see the run results" gets
+  // answered: once a run finishes it drops out of activeJobByScheduleId, so without this the row
+  // (and the detail modal's video/screenshots/logs panel) would go blank the moment a run completed.
+  const lastJobByScheduleId = useMemo(() => {
+    const map = new Map<string, Job>();
+    for (const job of jobs) {
+      if (!job.scheduleId) continue;
+      const existing = map.get(job.scheduleId);
+      const at = (job: Job) => Date.parse(job.finishedAt || job.startedAt || job.queuedAt);
+      if (!existing || at(job) > at(existing)) map.set(job.scheduleId, job);
+    }
+    return map;
+  }, [jobs]);
+
   // SSE pushes job.progress/job.done frames faster than the 8s poll — refresh jobs on any of them.
   useAgentEvents((event) => {
     if (event.scopeType === 'job') void refreshJobs();
@@ -188,6 +202,7 @@ export default function Schedules() {
   const selectedSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId) || null;
   const selectedRecording = selectedSchedule ? recordings.find((recording) => recording.id === selectedSchedule.recordingId) || null : null;
   const selectedActiveJob = selectedSchedule ? activeJobByScheduleId.get(selectedSchedule.id) || null : null;
+  const selectedResultJob = selectedActiveJob || (selectedSchedule ? lastJobByScheduleId.get(selectedSchedule.id) || null : null);
 
   const nameFor = useMemo(() => {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
@@ -242,6 +257,7 @@ export default function Schedules() {
             <tbody>
               {schedules.map((s) => {
                 const activeJob = activeJobByScheduleId.get(s.id) || null;
+                const lastJob = lastJobByScheduleId.get(s.id) || null;
                 return (
                 <tr key={s.id} onClick={() => setSelectedScheduleId(s.id)} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
                   <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">
@@ -257,6 +273,15 @@ export default function Schedules() {
                       <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${jobStatusMeta(activeJob.status).cls}`}>
                         <Loader2 className="h-3 w-3 animate-spin" /> {jobStatusMeta(activeJob.status).label}
                       </span>
+                    ) : lastJob ? (
+                      <button
+                        type="button"
+                        onClick={(event) => { event.stopPropagation(); setSelectedScheduleId(s.id); }}
+                        title="Open to view video, screenshots, and logs from this run"
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium hover:opacity-80 ${jobStatusMeta(lastJob.status).cls}`}
+                      >
+                        {jobStatusMeta(lastJob.status).label}
+                      </button>
                     ) : (
                       <span className="text-xs text-[var(--text-muted)]">—</span>
                     )}
@@ -280,12 +305,12 @@ export default function Schedules() {
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} />
       {editing && <EditScheduleModal schedule={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
-      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} activeJob={selectedActiveJob} onClose={() => setSelectedScheduleId(null)} />
+      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
 }
 
-function ScheduleRecordingModal({ schedule, recording, activeJob, onClose }: { schedule: Schedule | null; recording: any | null; activeJob: Job | null; onClose: () => void }) {
+function ScheduleRecordingModal({ schedule, recording, resultJob, resultJobIsLive, onClose }: { schedule: Schedule | null; recording: any | null; resultJob: Job | null; resultJobIsLive: boolean; onClose: () => void }) {
   return <Modal isOpen={!!schedule} onClose={onClose} title="Scheduled test" size="xl"
     footer={<div className="flex justify-end"><button type="button" onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Close</button></div>}>
     {!schedule ? null : <div className="space-y-4">
@@ -297,7 +322,12 @@ function ScheduleRecordingModal({ schedule, recording, activeJob, onClose }: { s
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Target URL</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Test case</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
       </dl>
-      {activeJob && <AutomationRunArtifacts jobId={activeJob.id} />}
+      {resultJob && (
+        <div>
+          <div className="mb-2 text-sm font-semibold text-[var(--text-primary)]">{resultJobIsLive ? 'Running now' : 'Latest run results'}</div>
+          <AutomationRunArtifacts jobId={resultJob.id} />
+        </div>
+      )}
       {recording?.script ? <pre className="max-h-80 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{recording.script}</code></pre> : <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">The recording is no longer available.</div>}
     </div>}
   </Modal>;
@@ -437,6 +467,7 @@ function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule;
   const tzLabel = timezoneLabel(timezone);
   const save = async () => {
     const nextRunAt = kind === 'once' ? zonedInputToUtcIso(runAt, timezone) : '';
+    if (!title.trim()) { showToast('Enter a schedule title.', { tone: 'error' }); return; }
     if (kind === 'once' && (!nextRunAt || Date.parse(nextRunAt) <= Date.now())) { showToast(`Pick a future date and time (${tzLabel}).`, { tone: 'error' }); return; }
     if (kind === 'cron' && !cron.trim()) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
     setBusy(true);
@@ -448,8 +479,8 @@ function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule;
     } catch (error: any) { showToast(error?.message || 'Could not update the schedule.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
-  return <Modal isOpen onClose={onClose} title="Edit schedule" size="md" footer={<div className="flex justify-end gap-2"><button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button><button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{busy && <Loader2 className="h-4 w-4 animate-spin" />} Save Changes</button></div>}>
-    <label className="block text-xs font-medium text-[var(--text-muted)]">Schedule title
+  return <Modal isOpen onClose={onClose} title="Edit schedule" size="md" footer={<div className="flex justify-end gap-2"><button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button><button onClick={save} disabled={busy || !title.trim()} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{busy && <Loader2 className="h-4 w-4 animate-spin" />} Save Changes</button></div>}>
+    <label className="block text-xs font-medium text-[var(--text-muted)]">Schedule title<RequiredMark />
       <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Nightly regression — Keystone" maxLength={200} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
     </label>
     <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Schedule type
@@ -594,6 +625,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
 
   const submit = async () => {
     if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
+    if (!title.trim()) { showToast('Enter a schedule title.', { tone: 'error' }); return; }
     if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : tab === 'cron' ? (cronResolved.error || 'Enter a schedule we can read.') : 'Pick a date and time.', { tone: 'error' }); return; }
     // A one-off in the past would be dispatched by the very next scheduler tick.
     if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast(`Pick a future date and time (${tzLabel}).`, { tone: 'error' }); return; }
@@ -619,7 +651,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
     <Modal isOpen={isOpen} onClose={onClose} title="New schedule" size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy || selected.size === 0 || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+        <button onClick={submit} disabled={busy || selected.size === 0 || !title.trim() || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
         </button>
       </div>}>
@@ -654,7 +686,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
         </div>
       </div>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Schedule title
+        Schedule title<RequiredMark />
         <input
           type="text"
           value={title}
