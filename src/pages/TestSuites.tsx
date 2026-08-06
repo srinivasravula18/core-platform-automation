@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
@@ -8,6 +8,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import {
   caseBelongsToSuite,
+  casePlanIds,
   caseSuiteAssignment,
   caseSuiteMembershipUpdate,
   orderSuitesByHierarchy,
@@ -31,10 +32,13 @@ import { diffSelection, linkSuiteCases, type TagQuery } from '@/src/lib/entityLi
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { normalizeTags } from '@/src/lib/tags';
+import { useAgents } from '@/src/lib/useAutomation';
+import { RunModeModal } from '@/src/components/RunModeModal';
 
 export default function TestSuites() {
   const navigate = useNavigate();
   const { suiteId: routeSuiteId } = useParams();
+  const [searchParams] = useSearchParams();
   const [suites, setSuites] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -70,6 +74,9 @@ export default function TestSuites() {
 
   const bulk = useBulkDelete('suites', fetchSuites, 'suite');
   const selectedSuiteIds = Array.from(bulk.selectedIds).map(String);
+  const { agents: runAgents } = useAgents();
+  const [runSuiteIds, setRunSuiteIds] = useState<string[]>([]);
+  const [runModalOpen, setRunModalOpen] = useState(false);
 
   const fetchPlans = () => {
     fetch('/api/plans')
@@ -262,6 +269,20 @@ export default function TestSuites() {
       setIsStartingRun(false);
     }
   };
+  const openSuiteRun = (suiteIds = selectedSuiteIds) => { setRunSuiteIds(suiteIds); setRunModalOpen(true); };
+  const runSuiteCases = async (mode: 'manual' | 'automated', headed: boolean, agentId: string) => {
+    const caseIds = Array.from(new Set(runSuiteIds.flatMap((id) => getSuiteCases(id).map((testCase: any) => String(testCase.id)))));
+    setIsStartingRun(true);
+    try {
+      if (mode === 'manual') await startSelectedRun({ suiteIds: runSuiteIds, caseIds, mode }, navigate);
+      else for (const caseId of caseIds) {
+        const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
+        const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+      }
+      setRunModalOpen(false); bulk.clearSelection();
+    } catch (error: any) { void showAlert(error.message || 'Failed to start selected test suite run.'); }
+    finally { setIsStartingRun(false); }
+  };
 
   const toggleSuiteExpanded = (suiteId: string) => {
     setExpandedSuiteIds((current) =>
@@ -273,7 +294,9 @@ export default function TestSuites() {
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const selectedRouteSuite = suites.find((suite) => String(suite.id) === String(routeSuiteId)) || null;
-  const selectedRouteSuiteCases = selectedRouteSuite ? getSuiteCases(selectedRouteSuite.id) : [];
+  const planId = searchParams.get('planId');
+  const selectedRouteSuiteCases = selectedRouteSuite ? getSuiteCases(selectedRouteSuite.id)
+    .filter((testCase) => !planId || casePlanIds(testCase).includes(planId)) : [];
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const ownerOptions = Array.from(new Set(suites.map((suite) => String(suite.owner || '').trim()).filter(Boolean))).sort();
   const statusOptions = Array.from(new Set(['Active', 'Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Deprecated', ...suites.map((suite) => String(suite.status || 'Active'))]));
@@ -643,11 +666,9 @@ export default function TestSuites() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              {bulk.selectedCount > 1 && (
-                <button onClick={() => runSelectedSuites()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
-                </button>
-              )}
+              <button onClick={() => openSuiteRun()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
+              </button>
               {can('suites:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                   <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
@@ -735,7 +756,7 @@ export default function TestSuites() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              runSelectedSuites([suite.id]);
+                              openSuiteRun([suite.id]);
                             }}
                             disabled={isStartingRun}
                             title="Run test suite"
@@ -803,7 +824,7 @@ export default function TestSuites() {
                                 Related Test Cases ({suiteCases.length})
                               </span>
                               <button
-                                onClick={() => navigate('/cases')}
+                                onClick={() => navigate(`/cases?suiteId=${encodeURIComponent(suite.id)}`)}
                                 className="text-xs font-medium text-[var(--accent)] hover:underline"
                               >
                                 Open in Test Cases
@@ -862,6 +883,7 @@ export default function TestSuites() {
         </div>
       </div>
       )}
+      <RunModeModal isOpen={runModalOpen} count={Array.from(new Set(runSuiteIds.flatMap((id) => getSuiteCases(id).map((testCase: any) => testCase.id)))).length} busy={isStartingRun} agents={runAgents} onClose={() => setRunModalOpen(false)} onRun={runSuiteCases} />
     </div>
   );
 }

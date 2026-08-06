@@ -146,12 +146,10 @@ async function assertUniqueArtifactTitle(config: NamedArtifact, record: any, fal
   if (!isPgEnabled()) {
     const current = config.records.find((item: any) => String(item.id) === id);
     const projectId = record?.projectId !== undefined ? String(record.projectId || '') : String(current?.projectId || '');
-    const ownerId = record?.ownerId !== undefined ? String(record.ownerId || '') : String(current?.ownerId || '');
     const duplicate = config.records.some((item: any) =>
       String(item.id) !== id
       && !item.deletedAt
       && String(item.projectId || '') === projectId
-      && String(item.ownerId || '') === ownerId
       && String(item[config.column] || '').trim().toLocaleLowerCase() === value.toLocaleLowerCase(),
     );
     if (duplicate) throw duplicateArtifactTitle(config.label, value);
@@ -159,15 +157,13 @@ async function assertUniqueArtifactTitle(config: NamedArtifact, record: any, fal
   }
 
   const projectId = record?.projectId !== undefined ? String(record.projectId || '') : null;
-  const ownerId = record?.ownerId !== undefined ? String(record.ownerId || '') : null;
   const duplicate = await queryOne(
     `SELECT id FROM ${config.table}
      WHERE deleted_at IS NULL AND id <> $1
        AND COALESCE(project_id, '') = COALESCE($2, (SELECT project_id FROM ${config.table} WHERE id = $1), '')
-       AND COALESCE(owner_id, '') = COALESCE($3, (SELECT owner_id FROM ${config.table} WHERE id = $1), '')
-       AND lower(btrim(${config.column})) = lower(btrim($4))
+       AND lower(btrim(${config.column})) = lower(btrim($3))
      LIMIT 1`,
-    [id, projectId, ownerId, value],
+    [id, projectId, value],
   );
   if (duplicate) throw duplicateArtifactTitle(config.label, value);
   return value;
@@ -268,6 +264,7 @@ function mapCase(r: any) {
     testingType: r.testing_type || 'Functional',
     testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
     captureEvidenceOnManualRun: r.capture_evidence_on_manual_run !== false,
+    defectIds: r.defect_ids || [],
     assignedTo: r.assigned_to || '',
     requestedBy: r.requested_by || '',
     configuration: r.configuration || '',
@@ -1243,8 +1240,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, assigned_to, requested_by, configuration, target_url, attachments, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, assigned_to, requested_by, configuration, target_url, attachments, defect_ids, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb,$32,$33, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1255,7 +1252,7 @@ export const Cases = {
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
          testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
          test_suite_ids=EXCLUDED.test_suite_ids, capture_evidence_on_manual_run=EXCLUDED.capture_evidence_on_manual_run,
-         assigned_to=EXCLUDED.assigned_to, requested_by=EXCLUDED.requested_by, configuration=EXCLUDED.configuration, target_url=EXCLUDED.target_url, attachments=EXCLUDED.attachments,
+         assigned_to=EXCLUDED.assigned_to, requested_by=EXCLUDED.requested_by, configuration=EXCLUDED.configuration, target_url=EXCLUDED.target_url, attachments=EXCLUDED.attachments, defect_ids=EXCLUDED.defect_ids,
          project_id=COALESCE(EXCLUDED.project_id, cases.project_id), updated_at=now()
        RETURNING *`,
       [
@@ -1268,7 +1265,7 @@ export const Cases = {
         c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
         JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
         c.captureEvidenceOnManualRun !== false,
-        c.assignedTo || '', c.requestedBy || '', c.configuration || '', c.targetUrl || '', JSON.stringify(c.attachments || []), c.projectId || null,
+        c.assignedTo || '', c.requestedBy || '', c.configuration || '', c.targetUrl || '', JSON.stringify(c.attachments || []), Array.isArray(c.defectIds) ? c.defectIds : [], c.projectId || null,
       ],
     );
     await writeScopeCols('cases', id, c);

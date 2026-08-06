@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS cases (
   source_run_id   TEXT,
   agent_run_id    TEXT,
   capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE,
+  defect_ids      TEXT[] DEFAULT ARRAY[]::TEXT[],
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
@@ -307,6 +308,7 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manua
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS defect_ids TEXT[] DEFAULT ARRAY[]::TEXT[];
 -- Manual-execution fields authored on the case (previously only on the manual run form).
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS assigned_to       TEXT DEFAULT '';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS requested_by      TEXT DEFAULT '';
@@ -733,7 +735,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- Human-facing QA artifact titles are unique for each owner within an active project, regardless of case or
+-- Human-facing QA artifact titles are unique within an active project, regardless of case or
 -- surrounding whitespace. Preserve legacy duplicates by renaming only the later rows; ids and all
 -- relationships stay unchanged. Re-running this block is a no-op once each project is clean.
 DO $$
@@ -753,7 +755,7 @@ BEGIN
       EXECUTE format(
         'WITH ranked AS (
            SELECT id, row_number() OVER (
-             PARTITION BY COALESCE(project_id, ''''), COALESCE(owner_id, ''''), lower(btrim(%1$I))
+             PARTITION BY COALESCE(project_id, ''''), lower(btrim(%1$I))
              ORDER BY created_at, id
            ) AS duplicate_number
            FROM %2$I WHERE deleted_at IS NULL
@@ -772,7 +774,7 @@ BEGIN
     EXECUTE format('DROP INDEX IF EXISTS %I', table_name || '_active_project_title_unique');
     EXECUTE format(
       'CREATE UNIQUE INDEX %1$I ON %2$I (
-         COALESCE(project_id, ''''), COALESCE(owner_id, ''''), lower(btrim(%3$I))
+         COALESCE(project_id, ''''), lower(btrim(%3$I))
        ) WHERE deleted_at IS NULL',
       table_name || '_active_project_title_unique',
       table_name,

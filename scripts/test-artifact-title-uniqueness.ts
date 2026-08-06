@@ -28,7 +28,11 @@ for (const artifact of artifacts) {
     `${artifact.label}: rejects case-insensitive duplicates across apps for one owner in one project`,
   );
 
-  await artifact.repo.upsert({ id: `${artifact.label}-other-owner`, projectId: 'project-a', ownerId: 'owner-b', [artifact.field]: 'checkout flow' });
+  await assert.rejects(
+    artifact.repo.upsert({ id: `${artifact.label}-other-owner`, projectId: 'project-a', ownerId: 'owner-b', [artifact.field]: 'checkout flow' }),
+    (error: any) => error?.status === 409 && error?.code === 'DUPLICATE_ARTIFACT_TITLE',
+    `${artifact.label}: rejects duplicates from another owner in the same project`,
+  );
 
   await artifact.repo.upsert({ ...saved, [artifact.field]: 'Checkout Flow' });
   const other = await artifact.repo.upsert({ id: `${artifact.label}-2`, projectId: 'project-a', ownerId: 'owner-a', [artifact.field]: 'Other Flow' });

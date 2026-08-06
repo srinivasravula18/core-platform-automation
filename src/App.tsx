@@ -260,12 +260,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       setShowResults(false);
       return;
     }
-    if (searchResults?.intents?.length && searchResults.intents.some((i) => i.kind !== 'navigate')) {
-      runAiSearch(query);
-      return;
-    }
-    navigate(`/cases?search=${encodeURIComponent(query)}`);
-    setShowResults(false);
+    runAiSearch(query);
   };
 
   return (

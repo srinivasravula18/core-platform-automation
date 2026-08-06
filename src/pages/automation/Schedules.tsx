@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus } from 'lucide-react';
+import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
-import { useRemoteAgentFlag, useSchedules, useRecordings } from '@/src/lib/useAutomation';
+import { useRemoteAgentFlag, useSchedules, useRecordings, type Schedule } from '@/src/lib/useAutomation';
 
 function fmt(iso: string | null): string {
   if (!iso) return '—';
@@ -90,6 +90,7 @@ export default function Schedules() {
   const { schedules, loading, refresh } = useSchedules();
   const { recordings } = useRecordings();
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Schedule | null>(null);
 
   const nameFor = useMemo(() => {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
@@ -97,7 +98,7 @@ export default function Schedules() {
   }, [recordings]);
 
   const toggle = async (id: string, enabled: boolean) => {
-    try { await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); void refresh(); }
+    try { const response = await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); if (!response.ok) throw new Error(); void refresh(); }
     catch { showToast('Could not update the schedule.', { tone: 'error' }); }
   };
 
@@ -152,6 +153,7 @@ export default function Schedules() {
                     </button>
                   </td>
                   <td className="px-4 py-2.5 text-right">
+                    <button onClick={() => setEditing(s)} className="mr-2 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)]" title="Edit schedule"><Pencil className="h-3.5 w-3.5" /></button>
                     <button onClick={() => remove(s.id)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                   </td>
                 </tr>
@@ -162,8 +164,35 @@ export default function Schedules() {
       </div>
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} />
+      {editing && <EditScheduleModal schedule={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
     </div>
   );
+}
+
+function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule; onClose: () => void; onSaved: () => void }) {
+  const [kind, setKind] = useState<'once' | 'cron'>(schedule.kind === 'once' ? 'once' : 'cron');
+  const [cron, setCron] = useState(schedule.cron || '');
+  const [runAt, setRunAt] = useState(schedule.nextRunAt ? schedule.nextRunAt.slice(0, 16) : nextHourUtcInput());
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const nextRunAt = kind === 'once' ? runAtFromUtcInput(runAt) : '';
+    if (kind === 'once' && (!nextRunAt || Date.parse(nextRunAt) <= Date.now())) { showToast('Pick a future date and time (UTC).', { tone: 'error' }); return; }
+    if (kind === 'cron' && !cron.trim()) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kind === 'once' ? { kind, runAt: nextRunAt, timezone: 'UTC', enabled: true } : { kind, cron: cron.trim(), timezone: 'UTC', enabled: true }) });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not update the schedule.');
+      showToast('Schedule updated.', { tone: 'success' });
+      onSaved();
+    } catch (error: any) { showToast(error?.message || 'Could not update the schedule.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return <Modal isOpen onClose={onClose} title="Edit schedule" size="md" footer={<div className="flex justify-end gap-2"><button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button><button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{busy && <Loader2 className="h-4 w-4 animate-spin" />} Save Changes</button></div>}>
+    <label className="block text-xs font-medium text-[var(--text-muted)]">Schedule type
+      <select value={kind} onChange={(event) => setKind(event.target.value as 'once' | 'cron')} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"><option value="cron">Recurring (cron)</option><option value="once">Specific date</option></select>
+    </label>
+    {kind === 'once' ? <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Date &amp; Time (UTC)<input type="datetime-local" value={runAt} onChange={(event) => setRunAt(event.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]" /></label> : <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Cron expression (UTC)<input value={cron} onChange={(event) => setCron(event.target.value)} placeholder="0 9 * * 1-5" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" /><span className="mt-1 block font-normal">Minute hour day-of-month month day-of-week</span></label>}
+  </Modal>;
 }
 
 type FolderNode = { id: string; name: string; parentId?: string | null; children: FolderNode[] };

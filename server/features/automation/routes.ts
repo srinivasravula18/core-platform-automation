@@ -890,10 +890,13 @@ export function registerAutomationRoutes(app: Express) {
     const cron = req.body?.cron ?? s.cron;
     const timezone = req.body?.timezone ?? s.timezone;
     const enabled = req.body?.enabled ?? s.enabled;
-    const next = enabled ? computeNextRun(kind, cron, timezone, new Date()) : null;
+    const runAt = req.body?.runAt ?? s.nextRunAt;
+    const next = enabled && kind !== 'once' ? computeNextRun(kind, cron, timezone, new Date()) : null;
+    if (kind === 'cron' && enabled && !next) return res.status(400).json({ error: 'Invalid cron expression.' });
+    if (kind === 'once' && enabled && (!runAt || Number.isNaN(new Date(runAt).getTime()))) return res.status(400).json({ error: 'A valid run date is required.' });
     const saved = await AutomationSchedules.upsert({
       ...s, kind, cron, timezone, enabled,
-      nextRunAt: next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
+      nextRunAt: !enabled ? null : kind === 'once' ? new Date(runAt).toISOString() : next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
     });
     if (!isPostgresEnabled()) persistDataInBackground('schedule updated');
     res.json({ schedule: saved });

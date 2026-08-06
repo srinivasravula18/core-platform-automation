@@ -75,6 +75,37 @@ function locatorKey(d: { role: string; label: string }): string {
   return d.label || d.role || '';
 }
 
+const GENERIC_EXPECTED_RE = /^(?:the\s+)?(?:action|operation|step|interaction|input)\s+(?:is|was|has been)\s+(?:performed|completed|applied|executed)\s+successfully\.?$/i;
+
+/** Replace recorder/AI boilerplate with an outcome tied to the actual recorded action. */
+export function concreteExpectedResult(action: string, expected = ''): string {
+  const current = String(expected || '').trim();
+  if (current && !GENERIC_EXPECTED_RE.test(current)) return current;
+  const text = String(action || '').trim();
+  const lower = text.toLowerCase();
+  const quoted = text.match(/["“]([^"”]+)["”]/)?.[1] || '';
+  const target = quoted ? `"${quoted}"` : 'the selected control';
+
+  if (/\b(sign[ -]?in|log[ -]?in)\b/.test(lower)) return 'The sign-in request is submitted and the authenticated area begins to load.';
+  if (/\b(save|update|apply)\b/.test(lower)) return 'The changes are submitted and the updated state is displayed.';
+  if (/\b(create|submit|confirm)\b/.test(lower)) return 'The request is submitted and its resulting state is displayed.';
+  if (/\b(new|add)\b/.test(lower)) return 'The interface for adding a new item is displayed.';
+  if (/\b(delete|remove)\b/.test(lower)) return 'The selected item is removed and no longer appears in the current view.';
+  if (/\b(cancel|close|dismiss)\b/.test(lower)) return 'The current dialog or workflow closes without applying further changes.';
+  if (/\b(search|filter)\b/.test(lower)) return 'The visible results update to match the requested criteria.';
+  if (/\b(download|export)\b/.test(lower)) return 'The requested file is prepared for download.';
+  if (/\btab\b/.test(lower)) return `${target} becomes active and its content is displayed.`;
+  if (/\b(link|menu item)\b/.test(lower)) return `The destination associated with ${target} is displayed.`;
+  if (/\bcheckbox\b/.test(lower)) return `${target} reflects the selected state.`;
+  if (/^(enter|fill|type)\b/i.test(text)) return 'The specified value is accepted by the field and remains visible.';
+  if (/^(select|check|uncheck)\b/i.test(text)) return `${target} reflects the requested selection.`;
+  if (/^press\b/i.test(text)) return `The key command is accepted by ${target}.`;
+  if (/^(navigate|open)\b/i.test(text)) return 'The requested page loads and its primary content is displayed.';
+  if (/^verify\b/i.test(text)) return `${target} is present in the expected state.`;
+  if (/^click\b/i.test(text)) return `${target} responds and the corresponding interface state is displayed.`;
+  return `The application reflects the result of the recorded step: ${text || 'the requested interaction'}.`;
+}
+
 function locatorStrategy(line: string): RecordingStep['locatorStrategy'] {
   if (/getByRole\(/.test(line)) return 'role';
   if (/getByLabel\(/.test(line)) return 'label';
@@ -189,7 +220,8 @@ export function parseAtomicSteps(script: string): AtomicStep[] {
       steps.push({ action: `Navigate to ${m[1]}`, expected: 'The page loads successfully.', kind: 'nav', locator: m[1] });
     } else if (/getBy\w+\(/.test(line) && /\.click\(/.test(line)) {
       const d = describeLocator(line);
-      steps.push({ action: `Click ${elementPhrase(d)}`, expected: 'The action is performed successfully.', kind: 'click', locator: locatorKey(d) });
+      const action = `Click ${elementPhrase(d)}`;
+      steps.push({ action, expected: concreteExpectedResult(action), kind: 'click', locator: locatorKey(d) });
     } else if (/getBy\w+\(/.test(line) && /\.fill\(/.test(line)) {
       const d = describeLocator(line);
       const v = line.match(/\.fill\(\s*(['"`])([^'"`]*)\1/);
@@ -199,7 +231,8 @@ export function parseAtomicSteps(script: string): AtomicStep[] {
       const d = describeLocator(line);
       const verb = /\.check\(/.test(line) ? 'Check' : /\.press\(/.test(line) ? 'Press a key in' : 'Select an option in';
       const kind: StepKind = /\.check\(/.test(line) ? 'check' : /\.press\(/.test(line) ? 'press' : 'select';
-      steps.push({ action: `${verb} ${elementPhrase(d)}`, expected: 'The input is applied.', kind, locator: locatorKey(d) });
+      const action = `${verb} ${elementPhrase(d)}`;
+      steps.push({ action, expected: concreteExpectedResult(action, 'The input is applied successfully.'), kind, locator: locatorKey(d) });
     } else if (/expect\(/.test(line) && /getBy\w+\(/.test(line)) {
       const d = describeLocator(line);
       steps.push({ action: `Verify ${elementPhrase(d)} is visible`, expected: 'The element is present and visible.', kind: 'verify', locator: locatorKey(d) });

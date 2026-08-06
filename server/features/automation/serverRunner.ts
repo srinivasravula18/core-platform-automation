@@ -26,6 +26,7 @@ import { pausePreludeSource } from '../../../agent/src/preludeSource';
 import { closeOpenPausesForJob, listJobPauses, recordPause, registerLocalPauseResolver } from './pauseService';
 import { isPauseResumeEnabled } from './flag';
 import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
+import { MISSION_RUNNER_SOURCE } from '../agent/compiler/missionRunner.template';
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw', 'automation');
 const running = new Map<string, ReturnType<typeof spawn>>();
@@ -159,6 +160,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions));
   fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
+  if (/from\s+['"]\.\/mission-runner['"]/.test(scriptSource)) fs.writeFileSync(path.join(runDir, 'tests', 'mission-runner.ts'), MISSION_RUNNER_SOURCE);
   fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${hasPauses ? pausePreludeSource : ''}${scriptSource}`);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });

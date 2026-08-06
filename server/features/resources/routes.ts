@@ -1583,6 +1583,7 @@ export function registerResourceRoutes(app: Express) {
       testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
       ...typeFields,
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
+      defectIds: uniqueStrings(Array.isArray(c.defectIds) ? c.defectIds : String(c.defectIds || '').split(/[\s,]+/)),
       assignedTo: c.assignedTo || '',
       requestedBy: c.requestedBy || '',
       configuration: c.configuration || '',
@@ -1771,7 +1772,8 @@ Rules:
     const caseIds = new Set(selectedCaseIds.filter((id) => cases.some((testCase: any) => testCase.id === id)));
     cases.forEach((testCase: any) => {
       const testSuiteIds = uniqueStrings(testCase.testSuiteIds?.length ? testCase.testSuiteIds : [testCase.testSuiteId]);
-      if (planIds.has(testCase.testPlanId) || testSuiteIds.some((id) => suiteIds.has(id))) {
+      const testPlanIds = uniqueStrings(testCase.testPlanIds?.length ? testCase.testPlanIds : [testCase.testPlanId]);
+      if (testPlanIds.some((id) => planIds.has(id)) || testSuiteIds.some((id) => suiteIds.has(id))) {
         caseIds.add(testCase.id);
       }
     });

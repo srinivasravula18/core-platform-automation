@@ -40,6 +40,7 @@ export interface RecordingCaseMeta {
   testSuiteIds?: string[];
   description?: string;
   preconditions?: string;
+  defectIds?: string[];
 }
 
 function persist(reason: string) {
@@ -216,6 +217,7 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     folderId: meta.folderId || null,
     testPlanIds: Array.isArray(meta.testPlanIds) ? meta.testPlanIds : [],
     testSuiteIds: Array.isArray(meta.testSuiteIds) ? meta.testSuiteIds : [],
+    defectIds: Array.isArray(meta.defectIds) ? meta.defectIds : [],
     tags: normalizeCaseTags(['codegen', 'recorded']),
     createdBy: 'Codegen',
     projectId: rec.projectId || '',

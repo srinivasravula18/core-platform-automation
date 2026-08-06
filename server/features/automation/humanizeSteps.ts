@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { concreteExpectedResult } from './stepGrouping';
 
 export interface SimpleStep { action: string; expected: string; group?: string; groupIndex?: number }
 
@@ -26,6 +27,7 @@ export async function humanizeRecordedSteps(
   ctx: { title?: string; url?: string } = {},
 ): Promise<SimpleStep[]> {
   const clean = steps.filter((s) => s.action && s.action.trim());
+  steps = clean.map((step) => ({ ...step, expected: concreteExpectedResult(step.action, step.expected) }));
   if (clean.length < 2) return steps; // nothing meaningful to group
   try {
     const orch = await getOrchestrator('caseReworker');
@@ -51,6 +53,7 @@ Rules:
 - Return strict JSON: {"steps":[{"action":string,"expected":string}, ...]}.`,
       schema: humanizedSchema,
     });
+    if (object?.steps) object.steps.forEach((step) => { step.expected = concreteExpectedResult(step.action, step.expected); });
     if (shortCircuit || !object?.steps?.length) return steps; // no provider / empty → deterministic fallback
     return object.steps.map((s) => ({ action: s.action, expected: s.expected }));
   } catch {

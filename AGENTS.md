@@ -54,6 +54,7 @@ Forensic, code-cited reports already exist from prior sessions — read them bef
 
 ## Working conventions
 
+- Any change to the desktop Record & Play agent (`agent/`) must increment the agent version in `agent/package.json`, `agent/package-lock.json`, and `agent/src/version.ts` before building or publishing the agent bundle.
 - Keep deliverable files (reports, diagnostics, plans) inside this repo (e.g. under `docs/`), not in the OS temp/scratchpad directory.
 - `server/db/schema.sql` is the authoritative database schema. Every schema change must remain idempotent for both new and existing databases and must verify `scripts/setup-db.bat`; update the setup script in the same change whenever the schema path or application process changes.
 - Do not publish reports/plans/diagnostics to any external hosted-artifact/preview service — keep everything as files in this repo only.

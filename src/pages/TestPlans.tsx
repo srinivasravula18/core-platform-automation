@@ -29,6 +29,8 @@ import { buildTestPlanHierarchy } from '@/src/lib/testPlanHierarchy';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { normalizeTags } from '@/src/lib/tags';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { useAgents } from '@/src/lib/useAutomation';
+import { RunModeModal } from '@/src/components/RunModeModal';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -145,6 +147,9 @@ export default function TestPlans() {
 
   const bulk = useBulkDelete('plans', fetchPlans, 'plan');
   const selectedPlanIds = Array.from(bulk.selectedIds).map(String);
+  const { agents: runAgents } = useAgents();
+  const [runPlanIds, setRunPlanIds] = useState<string[]>([]);
+  const [runModalOpen, setRunModalOpen] = useState(false);
 
   const fetchPlanRelations = () => {
     Promise.all([
@@ -393,6 +398,20 @@ export default function TestPlans() {
     } finally {
       setIsStartingRun(false);
     }
+  };
+  const openPlanRun = (planIds = selectedPlanIds) => { setRunPlanIds(planIds); setRunModalOpen(true); };
+  const runPlanCases = async (mode: 'manual' | 'automated', headed: boolean, agentId: string) => {
+    const caseIds = Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => String(testCase.id)))));
+    setIsStartingRun(true);
+    try {
+      if (mode === 'manual') await startSelectedRun({ planIds: runPlanIds, caseIds, mode }, navigate);
+      else for (const caseId of caseIds) {
+        const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
+        const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+      }
+      setRunModalOpen(false); bulk.clearSelection();
+    } catch (error: any) { void showAlert(error.message || 'Failed to start selected test plan run.'); }
+    finally { setIsStartingRun(false); }
   };
 
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
@@ -929,7 +948,7 @@ export default function TestPlans() {
                     {getPlanSuites(selectedDetailPlan.id).length === 0 ? (
                       <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No test suites are linked to this plan.</td></tr>
                     ) : getPlanSuites(selectedDetailPlan.id).map((suite) => (
-                      <tr key={suite.id} onClick={() => navigate(`/suites/${suite.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                      <tr key={suite.id} onClick={() => navigate(`/suites/${suite.id}?planId=${encodeURIComponent(selectedDetailPlan.id)}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                         <td className="px-4 py-3 font-medium">{suite.name}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{suite.module || '-'}</td>
@@ -1012,7 +1031,7 @@ export default function TestPlans() {
                     {getPlanRuns(selectedDetailPlan).length === 0 ? (
                       <tr><td colSpan={5} className="px-4 py-6 text-center text-[var(--text-muted)]">No test runs are linked to this plan.</td></tr>
                     ) : getPlanRuns(selectedDetailPlan).map((run) => (
-                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}?planId=${encodeURIComponent(selectedDetailPlan.id)}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{run.id}</td>
                         <td className="px-4 py-3 font-medium">{run.name || run.id}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{run.assignedTo || run.requestedBy || 'Unassigned'}</td>
@@ -1107,11 +1126,9 @@ export default function TestPlans() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              {bulk.selectedCount > 1 && (
-                <button onClick={() => runSelectedPlans()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
-                </button>
-              )}
+              <button onClick={() => openPlanRun()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
+              </button>
               {can('plans:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                   <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
@@ -1242,7 +1259,7 @@ export default function TestPlans() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            runSelectedPlans([plan.id]);
+                            openPlanRun([plan.id]);
                           }}
                           disabled={isStartingRun || planCases.length === 0}
                           title={isStartingRun ? 'Starting test plan run…' : runCaseCountLabel(planCases.length)}
@@ -1286,6 +1303,7 @@ export default function TestPlans() {
         </div>
       </div>
       )}
+      <RunModeModal isOpen={runModalOpen} count={Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => testCase.id)))).length} busy={isStartingRun} agents={runAgents} onClose={() => setRunModalOpen(false)} onRun={runPlanCases} />
     </div>
   );
 }

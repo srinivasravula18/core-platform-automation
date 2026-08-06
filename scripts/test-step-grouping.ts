@@ -4,7 +4,7 @@
  * losing meaningful steps.
  *   npx tsx scripts/test-step-grouping.ts   (npm run test:step-grouping)
  */
-import { parseAtomicSteps, coalesceAtomicSteps, groupAtomicSteps, scriptToGroupedSteps } from '../server/features/automation/stepGrouping';
+import { parseAtomicSteps, coalesceAtomicSteps, concreteExpectedResult, groupAtomicSteps, scriptToGroupedSteps } from '../server/features/automation/stepGrouping';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -27,6 +27,10 @@ function main() {
   ok(atoms.length === 10, `parsed all 10 statements (got ${atoms.length})`);
   ok(atoms[0].kind === 'nav' && atoms[6].kind === 'nav', 'goto and waitForURL both parse as nav');
   ok(atoms[9].kind === 'verify', 'expect(...) parses as verify');
+  ok(!atoms.some((step) => /action is performed successfully/i.test(step.expected)), 'recorded steps never use the generic expected-result fallback');
+  ok(/sign-in request/i.test(atoms[5].expected), 'sign-in click receives a meaningful expected result');
+  ok(/adding a new item/i.test(atoms[7].expected), 'new-item click receives a meaningful expected result');
+  ok(/updated state/i.test(concreteExpectedResult('Click the "Save" button', 'The action is performed successfully.')), 'generic AI output is replaced globally');
 
   console.log('coalesce: consecutive fills on the same field collapse to the last value');
   const co = coalesceAtomicSteps(atoms);

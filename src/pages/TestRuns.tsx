@@ -25,7 +25,7 @@ import type { TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
-import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
+import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForRun, getRunStats, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
@@ -245,7 +245,9 @@ export default function TestRuns() {
   const suiteOptions = Array.from(new Set(runs.map((run) => String(run.suiteName || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
 
-  const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites, plans) : [], [cases, plans, selectedRun, suites]);
+  const planId = new URLSearchParams(location.search).get('planId');
+  const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites, plans)
+    .filter((testCase) => !planId || casePlanIds(testCase).includes(planId)) : [], [cases, planId, plans, selectedRun, suites]);
 
   // Filter options come from the cases actually in this run — never a fixed list, so they stay true
   // to the data and never offer a value that matches nothing.
@@ -1345,7 +1347,5 @@ export default function TestRuns() {
     </div>
   );
 }
-
-
 
 

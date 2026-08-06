@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react
 /** Authoring shape for a case step; captureEvidence gates screenshots in the manual runner. */
 type CaseStep = { action: string; expected: string; captureEvidence?: boolean };
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server, Paperclip, X, Video } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Paperclip, X, Video } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -27,6 +27,7 @@ import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
+import { RunModeModal } from '@/src/components/RunModeModal';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { normalizeTestCaseTypes, TESTING_TYPES, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 import { normalizeTags } from '@/src/lib/tags';
@@ -60,6 +61,7 @@ export default function TestCases() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [cases, setCases] = useState<any[]>([]);
+  const [defects, setDefects] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
   // agentRunId → { platform, app } for the platform + individual app the run targeted, so each
@@ -76,6 +78,7 @@ export default function TestCases() {
   const [automationFooterTarget, setAutomationFooterTarget] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
+  const suiteScopeId = searchParams.get('suiteId') || '';
   const aiSearch = useAiSearch('test cases');
   const [runs, setRuns] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
@@ -122,7 +125,7 @@ export default function TestCases() {
   const [browserMode, setBrowserMode] = useState<'headless' | 'headed'>('headless');
   const [runAgentId, setRunAgentId] = useState('');
   const emptyStep: CaseStep = { action: '', expected: '', captureEvidence: true };
-  const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, assignedTo: '', requestedBy: '', configuration: '', targetUrl: '', steps: [emptyStep] as CaseStep[] };
+  const blankForm = { title: '', description: '', preconditions: '', folderId: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, assignedTo: '', requestedBy: '', configuration: '', targetUrl: '', defectIds: '', steps: [emptyStep] as CaseStep[] };
   const [formData, setFormData] = useState(blankForm);
   const [attachments, setAttachments] = useState<CaseAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState('');
@@ -139,6 +142,13 @@ export default function TestCases() {
     fetch('/api/cases')
       .then(r => r.json())
       .then(data => { setCases(data); setLoading(false); })
+      .catch(console.error);
+  };
+
+  const fetchDefects = () => {
+    fetch('/api/defects')
+      .then(r => r.json())
+      .then(data => setDefects(Array.isArray(data) ? data : []))
       .catch(console.error);
   };
 
@@ -261,6 +271,7 @@ export default function TestCases() {
   // Refetch all case-related data (projects load separately below).
   const refetchAll = () => {
     fetchCases();
+    fetchDefects();
     fetchPlans();
     fetchSuites();
     fetchRunInfo();
@@ -336,6 +347,7 @@ export default function TestCases() {
       priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
       captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
       assignedTo: testCase.assignedTo || '', requestedBy: testCase.requestedBy || '', configuration: testCase.configuration || '', targetUrl: testCase.targetUrl || '',
+      defectIds: Array.isArray(testCase.defectIds) ? testCase.defectIds.join(', ') : String(testCase.defectIds || ''),
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
     setAttachments(Array.isArray(testCase.attachments) ? testCase.attachments : []);
@@ -372,6 +384,7 @@ export default function TestCases() {
       attachments,
       testPlanId: formData.testPlanIds[0] || '',
       testSuiteId: formData.testSuiteIds[0] || '',
+      defectIds: formData.defectIds.split(/[\s,]+/).filter(Boolean),
     };
 
     try {
@@ -704,8 +717,6 @@ export default function TestCases() {
     const testCase = cases.find((item: any) => String(item.id) === String(id));
     return testCase && isAutomationCase(testCase);
   });
-  const onlineRunAgents = runAgents.filter((agent) => !agent.revoked && (agent.status === 'online' || agent.status === 'busy'));
-  const selectedRunAgentId = onlineRunAgents.some((agent) => agent.id === runAgentId) ? runAgentId : (onlineRunAgents[0]?.id || '');
   const pendingRunNeedsTags = !allCasesHaveRunTags(cases, pendingRunCaseIds);
   // App dropdown: distinct app labels across cases, scoped to the selected platform when one is chosen.
   const appFilterOptions = Array.from(new Set<string>(cases
@@ -743,6 +754,15 @@ export default function TestCases() {
     });
     return latest;
   }, [runs]);
+  const activeDefectIdsByCase = useMemo(() => {
+    const ids = new Map<string, string[]>();
+    defects.forEach((defect) => {
+      const caseId = String(defect.linkedCaseId || '');
+      if (!caseId || /^(resolved|closed)$/i.test(String(defect.status || ''))) return;
+      ids.set(caseId, [...(ids.get(caseId) || []), String(defect.id)]);
+    });
+    return ids;
+  }, [defects]);
   const activeFilterCount = (
     filters.statuses.length + filters.priorities.length + filters.automationStatuses.length +
     filters.testingTypes.length + filters.tags.length + filters.owners.length +
@@ -789,7 +809,7 @@ export default function TestCases() {
       : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
-    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
+    return matchesSearch && matchesPlatform && matchesApp && (!suiteScopeId || resolveSuiteIds(testCase).includes(suiteScopeId)) && advancedMatch(testCase);
   }), timeSort);
 
   const setNotInAnyRunFilter = (enabled: boolean) => {
@@ -948,13 +968,17 @@ export default function TestCases() {
                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Suites (Optional)</label>
                   <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Defect IDs</label>
+                  <input value={formData.defectIds} onChange={(e) => setFormData({ ...formData, defectIds: e.target.value })} placeholder="e.g. DEF-123, DEF-456" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                </div>
               </div>
               {automationFooterTarget && <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
                 selectedEnvironment={automationEnvironment}
                 onEnvironmentChange={setAutomationEnvironment}
-                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds, description: formData.description, preconditions: formData.preconditions }}
+                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds, description: formData.description, preconditions: formData.preconditions, defectIds: formData.defectIds.split(/[\s,]+/).filter(Boolean) }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
                 footerTarget={automationFooterTarget}
               />}
@@ -1100,6 +1124,10 @@ export default function TestCases() {
               <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL</label>
               <input value={formData.targetUrl} onChange={(e) => setFormData({ ...formData, targetUrl: e.target.value })} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Defect IDs</label>
+              <input value={formData.defectIds} onChange={(e) => setFormData({ ...formData, defectIds: e.target.value })} placeholder="e.g. DEF-123, DEF-456" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
@@ -1145,70 +1173,23 @@ export default function TestCases() {
         {historyCase && <VersionHistoryPanel entity="cases" id={historyCase.id} onRestored={fetchCases} />}
       </Modal>
 
-      {/* Save-and-run: add optional tags, then the run is created and opened in Test Runs.
-          Cancel/Save & Run live in the pinned footer so the tag suggestions dropdown (in the scrollable
-          body) can never render on top of them. */}
-      <Modal
+      <RunModeModal
         isOpen={isRunModalOpen}
         onClose={() => setIsRunModalOpen(false)}
-        title={`Run ${pendingRunCaseIds.length} selected case${pendingRunCaseIds.length === 1 ? '' : 's'}`}
-        footer={(
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-            <button
-              onClick={() => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, runType, browserMode, selectedRunAgentId)}
-              disabled={isStartingRun || (pendingRunNeedsTags && !runTags.length) || (runType === 'automated' && browserMode === 'headed' && !selectedRunAgentId)}
-              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-            >
-              {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} {pendingRunNeedsTags ? 'Save & Run' : 'Run'}
-            </button>
-          </div>
-        )}
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
-          <fieldset>
-            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Run type</legend>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runType === 'manual' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="run-type" value="manual" checked={runType === 'manual'} onChange={() => setRunType('manual')} className="mt-1" />
-                <span><span className="text-sm font-semibold text-[var(--text-primary)]">Manual run</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Execute each test step yourself and record outcomes and evidence.</span></span>
-              </label>
-              <label className={`flex gap-3 rounded-lg border p-3 ${pendingRunCanAutomate ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${runType === 'automated' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="run-type" value="automated" checked={runType === 'automated'} disabled={!pendingRunCanAutomate} onChange={() => setRunType('automated')} className="mt-1" />
-                <span><span className="text-sm font-semibold text-[var(--text-primary)]">Automated run</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run the saved Playwright script for every selected case.</span></span>
-              </label>
-            </div>
-            {!pendingRunCanAutomate && pendingRunHasAutomation && <p className="mt-2 text-xs text-amber-500">Automated runs need a saved automation script for every selected case.</p>}
-          </fieldset>
-          {runType === 'automated' && <fieldset>
-            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Automated browser mode</legend>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${browserMode === 'headed' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="browser-mode" value="headed" checked={browserMode === 'headed'} onChange={() => setBrowserMode('headed')} className="mt-1" />
-                <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Monitor className="h-4 w-4" /> Headed</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Open the browser on the local agent for OTP, access codes, or other manual input.</span></span>
-              </label>
-              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${browserMode === 'headless' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
-                <input type="radio" name="browser-mode" value="headless" checked={browserMode === 'headless'} onChange={() => setBrowserMode('headless')} className="mt-1" />
-                <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Server className="h-4 w-4" /> Headless</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run unattended on the server. No browser window is shown.</span></span>
-              </label>
-            </div>
-            {browserMode === 'headed' && (onlineRunAgents.length ? (
-              <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">
-                Run on agent
-                <select value={selectedRunAgentId} onChange={(event) => setRunAgentId(event.target.value)}
-                  className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-                  {onlineRunAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} ({agent.machineName})</option>)}
-                </select>
-              </label>
-            ) : <p className="mt-2 text-xs text-amber-500">Start your Local Agent before running headed.</p>)}
-          </fieldset>}
-          {pendingRunNeedsTags && <div>
-            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags<RequiredMark /></label>
-            <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
-          </div>}
-        </div>
-      </Modal>
+        count={pendingRunCaseIds.length}
+        busy={isStartingRun}
+        agents={runAgents}
+        canAutomate={pendingRunCanAutomate}
+        hasAutomation={pendingRunHasAutomation}
+        initialMode={runType}
+        initialBrowserMode={browserMode}
+        initialAgentId={runAgentId}
+        needsTags={pendingRunNeedsTags}
+        tags={runTags}
+        tagOptions={tagOptions}
+        onTagsChange={setRunTags}
+        onRun={(mode, headed, agentId) => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, mode, headed ? 'headed' : 'headless', agentId)}
+      />
 
       <Modal
         isOpen={!!scriptViewer}
@@ -1393,8 +1374,19 @@ export default function TestCases() {
                 Not in any test run <span aria-hidden="true" className="text-sm leading-none">×</span>
               </button>
             )}
+            {suiteScopeId && (
+              <button
+                type="button"
+                onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('suiteId'); return next; }, { replace: true })}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--accent)]/20"
+                aria-label="Remove test suite filter"
+                title="Remove filter"
+              >
+                Suite: {suites.find((suite) => String(suite.id) === suiteScopeId)?.name || suiteScopeId} <span aria-hidden="true" className="text-sm leading-none">×</span>
+              </button>
+            )}
             <div aria-live="polite" className="whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-              {filteredCases.length}{(searchTerm || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
+              {filteredCases.length}{(searchTerm || suiteScopeId || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
             </div>
           </div>
           </div>
@@ -1455,7 +1447,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1920px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[2040px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -1472,6 +1464,7 @@ export default function TestCases() {
                 <th className="font-medium py-3 px-4 w-44">Platform / App</th>
                 <th className="font-medium py-3 px-4 w-40">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-40">Test Suite</th>
+                <th className="font-medium py-3 px-4 w-32">Defect IDs</th>
                 <th className="font-medium py-3 px-4 w-28">Status</th>
                 <th className="font-medium py-3 px-4 w-44">Automation Status</th>
                 <th className="font-medium py-3 px-4 w-36">Type Of Test Case</th>
@@ -1485,10 +1478,10 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -1538,6 +1531,9 @@ export default function TestCases() {
                         });
                       }}
                     />
+                  </td>
+                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ')}>
+                    {(activeDefectIdsByCase.get(String(tc.id)) || []).join(', ') || '—'}
                   </td>
                   <td className="py-3 px-4">
                     <InlineCaseSelect
