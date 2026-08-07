@@ -704,7 +704,11 @@ export default function TestRuns() {
           {selectedRun.triggerMeta?.automationJobId && (
             <div className="p-5 border-b border-[var(--border)] overflow-auto">
               <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
-              <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
+              <AutomationRunArtifacts
+                jobId={selectedRun.triggerMeta.automationJobId}
+                runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+                runDuration={formatRunDuration(selectedRun, now)}
+              />
             </div>
           )}
           {evidenceItems.length > 0 && (
@@ -781,18 +785,6 @@ export default function TestRuns() {
                 <div className="bg-slate-500" style={{ width: `${stats.total ? (stats.skipped / stats.total) * 100 : 0}%` }} />
               </>
             )}
-          </div>
-
-          <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap gap-4 text-sm">
-            <span role="status" aria-live="polite">
-              {selectedIsRunning ? `${selectedExecution.percent}% · ${selectedProgress}` : `${stats.completed}% Completed`}
-            </span>
-            <span className="text-emerald-400">Passed {resettingRunStats ? 0 : stats.passed}</span>
-            <span className="text-red-400">Failed {resettingRunStats ? 0 : stats.failed}</span>
-            <span className="text-indigo-400">Blocked {resettingRunStats ? 0 : stats.blocked}</span>
-            <span className="text-yellow-400">Retest {resettingRunStats ? 0 : stats.retest}</span>
-            <span className="text-slate-400">Skipped {resettingRunStats ? 0 : stats.skipped}</span>
-            <span className="text-[var(--text-muted)]">Untested {resettingRunStats ? 0 : stats.untested}</span>
           </div>
 
           <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-3">

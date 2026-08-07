@@ -50,7 +50,7 @@ function stepTone(status: ExecutionStepProgress['status']): string {
   return 'text-blue-400';
 }
 
-export function AutomationRunArtifacts({ jobId, videoOnly = false }: { jobId: string; videoOnly?: boolean }) {
+export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, runDuration }: { jobId: string; videoOnly?: boolean; runSummary?: { passed: number; failed: number; skipped: number; blocked: number; retest: number; untested: number }; runDuration?: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -126,9 +126,14 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false }: { jobId: st
         Execution Artifacts
         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-4">
-        <Stat label="Passed" value={(s as any).passed ?? 0} /><Stat label="Failed" value={(s as any).failed ?? 0} />
-        <Stat label="Skipped" value={(s as any).skipped ?? 0} /><Stat label="Duration" value={duration(Number((s as any).durationMs) || elapsedMs)} />
+      <div className="grid gap-2 grid-cols-2 sm:grid-cols-4 xl:grid-cols-7">
+        <Stat label="Passed" value={runSummary?.passed ?? (s as any).passed ?? 0} />
+        <Stat label="Failed" value={runSummary?.failed ?? (s as any).failed ?? 0} />
+        <Stat label="Skipped" value={runSummary?.skipped ?? (s as any).skipped ?? 0} />
+        <Stat label="Blocked" value={runSummary?.blocked ?? 0} />
+        <Stat label="Retest" value={runSummary?.retest ?? 0} />
+        <Stat label="Untested" value={runSummary?.untested ?? 0} />
+        <Stat label="Duration" value={runDuration || duration(Number((s as any).durationMs) || elapsedMs)} />
       </div>
       {(running || steps.length > 0) && (
         <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3">

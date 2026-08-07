@@ -528,8 +528,18 @@ function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule;
 }
 
 type FolderNode = { id: string; name: string; parentId?: string | null; children: FolderNode[] };
-type RepositoryScript = { id: string; name?: string; title?: string; filename?: string; folderId?: string | null; code?: string };
+type Runnable = { kind: 'script' | 'recording'; scriptId?: string; recordingId?: string; caseId?: string; caseName?: string; name?: string; folderId?: string | null; tags?: string[] };
+type RepositoryCase = { id: string; title?: string; tags?: string[]; steps?: unknown[]; testPlanId?: string; testPlanIds?: string[]; testSuiteId?: string; testSuiteIds?: string[] };
+type RepositoryGroup = { id: string; name?: string; title?: string };
 const UNCATEGORIZED_ID = '__uncategorized__';
+const runnableKey = (runnable: Runnable) => `${runnable.kind}:${runnable.kind === 'recording' ? runnable.recordingId : runnable.scriptId}`;
+const matchesSearch = (values: unknown[], tags: string[] = [], search: string) => {
+  const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const normalizedTags = tags.map((tag) => String(tag).toLowerCase().replace(/^@/, ''));
+  return terms.every((term) => term.startsWith('@')
+    ? normalizedTags.some((tag) => tag.includes(term.slice(1)))
+    : [...values, ...tags].some((value) => String(value || '').toLowerCase().includes(term)));
+};
 
 function buildFolderTree(folders: Omit<FolderNode, 'children'>[]): FolderNode[] {
   const byId = new Map(folders.map((folder) => [folder.id, { ...folder, children: [] } as FolderNode]));
@@ -578,7 +588,10 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
-  const [scripts, setScripts] = useState<RepositoryScript[]>([]);
+  const [runnables, setRunnables] = useState<Runnable[]>([]);
+  const [cases, setCases] = useState<RepositoryCase[]>([]);
+  const [plans, setPlans] = useState<RepositoryGroup[]>([]);
+  const [suites, setSuites] = useState<RepositoryGroup[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [search, setSearch] = useState('');
 
@@ -593,22 +606,24 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     setOnceAt(schedule?.nextRunAt ? utcIsoToZonedInput(schedule.nextRunAt, initialTimezone) : nextHourInZoneInput(initialTimezone));
     setCronInput(schedule?.cron || 'At 04:05 on day-of-month 5');
     setSearch('');
-    Promise.all([fetch('/api/folders').then((r) => r.json()), fetch('/api/scripts').then((r) => r.json())])
-      .then(([folderData, scriptData]) => {
-        const available = (Array.isArray(scriptData) ? scriptData : [])
-          .filter((script: RepositoryScript) => String(script.code || '').trim())
-          .map((script: RepositoryScript) => ({ ...script, folderId: script.folderId == null ? null : String(script.folderId) }));
+    Promise.all([fetch('/api/folders').then((r) => r.json()), fetch('/api/automation/runnables').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/plans').then((r) => r.json()), fetch('/api/suites').then((r) => r.json())])
+      .then(([folderData, runnableData, caseData, planData, suiteData]) => {
+        const available = (Array.isArray(runnableData?.runnables) ? runnableData.runnables : [])
+          .map((runnable: Runnable) => ({ ...runnable, folderId: runnable.folderId == null ? null : String(runnable.folderId) }));
         const normalizedFolders = (Array.isArray(folderData) ? folderData : []).map((folder) => ({ ...folder, id: String(folder.id), parentId: folder.parentId == null ? null : String(folder.parentId) }));
         const tree = buildFolderTree(normalizedFolders);
         tree.unshift({ id: UNCATEGORIZED_ID, name: 'Uncategorized', children: [] });
         setFolders(tree);
-        setScripts(available);
+        setRunnables(available);
+        setCases(Array.isArray(caseData) ? caseData : []);
+        setPlans(Array.isArray(planData) ? planData : []);
+        setSuites(Array.isArray(suiteData) ? suiteData : []);
         setSelectedFolderId(available[0]?.folderId || UNCATEGORIZED_ID);
         const selectedScriptId = schedule
-          ? available.find((script) => script.id === schedule.recordingId)?.id
+          ? available.find((runnable) => runnable.recordingId === schedule.recordingId)
             || recordings.find((recording: any) => recording.id === schedule.recordingId)?.metadata?.scriptId
           : '';
-        setSelected(selectedScriptId ? new Set([String(selectedScriptId)]) : new Set());
+        setSelected(selectedScriptId ? new Set([typeof selectedScriptId === 'string' ? `script:${selectedScriptId}` : runnableKey(selectedScriptId)]) : new Set());
       })
       .catch(() => showToast('Could not load repository scripts.', { tone: 'error' }))
       .finally(() => setLoading(false));
@@ -632,15 +647,20 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
 
   const counts = useMemo(() => {
     const result = new Map<string, number>();
-    scripts.forEach((script) => result.set(script.folderId || UNCATEGORIZED_ID, (result.get(script.folderId || UNCATEGORIZED_ID) || 0) + 1));
+    runnables.forEach((runnable) => result.set(runnable.folderId || UNCATEGORIZED_ID, (result.get(runnable.folderId || UNCATEGORIZED_ID) || 0) + 1));
     return result;
-  }, [scripts]);
-  const visibleScripts = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return scripts.filter((script) => query
-      ? [script.name, script.title, script.filename].some((value) => String(value || '').toLowerCase().includes(query))
-      : (script.folderId || UNCATEGORIZED_ID) === selectedFolderId);
-  }, [scripts, search, selectedFolderId]);
+  }, [runnables]);
+  const visibleRunnables = useMemo(() => {
+    return runnables.filter((runnable) => search.trim()
+      ? matchesSearch([runnable.name, runnable.caseName], runnable.tags, search)
+      : (runnable.folderId || UNCATEGORIZED_ID) === selectedFolderId);
+  }, [runnables, search, selectedFolderId]);
+  const matchingManualCases = useMemo(() => {
+    if (!search.trim()) return [];
+    const runnableCaseIds = new Set(runnables.map((runnable) => String(runnable.caseId || '')).filter(Boolean));
+    return cases.filter((testCase) => !runnableCaseIds.has(String(testCase.id)) && Array.isArray(testCase.steps) && testCase.steps.length > 0
+      && matchesSearch([testCase.title], testCase.tags, search));
+  }, [cases, runnables, search]);
   const toggle = (id: string) => setSelected((prev) => {
     if (isEditing) return prev.has(id) ? new Set() : new Set([id]);
     const next = new Set(prev);
@@ -648,6 +668,13 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     return next;
   });
   const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
+  const addGroupScripts = (groupId: string, kind: 'plan' | 'suite') => {
+    const field = kind === 'plan' ? 'testPlan' : 'testSuite';
+    const caseIds = new Set(cases.filter((testCase) => [testCase[`${field}Id` as keyof RepositoryCase], ...(testCase[`${field}Ids` as keyof RepositoryCase] as string[] || [])].map(String).includes(groupId)).map((testCase) => String(testCase.id)));
+    const ids = runnables.filter((runnable) => caseIds.has(String(runnable.caseId || ''))).map(runnableKey);
+    if (!ids.length) { showToast(`No runnable scripts are linked to this test ${kind}.`, { tone: 'error' }); return; }
+    setSelected((prev) => isEditing ? new Set([ids[0]]) : new Set([...prev, ...ids]));
+  };
   const tzLabel = timezoneLabel(timezone);
   const cron = tab === 'cron' ? cronResolved.expression : buildCron(tab, time, weekdays, monthDay);
   const runAt = tab === 'once' ? zonedInputToUtcIso(onceAt, timezone) : '';
@@ -666,8 +693,8 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
         ? { kind: 'once', runAt, timezone, title: title.trim() }
         : { kind: 'cron', cron, timezone, title: title.trim() };
       if (schedule) {
-        const scriptId = [...selected][0];
-        const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, scriptId, enabled: schedule.enabled }) });
+        const runnable = runnables.find((item) => runnableKey(item) === [...selected][0]);
+        const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...(runnable?.kind === 'recording' ? { recordingId: runnable.recordingId } : { scriptId: runnable?.scriptId }), enabled: schedule.enabled }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not update the schedule.');
         showToast('Schedule updated.', { tone: 'success' });
         onCreated();
@@ -675,7 +702,8 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
         return;
       }
       const results = await Promise.all([...selected].map(async (id) => {
-        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, scriptId: id }) });
+        const runnable = runnables.find((item) => runnableKey(item) === id);
+        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...(runnable?.kind === 'recording' ? { recordingId: runnable.recordingId } : { scriptId: runnable?.scriptId }) }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
         return true;
       }));
@@ -700,32 +728,54 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Select Scripts from Test Repository<RequiredMark /></div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Select runnable tests<RequiredMark /></div>
           <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected{isEditing ? ' · one test per schedule' : ''}</div>
         </div>
-        <label className="relative block w-full max-w-xs">
+        <label className="relative block w-full max-w-lg">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search scripts"
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search scripts, recordings, or tags"
             className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-8 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
         </label>
       </div>
+      {!isEditing && (
+        <div className="mb-3 grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-medium text-[var(--text-muted)]">Add scripts from a test plan
+            <select value="" onChange={(event) => { if (event.target.value) addGroupScripts(event.target.value, 'plan'); }} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              <option value="">Select a plan…</option>
+              {plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name || plan.title || plan.id}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-[var(--text-muted)]">Add scripts from a test suite
+            <select value="" onChange={(event) => { if (event.target.value) addGroupScripts(event.target.value, 'suite'); }} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              <option value="">Select a suite…</option>
+              {suites.map((suite) => <option key={suite.id} value={suite.id}>{suite.name || suite.title || suite.id}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
       <div className="grid min-h-64 grid-cols-[minmax(180px,0.8fr)_minmax(0,2fr)] overflow-hidden rounded-md border border-[var(--border)]">
         <div className="max-h-72 overflow-auto border-r border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
           {folders.map((folder) => <FolderPicker key={folder.id} node={folder} selectedId={selectedFolderId} counts={counts} onSelect={(id) => { setSelectedFolderId(id); setSearch(''); }} />)}
         </div>
         <div className="max-h-72 overflow-auto">
           {loading ? <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Loading scripts…</div>
-            : visibleScripts.length === 0 ? <div className="p-4 text-sm text-[var(--text-muted)]">{search ? 'No scripts match your search.' : 'No scripts in this folder.'}</div>
-            : visibleScripts.map((script) => (
-              <label key={script.id} className="flex cursor-pointer items-center gap-3 border-b border-[var(--border)] px-3 py-2.5 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
-                <input type="checkbox" checked={selected.has(script.id)} onChange={() => toggle(script.id)} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
+            : visibleRunnables.length === 0 && matchingManualCases.length === 0 ? <div className="p-4 text-sm text-[var(--text-muted)]">{search ? 'No tests match your search.' : 'No runnable tests in this folder.'}</div>
+            : visibleRunnables.map((runnable) => (
+              <label key={runnableKey(runnable)} className="flex cursor-pointer items-center gap-3 border-b border-[var(--border)] px-3 py-2.5 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
+                <input type="checkbox" checked={selected.has(runnableKey(runnable))} onChange={() => toggle(runnableKey(runnable))} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
                 <Code2 className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-[var(--text-primary)]">{script.name || script.title || script.filename}</span>
-                  <span className="block truncate text-xs text-[var(--text-muted)]">{script.filename || script.id}</span>
+                  <span className="block truncate font-medium text-[var(--text-primary)]">{runnable.name}</span>
+                  <span className="block truncate text-xs text-[var(--text-muted)]">{runnable.caseName || (runnable.kind === 'recording' ? 'Record & Play' : 'Repository script')}</span>
                 </span>
               </label>
             ))}
+          {matchingManualCases.map((testCase) => (
+            <div key={testCase.id} className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2.5 text-sm text-[var(--text-muted)]" title="Manual step-only cases cannot run on a headless schedule.">
+              <Code2 className="h-4 w-4 shrink-0 opacity-50" />
+              <span className="min-w-0 flex-1"><span className="block truncate font-medium">{testCase.title || testCase.id}</span><span className="block truncate text-xs">Manual steps · cannot be scheduled automatically</span></span>
+            </div>
+          ))}
         </div>
       </div>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">

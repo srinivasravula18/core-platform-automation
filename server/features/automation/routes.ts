@@ -890,7 +890,11 @@ export function registerAutomationRoutes(app: Express) {
     const s = await scopedGet((id) => AutomationSchedules.get(id), req.params.id, req) as any;
     if (!s) return res.status(404).json({ error: 'Schedule not found.' });
     let recordingId = s.recordingId;
-    if (req.body?.scriptId) {
+    if (req.body?.recordingId) {
+      const recording = await scopedGet((id) => Recordings.get(id), String(req.body.recordingId), req);
+      if (!recording) return res.status(400).json({ error: 'The selected recording is missing or outside your project scope.' });
+      recordingId = recording.id;
+    } else if (req.body?.scriptId) {
       const recording = await recordingForScript(String(req.body.scriptId), reqScope(req));
       if (!recording) return res.status(400).json({ error: 'The selected repository script is missing, empty, or outside your project scope.' });
       recordingId = recording.id;

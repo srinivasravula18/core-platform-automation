@@ -97,22 +97,18 @@ export function RunSummaryPanel({
         </div>
       </div>
 
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 lg:col-span-2">
+      {linkedDefects.length > 0 && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 lg:col-span-2">
         <h3 className="mb-3 text-sm font-semibold">Linked Work Items <span className="text-[var(--text-muted)]">({linkedDefects.length})</span></h3>
-        {linkedDefects.length === 0 ? (
-          <div className="text-sm text-[var(--text-muted)]">No Work Items Linked</div>
-        ) : (
-          <ul className="space-y-1.5 text-sm">
-            {linkedDefects.map((d) => (
-              <li key={d.id} className="flex items-center gap-2">
-                <span className="font-mono text-xs text-[var(--text-muted)]">{d.id}</span>
-                <span className="min-w-0 flex-1 truncate">{d.title}</span>
-                <span className="shrink-0 rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{d.severity || 'Medium'}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        <ul className="space-y-1.5 text-sm">
+          {linkedDefects.map((d) => (
+            <li key={d.id} className="flex items-center gap-2">
+              <span className="font-mono text-xs text-[var(--text-muted)]">{d.id}</span>
+              <span className="min-w-0 flex-1 truncate">{d.title}</span>
+              <span className="shrink-0 rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{d.severity || 'Medium'}</span>
+            </li>
+          ))}
+        </ul>
+      </div>}
     </div>
   );
 }
