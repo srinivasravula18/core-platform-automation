@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -56,7 +56,7 @@ function statusDot(status: string) {
 }
 
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed Script';
-const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
+const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped'] as const;
 type EditableRunStep = { action: string; expected: string; captureEvidence: boolean };
 type EditableRunResult = { caseId: string; caseTitle: string; originalCount: number; steps: EditableRunStep[] };
 
@@ -582,6 +582,11 @@ export default function TestRuns() {
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
                 <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
+                {selectedRun.triggerMeta?.scheduleId && (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-medium text-indigo-400">
+                    <CalendarClock className="h-3.5 w-3.5" /> Scheduled{selectedRun.triggerMeta.scheduleTitle ? `: ${selectedRun.triggerMeta.scheduleTitle}` : ''}
+                  </span>
+                )}
                 <span className="whitespace-nowrap">Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
                 {(runLineagePlan || runLineageSuites.length > 0) && (
                   <LineageBreadcrumb
@@ -663,11 +668,12 @@ export default function TestRuns() {
           </div>
 
           {sourceVersionChanges.length > 0 && (
-            <div className="mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+            <details className="group mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                <ChevronRight className="h-4 w-4 text-amber-500 transition-transform group-open:rotate-90" />
                 <GitCompareArrows className="h-4 w-4 text-amber-500" />
                 Source version changes ({sourceVersionChanges.length})
-              </div>
+              </summary>
               <p className="mt-1 text-xs text-[var(--text-muted)]">These linked plans, suites, or cases changed after this run captured them.</p>
               <div className="mt-2 divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-card)]">
                 {sourceVersionChanges.map((change) => (
@@ -679,7 +685,7 @@ export default function TestRuns() {
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           {selectedRun.mode === 'manual' ? (
@@ -699,7 +705,11 @@ export default function TestRuns() {
           {selectedRun.triggerMeta?.automationJobId && (
             <div className="p-5 border-b border-[var(--border)] overflow-auto">
               <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
-              <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
+              <AutomationRunArtifacts
+                jobId={selectedRun.triggerMeta.automationJobId}
+                runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+                runDuration={formatRunDuration(selectedRun, now)}
+              />
             </div>
           )}
           {evidenceItems.length > 0 && (
@@ -776,18 +786,6 @@ export default function TestRuns() {
                 <div className="bg-slate-500" style={{ width: `${stats.total ? (stats.skipped / stats.total) * 100 : 0}%` }} />
               </>
             )}
-          </div>
-
-          <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap gap-4 text-sm">
-            <span role="status" aria-live="polite">
-              {selectedIsRunning ? `${selectedExecution.percent}% · ${selectedProgress}` : `${stats.completed}% Completed`}
-            </span>
-            <span className="text-emerald-400">Passed {resettingRunStats ? 0 : stats.passed}</span>
-            <span className="text-red-400">Failed {resettingRunStats ? 0 : stats.failed}</span>
-            <span className="text-indigo-400">Blocked {resettingRunStats ? 0 : stats.blocked}</span>
-            <span className="text-yellow-400">Retest {resettingRunStats ? 0 : stats.retest}</span>
-            <span className="text-slate-400">Skipped {resettingRunStats ? 0 : stats.skipped}</span>
-            <span className="text-[var(--text-muted)]">Untested {resettingRunStats ? 0 : stats.untested}</span>
           </div>
 
           <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-3">
@@ -1360,7 +1358,7 @@ export default function TestRuns() {
                   </th>
                   <th className="px-4 py-3 w-10"></th>
                   <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Type</th>
+                  <th className="w-52 px-4 py-3 font-medium" scope="col">Type</th>
                   <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
                   <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
                   <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
@@ -1400,7 +1398,14 @@ export default function TestRuns() {
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-semibold" title={run.name}>{run.name}</div>
-                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned To {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
+                      <div className="truncate text-xs text-[var(--text-muted)]">
+                        Assigned To {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}
+                        {run.triggerMeta?.scheduleId && (
+                          <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-400" title={`Fired by schedule${run.triggerMeta.scheduleTitle ? `: ${run.triggerMeta.scheduleTitle}` : ''}`}>
+                            <CalendarClock className="h-2.5 w-2.5" /> Scheduled{run.triggerMeta.scheduleTitle ? ` · ${run.triggerMeta.scheduleTitle}` : ''}
+                          </span>
+                        )}
+                      </div>
                         </div>
                         {/* Manual runs: Run is enabled (no scripts needed) and opens the run to start it. */}
                         {can('runs:execute') && (

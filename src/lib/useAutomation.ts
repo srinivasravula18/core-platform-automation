@@ -44,8 +44,10 @@ export interface JobPause {
 }
 
 export interface Schedule {
-  id: string; recordingId: string; agentId: string; kind: string; cron: string; timezone: string;
+  id: string; recordingId: string; agentId: string; title: string; kind: string; cron: string; timezone: string;
   enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
+  executionMode?: 'sequential' | 'parallel'; failurePolicy?: 'stop' | 'continue'; maxConcurrency?: number;
+  items?: Array<{ id: string; runnableType: 'recording' | 'script'; runnableId: string; recordingId: string; stageNo: number; position: number; enabled: boolean }>;
 }
 
 export interface AutomationEvent {

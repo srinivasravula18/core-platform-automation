@@ -22,7 +22,7 @@ import { recordingForScript } from '../automation/recordingService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
-import { isManualOutcome, rollupCaseOutcome, computeRunRollup, caseHasScript } from '../../../core/shared/manualRun';
+import { advanceManualStepTiming, isManualOutcome, isManualRunActive, rollupCaseOutcome, computeRunRollup, caseHasScript } from '../../../core/shared/manualRun';
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
@@ -78,6 +78,12 @@ const activeManualRunExecutions = new Map<string, string>();
 
 function isRunningRun(run: any): boolean {
   return /^running$/i.test(String(run?.status || ''));
+}
+
+function requireActiveManualRun(run: any, res: Response): boolean {
+  if (isManualRunActive(run)) return true;
+  res.status(409).json({ error: 'Start this manual run before editing steps or recording outcomes.' });
+  return false;
 }
 
 function manualExecutionMeta(run: any): any {
@@ -252,7 +258,7 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
-const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Cancelled']);
+const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped', 'Cancelled']);
 
 function manualRunStatus(value: unknown): string | null {
   const status = String(value || 'Not Started').trim();
@@ -2009,7 +2015,10 @@ Rules:
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
     const now = new Date().toISOString();
     const results = await RunCaseResults.listForRun(run.id);
-    for (const r of results) if (!r.startedAt) await RunCaseResults.upsert({ ...r, startedAt: now });
+    for (const r of results) if (!r.startedAt) {
+      const stepResults = Array.isArray(r.stepResults) ? r.stepResults.map((step: any, index: number) => index === 0 && !step.startedAt ? { ...step, startedAt: now } : step) : [];
+      await RunCaseResults.upsert({ ...r, startedAt: now, stepResults });
+    }
     const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: run.startedAt || now, completedAt: null, progress: 'Run in progress' };
     await Runs.upsert(started);
     if (!isPgEnabled()) persistDataInBackground('manual start');
@@ -2026,7 +2035,7 @@ Rules:
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (r.startedAt && !r.completedAt) await RunCaseResults.upsert({ ...r, completedAt: now });
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
-    const stopped = { ...rolled, state: 'Cancelled', status: 'Cancelled', completedAt: now, progress: 'Stopped by user' };
+    const stopped = { ...rolled, state: 'Stopped', status: 'Stopped', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
@@ -2038,6 +2047,7 @@ Rules:
   app.post('/api/runs/:id/results/bulk', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const outcome = String(req.body?.outcome || '');
     if (!isManualOutcome(outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
     const caseIds = uniqueStrings(req.body?.caseIds);
@@ -2063,6 +2073,7 @@ Rules:
   app.post('/api/runs/:id/results/:caseId', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     if ('outcome' in req.body && !isManualOutcome(req.body.outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
@@ -2083,6 +2094,7 @@ Rules:
   app.post('/api/runs/:id/results/:caseId/steps/:index', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     const idx = Number(req.params.index);
@@ -2097,19 +2109,15 @@ Rules:
     if ('actual' in req.body) step.actual = String(req.body.actual ?? '');
     if ('comment' in req.body) step.comment = String(req.body.comment ?? '');
     if ('captureEvidence' in req.body) step.captureEvidence = req.body.captureEvidence !== false; // attachment on/off
-    const touchedExecution = ['outcome', 'actual', 'comment'].some((field) => field in req.body);
-    if (touchedExecution && !step.startedAt) step.startedAt = now;
-    if ('outcome' in req.body && !/^(Not Run|Paused)$/i.test(step.outcome)) {
-      step.completedAt = now;
-      step.durationMs = Math.max(0, new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime());
-    }
     steps[idx] = step;
+    const timing = 'outcome' in req.body ? advanceManualStepTiming(steps, idx, now, existing.startedAt || run.startedAt) : { steps, durationMs: Number(existing.durationMs) || 0 };
     const outcome = rollupCaseOutcome(steps);
     // Timing is stamped only when an OUTCOME is recorded (execution), not when authoring action/expected text.
     const touchedOutcome = 'outcome' in req.body;
     const saved = await RunCaseResults.upsert({
       ...existing,
-      stepResults: steps,
+      stepResults: timing.steps,
+      durationMs: timing.durationMs,
       outcome,
       startedAt: existing.startedAt || (touchedOutcome ? new Date().toISOString() : existing.startedAt),
       completedAt: touchedOutcome && outcome !== 'Not Run' && outcome !== 'Paused' ? new Date().toISOString() : existing.completedAt,
@@ -2124,6 +2132,7 @@ Rules:
   app.post('/api/runs/:id/results/:caseId/steps', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
@@ -2137,6 +2146,7 @@ Rules:
   app.delete('/api/runs/:id/results/:caseId/steps/:index', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     const idx = Number(req.params.index);
@@ -2154,6 +2164,7 @@ Rules:
   app.post('/api/runs/:id/results/:caseId/attachments', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!requireActiveManualRun(run, res)) return;
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     const url = saveEvidenceImage(req.body?.dataUrl || '', run.id);
@@ -2173,6 +2184,7 @@ Rules:
     try {
       const run = await Runs.get(req.params.id);
       if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+      if (!requireActiveManualRun(run, res)) return;
       const result = await RunCaseResults.get(run.id, req.params.caseId);
       if (!result) return res.status(404).json({ error: 'That case is not part of this run.' });
       const steps = Array.isArray(result.stepResults) ? result.stepResults : [];

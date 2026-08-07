@@ -1179,6 +1179,55 @@ CREATE TABLE IF NOT EXISTS automation_schedules (
 );
 CREATE INDEX IF NOT EXISTS automation_schedules_owner_idx ON automation_schedules(owner_id);
 CREATE INDEX IF NOT EXISTS automation_schedules_next_run_idx ON automation_schedules(next_run_at) WHERE enabled;
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
+-- A schedule can contain an ordered workflow of runnable tests. Legacy schedules retain their
+-- recording_id and are represented as a single implicit item until explicitly edited.
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'parallel';
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS failure_policy TEXT NOT NULL DEFAULT 'continue';
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS max_concurrency INTEGER NOT NULL DEFAULT 3;
+
+CREATE TABLE IF NOT EXISTS automation_schedule_items (
+  id            TEXT PRIMARY KEY,
+  schedule_id   TEXT NOT NULL REFERENCES automation_schedules(id) ON DELETE CASCADE,
+  stage_no      INTEGER NOT NULL DEFAULT 1,
+  position      INTEGER NOT NULL DEFAULT 1,
+  runnable_type TEXT NOT NULL DEFAULT 'recording', -- recording | script
+  runnable_id   TEXT NOT NULL DEFAULT '',
+  recording_id  TEXT NOT NULL DEFAULT '',
+  enabled       BOOLEAN NOT NULL DEFAULT true,
+  metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(schedule_id, position)
+);
+CREATE INDEX IF NOT EXISTS automation_schedule_items_schedule_idx ON automation_schedule_items(schedule_id, stage_no, position);
+
+-- One immutable occurrence of a schedule. Unique schedule/time protects against duplicate fires
+-- when more than one backend instance evaluates the same due schedule.
+CREATE TABLE IF NOT EXISTS automation_schedule_executions (
+  id              TEXT PRIMARY KEY,
+  schedule_id     TEXT NOT NULL REFERENCES automation_schedules(id) ON DELETE CASCADE,
+  scheduled_for   TIMESTAMPTZ NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'queued',
+  execution_mode  TEXT NOT NULL DEFAULT 'parallel',
+  failure_policy  TEXT NOT NULL DEFAULT 'continue',
+  max_concurrency INTEGER NOT NULL DEFAULT 3,
+  summary         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  started_at      TIMESTAMPTZ,
+  finished_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(schedule_id, scheduled_for)
+);
+CREATE INDEX IF NOT EXISTS automation_schedule_executions_schedule_idx ON automation_schedule_executions(schedule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS automation_schedule_executions_active_idx ON automation_schedule_executions(status, created_at) WHERE status IN ('queued', 'running');
+
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS schedule_execution_id TEXT;
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS schedule_item_id TEXT;
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS stage_no INTEGER;
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS position INTEGER;
+CREATE INDEX IF NOT EXISTS automation_jobs_schedule_execution_idx ON automation_jobs(schedule_execution_id, stage_no, position);
 
 -- Binary artifacts uploaded by the agent after a run (video, trace.zip, screenshots, HTML report, junit).
 CREATE TABLE IF NOT EXISTS automation_artifacts (

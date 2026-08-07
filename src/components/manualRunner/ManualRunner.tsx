@@ -4,8 +4,8 @@ import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
 import { Timestamp } from '@/src/components/Timestamp';
-import { MANUAL_OUTCOMES, computeRunRollup, type ManualOutcome } from '@/core/shared/manualRun';
-import { OutcomeSelect, OutcomeDot } from './OutcomeSelect';
+import { computeRunRollup, isManualRunActive, type ManualOutcome } from '@/core/shared/manualRun';
+import { OutcomeSelect, OutcomeDot, SELECTABLE_MANUAL_OUTCOMES } from './OutcomeSelect';
 import { ManualStepRunner, type StepResult } from './ManualStepRunner';
 import { RunSummaryPanel } from './RunSummaryPanel';
 import { VersionPinSelect } from '@/src/components/VersionPinSelect';
@@ -32,6 +32,25 @@ function formatDuration(result: any, now?: number): string {
   const m = Math.floor(s / 60);
   const rem = s % 60;
   return rem ? `${m}m ${rem}s` : `${m}m`;
+}
+
+function ManualExecutionArtifacts({ results, duration, status }: { results: any[]; duration: string; status: string }) {
+  const outcomes = results.map((result) => String(result.outcome || 'Not Run'));
+  const stats = {
+    passed: outcomes.filter((outcome) => outcome === 'Passed').length,
+    failed: outcomes.filter((outcome) => outcome === 'Failed').length,
+    skipped: outcomes.filter((outcome) => outcome === 'Not Applicable').length,
+    blocked: outcomes.filter((outcome) => outcome === 'Blocked').length,
+    retest: outcomes.filter((outcome) => outcome === 'Retest').length,
+    untested: outcomes.filter((outcome) => outcome === 'Not Run' || outcome === 'Paused').length,
+  };
+  const meta = status === 'Passed' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : status === 'Failed' ? 'text-red-400 border-red-500/30 bg-red-500/10' : 'text-[var(--text-muted)] border-[var(--border)] bg-[var(--bg-secondary)]';
+  return <div className="mx-5 mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-4">
+    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">Execution Artifacts <span className={`rounded-full border px-2 py-0.5 text-xs ${meta}`}>{status}</span></div>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+      {Object.entries({ Passed: stats.passed, Failed: stats.failed, Skipped: stats.skipped, Blocked: stats.blocked, Retest: stats.retest, Untested: stats.untested, Duration: duration }).map(([label, value]) => <div key={label} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-center"><div className="text-lg font-semibold text-[var(--text-primary)]">{value}</div><div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div></div>)}
+    </div>
+  </div>;
 }
 
 // The large Azure-style result status derived from a case outcome.
@@ -74,6 +93,7 @@ export function ManualRunner({
   const planName = plans.find((p) => p.id === run.testPlanId)?.name || '';
   const suiteName = suites.find((s) => s.id === run.suiteId)?.name || run.suiteName || '';
   const rollup = computeRunRollup(results);
+  const executionEditable = editable && isManualRunActive(run);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -183,6 +203,7 @@ export function ManualRunner({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ManualExecutionArtifacts results={results} duration={formatDuration(run, now)} status={rollup.status} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* LEFT: bulk toolbar + test-points list (hidden for a standalone step-authored run) */}
         {!standalone && !isCasePanelMinimized && (
@@ -190,13 +211,13 @@ export function ManualRunner({
           {editable && (
             <div className="flex flex-nowrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5">
               <label className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(results.map((r) => r.caseId)))} />
+                <input type="checkbox" disabled={!executionEditable} checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(results.map((r) => r.caseId)))} />
                 {selected.size ? `${selected.size} selected` : 'All'}
               </label>
-              <select value={bulkOutcome} onChange={(e) => setBulkOutcome(e.target.value as ManualOutcome)} className="w-0 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs outline-none">
-                {MANUAL_OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
+              <select disabled={!executionEditable} value={bulkOutcome} onChange={(e) => setBulkOutcome(e.target.value as ManualOutcome)} className="w-0 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs outline-none disabled:opacity-50">
+                {SELECTABLE_MANUAL_OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
-              <button type="button" disabled={busy} onClick={bulkSet} className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+              <button type="button" disabled={busy || !executionEditable} onClick={bulkSet} className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                 Apply{selected.size ? ` (${selected.size})` : ' all'}
               </button>
               <button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]">
@@ -217,7 +238,7 @@ export function ManualRunner({
               return (
                 <li key={result.caseId} className={isSelected ? 'bg-[var(--bg-secondary)]' : ''}>
                   <div className="flex items-center gap-2 px-3 py-2">
-                    {editable && <input type="checkbox" checked={selected.has(result.caseId)} onChange={() => toggleSelect(result.caseId)} onClick={(e) => e.stopPropagation()} />}
+                    {editable && <input type="checkbox" disabled={!executionEditable} checked={selected.has(result.caseId)} onChange={() => toggleSelect(result.caseId)} onClick={(e) => e.stopPropagation()} />}
                     <button type="button" onClick={() => setSelectedCase(result.caseId)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
                       <OutcomeDot outcome={result.outcome || 'Not Run'} />
                       <span className="min-w-0 flex-1">
@@ -332,11 +353,20 @@ function ResultDetail({
   // Start/Stop is a RUN-level action, so it follows the RUN lifecycle — NOT the selected case's
   // completion. Marking one case Passed must not remove the tester's ability to Stop; the run ends
   // only when the tester clicks Stop.
-  const runNotStarted = !run.startedAt;
-  const runInProgress = Boolean(run.startedAt) && !run.completedAt;
+  const runStopped = [run.status, run.state].some((value) => /^stopped$/i.test(String(value || '')))
+    || run.progress === 'Stopped by user';
+  const runCancelled = !runStopped && [run.status, run.state].some((value) => /^(cancelled|canceled)$/i.test(String(value || '')));
+  const runTerminal = runStopped || runCancelled;
+  const runNotStarted = !run.startedAt && !runTerminal;
+  const runInProgress = Boolean(run.startedAt) && !run.completedAt && !runTerminal;
+  const executionEditable = editable && isManualRunActive(run);
   const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
   // A started-but-unevaluated case reads "In progress", not "Not run".
-  const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
+  const status = runStopped
+    ? { Icon: Square, label: 'Stopped', cls: 'text-[var(--text-muted)]' }
+    : runCancelled
+    ? { Icon: Square, label: 'Cancelled', cls: 'text-[var(--text-muted)]' }
+    : resultInProgress && (!result.outcome || result.outcome === 'Not Run')
     ? { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
 
@@ -364,8 +394,8 @@ function ResultDetail({
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
-          <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(result, now)}</span></span>
+          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{run.startedAt ? <Timestamp value={run.startedAt} /> : '—'}</span></span>
+          <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(run, now)}</span></span>
           <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[var(--text-primary)]">
             {/* Self-contained switch: inline-flex track + inline-block knob (no absolute), so the knob
                 can't escape and overlap the label. */}
@@ -381,11 +411,15 @@ function ResultDetail({
             Show Images
           </label>
           {editable && (
-            <button type="button" disabled={busy} onClick={onCreateBug} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-primary)] hover:text-red-500 disabled:opacity-50">
+            <button type="button" disabled={busy || !executionEditable} onClick={onCreateBug} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-primary)] hover:text-red-500 disabled:opacity-50">
               <Bug className="h-4 w-4" /> Create bug
             </button>
           )}
-          {editable && (
+          {runTerminal ? (
+            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm font-medium ${status.cls}`}>
+              <status.Icon className="h-3.5 w-3.5" /> {status.label}
+            </span>
+          ) : executionEditable && (
             <span className="shrink-0"><OutcomeSelect value={result.outcome || 'Not Run'} onChange={onCaseOutcome} /></span>
           )}
         </div>
@@ -397,8 +431,8 @@ function ResultDetail({
         suiteName={suiteName}
         result={result}
         linkedDefects={defects.filter((d: any) => d.linkedCaseId === result.caseId)}
-        disabled={!editable}
-        authoringDisabled
+        disabled={!executionEditable}
+        authoringDisabled={!executionEditable}
         onFieldChange={onFieldChange}
       />
 
@@ -409,12 +443,14 @@ function ResultDetail({
           <ManualStepRunner
             steps={steps}
             showImages={showImages}
-            disabled={!editable}
+            disabled={!executionEditable}
+            authoringDisabled={!executionEditable}
             onStepChange={onStepChange}
             onUploadScreenshot={onUploadScreenshot}
             onOpenImage={onOpenImage}
             onAddStep={onAddStep}
             onDeleteStep={onDeleteStep}
+            now={now}
           />
         </div>
       </div>

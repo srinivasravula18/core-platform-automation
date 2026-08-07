@@ -23,19 +23,8 @@ export interface ToolContext {
   [key: string]: unknown;
 }
 
-export type ToolEffect = 'read' | 'write' | 'destructive';
-
-/** Server-side capability metadata. The model never supplies or overrides this. */
-export interface ToolCapability {
-  effect: ToolEffect;
-  /** Every listed platform permission is required before the tool is model-visible. */
-  permissions?: string[];
-}
-
 export interface AgentTool {
   spec: ToolSpec;
-  /** Omit only for legacy/read tools; policy applies a conservative name-based fallback. */
-  capability?: ToolCapability;
   /** Run the tool. Throwing is allowed — the loop captures it as a tool error the
    * model can see and react to (grounded self-correction). */
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<unknown>;
@@ -48,14 +37,6 @@ export interface ToolInvocation {
   result?: unknown;
   error?: string;
   ms?: number;
-  verification?: ToolVerification;
-}
-
-export interface ToolVerification {
-  ok: boolean;
-  status: 'verified' | 'not_applicable' | 'failed' | 'unsupported';
-  detail: string;
-  entityIds?: string[];
 }
 
 export interface AgentStep {
@@ -65,7 +46,7 @@ export interface AgentStep {
   usage?: ProviderUsage;
 }
 
-export type StopReason = 'accepted' | 'final_text' | 'max_steps' | 'budget' | 'aborted' | 'empty_response' | 'truncated' | 'repeated_call' | 'consecutive_failures' | 'safety_ceiling';
+export type StopReason = 'accepted' | 'final_text' | 'max_steps' | 'budget' | 'aborted' | 'empty_response' | 'truncated';
 
 export interface AgentRunResult {
   finalText: string;
@@ -73,7 +54,7 @@ export interface AgentRunResult {
   accepted: boolean;
   stoppedReason: StopReason;
   /** Every successful tool result, in call order (for downstream consumers). */
-  toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown; verification?: ToolVerification }>;
+  toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown }>;
   totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number };
 }
 

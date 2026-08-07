@@ -4,36 +4,13 @@ import { runSupervisor, answerAppQuestionFromCode, answerViaConversationalRuntim
 import { isWorkspaceDataQuestion, quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { reqScope } from '../../shared/scope';
 import { normalizeInput, preLLMPolicyCheck } from '../../ai/guardrails';
-import { Audit, ChatConversations } from '../../db/repository';
+import { ChatConversations } from '../../db/repository';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { getProviderCredentials, resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
 
 // An action request mutates/creates/runs something → needs the full tool loop. A plain
 // question can be answered with the FAST single-call git-grounded path.
 const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
-
-async function auditSupervisorTurn(
-  result: Awaited<ReturnType<typeof runSupervisor>>,
-  input: { workspaceId?: string; userId?: string; conversationId?: string },
-) {
-  const calls = result.steps.flatMap((step) => step.toolCalls);
-  await Audit.push({
-    actor: 'agent',
-    actorName: 'Agent Console',
-    action: result.accepted ? 'complete' : 'stop',
-    entityType: 'agent_turn',
-    entityId: input.conversationId || `turn-${Date.now()}`,
-    ownerId: input.userId,
-    workspaceId: input.workspaceId,
-    target: input.conversationId || 'Agent turn',
-    detail: JSON.stringify({
-      stopReason: result.stoppedReason,
-      accepted: result.accepted,
-      tools: calls.map((call) => ({ name: call.name, ms: call.ms, error: Boolean(call.error), verification: call.verification?.status })),
-      usage: result.totalUsage,
-    }).slice(0, 6_000),
-  });
-}
 
 async function assembleFastContext(message: string, conversationId: unknown, history: unknown) {
   const provider = resolveProviderForAgent('chatAssistant');
@@ -281,8 +258,6 @@ export function registerControllerRoutes(app: Express) {
         pageContext,
         apps,
       });
-      await auditSupervisorTurn(result, { workspaceId, userId: effectiveUserId, conversationId })
-        .catch((error) => console.warn('[audit] supervisor turn persistence failed:', error?.message || error));
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       res.json({
         reply: result.finalText,
@@ -384,8 +359,6 @@ export function registerControllerRoutes(app: Express) {
           flushStream(res);
         },
       });
-      await auditSupervisorTurn(result, { workspaceId, userId: effectiveUserId, conversationId })
-        .catch((error) => console.warn('[audit] supervisor turn persistence failed:', error?.message || error));
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
     } catch (err: any) {

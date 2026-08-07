@@ -27,6 +27,8 @@ import { closeOpenPausesForJob, listJobPauses, recordPause, registerLocalPauseRe
 import { isPauseResumeEnabled } from './flag';
 import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
 import { MISSION_RUNNER_SOURCE } from '../agent/compiler/missionRunner.template';
+import { resolveCredentials } from '../credentials/credentialsService';
+import { createAuthStorageState } from '../evidence/evidenceService';
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw', 'automation');
 const running = new Map<string, ReturnType<typeof spawn>>();
@@ -64,7 +66,7 @@ export function browserPermissionPrelude(settings: BrowserPermissionSettings, ap
   return `import { test as __testflowBrowserSetup } from '@playwright/test';\n__testflowBrowserSetup.beforeEach(async ({ context, page }) => { ${grant} ${dialogs} });\n`;
 }
 
-export function configTemplate(engine: string, hasPauses = false, settings: BrowserPermissionSettings = { permissions: [] }): string {
+export function configTemplate(engine: string, hasPauses = false, settings: BrowserPermissionSettings = { permissions: [] }, storageStatePath = ''): string {
   const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
   const fakeMediaArgs = browserName === 'chromium' && settings.fakeMedia
     ? `, launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }`
@@ -76,9 +78,20 @@ export default defineConfig({
   outputDir: './test-results',
   timeout: ${hasPauses ? 0 : 60000},
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
-  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${fakeMediaArgs} },
+  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on'${storageStatePath ? `, storageState: ${JSON.stringify(storageStatePath)}` : ''}${geolocation}${fakeMediaArgs} },
 });
 `;
+}
+
+export function authSessionPrelude(sessionStorage?: { origin: string; items: Record<string, string> }): string {
+  if (!sessionStorage || !Object.keys(sessionStorage.items || {}).length) return '';
+  return `import { test as __testflowAuthSetup } from '@playwright/test';\n__testflowAuthSetup.beforeEach(async ({ context }) => { await context.addInitScript((data) => { if (window.location.origin === data.origin) for (const key of Object.keys(data.items)) if (window.sessionStorage.getItem(key) === null) window.sessionStorage.setItem(key, data.items[key]); }, ${JSON.stringify(sessionStorage)}); });\n`;
+}
+
+export function needsManagedAuth(recording: any): boolean {
+  // Record & Play scripts include the user's recorded login actions/values. Repository scripts
+  // (including Agent Console scripts) instead rely on a fresh authenticated session.
+  return recording?.metadata?.source !== 'recordplay' && !Object.hasOwn(recording?.metadata || {}, 'browserPermissions');
 }
 
 function classify(file: string): ArtifactKind {
@@ -158,10 +171,24 @@ export async function runJobOnServer(jobId: string): Promise<void> {
 
   const runDir = path.join(RUN_ROOT, jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
   fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
-  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions));
+  const credentials = needsManagedAuth(rec)
+    ? resolveCredentials({ targetUrl: rec?.appUrl || '', ownerId: job.ownerId || undefined })
+    : null;
+  let storageStatePath = '';
+  let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
+  if (credentials?.username && credentials.password) {
+    const auth = await createAuthStorageState(rec?.appUrl || '', credentials, path.join(runDir, 'auth.json'));
+    if (!auth.ok && !auth.sessionStorage) {
+      await setJobStatus(jobId, 'failed', { error: `Authentication setup failed before script execution${auth.reason ? `: ${auth.reason}` : '.'}`, finishedAt: new Date().toISOString() });
+      return;
+    }
+    storageStatePath = path.join(runDir, 'auth.json');
+    sessionStorageState = auth.sessionStorage;
+  }
+  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions, storageStatePath));
   fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
   if (/from\s+['"]\.\/mission-runner['"]/.test(scriptSource)) fs.writeFileSync(path.join(runDir, 'tests', 'mission-runner.ts'), MISSION_RUNNER_SOURCE);
-  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${hasPauses ? pausePreludeSource : ''}${scriptSource}`);
+  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${authSessionPrelude(sessionStorageState)}${hasPauses ? pausePreludeSource : ''}${scriptSource}`);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });

@@ -3112,6 +3112,10 @@ function mapJob(r: any) {
     batchId: r.batch_id || '',
     datasetRowId: r.dataset_row_id || '',
     rowNumber: r.row_number,
+    scheduleExecutionId: r.schedule_execution_id || '',
+    scheduleItemId: r.schedule_item_id || '',
+    stageNo: r.stage_no,
+    position: r.position,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     projectId: r.project_id || '',
@@ -3148,19 +3152,21 @@ export const AutomationJobs = {
     }
     const id = j.id || uid('JOB');
     const row = await queryOne(
-      `INSERT INTO automation_jobs (id, project_id, app_id, owner_id, recording_id, agent_id, schedule_id, trigger, status, queued_at, started_at, finished_at, exit_code, summary, error, materialized_script, batch_id, dataset_row_id, row_number, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()),$11::timestamptz,$12::timestamptz,$13,$14::jsonb,$15,$16,$17,$18,$19, now(), now())
+      `INSERT INTO automation_jobs (id, project_id, app_id, owner_id, recording_id, agent_id, schedule_id, trigger, status, queued_at, started_at, finished_at, exit_code, summary, error, materialized_script, batch_id, dataset_row_id, row_number, schedule_execution_id, schedule_item_id, stage_no, position, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()),$11::timestamptz,$12::timestamptz,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21,$22,$23, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, schedule_id=EXCLUDED.schedule_id,
          trigger=EXCLUDED.trigger, status=EXCLUDED.status, started_at=EXCLUDED.started_at,
          finished_at=EXCLUDED.finished_at, exit_code=EXCLUDED.exit_code, summary=EXCLUDED.summary,
          error=EXCLUDED.error, materialized_script=EXCLUDED.materialized_script, batch_id=EXCLUDED.batch_id,
-         dataset_row_id=EXCLUDED.dataset_row_id, row_number=EXCLUDED.row_number, updated_at=now()
+         dataset_row_id=EXCLUDED.dataset_row_id, row_number=EXCLUDED.row_number, schedule_execution_id=EXCLUDED.schedule_execution_id,
+         schedule_item_id=EXCLUDED.schedule_item_id, stage_no=EXCLUDED.stage_no, position=EXCLUDED.position, updated_at=now()
        RETURNING *`,
       [id, j.projectId || null, j.appId || null, j.ownerId || null, j.recordingId || null, j.agentId || null,
        j.scheduleId || null, j.trigger || 'manual', j.status || 'queued', j.queuedAt || null, j.startedAt || null,
        j.finishedAt || null, typeof j.exitCode === 'number' ? j.exitCode : null, JSON.stringify(j.summary || {}), j.error || '',
-       j.script || '', j.batchId || null, j.datasetRowId || null, typeof j.rowNumber === 'number' ? j.rowNumber : null],
+       j.script || '', j.batchId || null, j.datasetRowId || null, typeof j.rowNumber === 'number' ? j.rowNumber : null,
+       j.scheduleExecutionId || null, j.scheduleItemId || null, typeof j.stageNo === 'number' ? j.stageNo : null, typeof j.position === 'number' ? j.position : null],
     );
     return mapJob(row);
   },
@@ -3236,9 +3242,13 @@ function mapSchedule(r: any) {
     id: r.id,
     recordingId: r.recording_id,
     agentId: r.agent_id,
+    title: r.title || '',
     kind: r.kind,
     cron: r.cron,
     timezone: r.timezone,
+    executionMode: r.execution_mode || 'parallel',
+    failurePolicy: r.failure_policy || 'continue',
+    maxConcurrency: Number(r.max_concurrency) || 3,
     webhookTokenHash: r.webhook_token_hash,
     enabled: r.enabled,
     nextRunAt: r.next_run_at,
@@ -3279,18 +3289,109 @@ export const AutomationSchedules = {
     }
     const id = s.id || uid('SCHED');
     const row = await queryOne(
-      `INSERT INTO automation_schedules (id, project_id, app_id, owner_id, recording_id, agent_id, kind, cron, timezone, webhook_token_hash, enabled, next_run_at, last_run_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz,$13::timestamptz, COALESCE($14::timestamptz, now()), now())
+      `INSERT INTO automation_schedules (id, project_id, app_id, owner_id, recording_id, agent_id, title, kind, cron, timezone, webhook_token_hash, enabled, next_run_at, last_run_at, execution_mode, failure_policy, max_concurrency, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14::timestamptz,$15,$16,$17, COALESCE($18::timestamptz, now()), now())
        ON CONFLICT (id) DO UPDATE SET
-         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, kind=EXCLUDED.kind, cron=EXCLUDED.cron,
+         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, title=EXCLUDED.title, kind=EXCLUDED.kind, cron=EXCLUDED.cron,
          timezone=EXCLUDED.timezone, webhook_token_hash=EXCLUDED.webhook_token_hash, enabled=EXCLUDED.enabled,
-         next_run_at=EXCLUDED.next_run_at, last_run_at=EXCLUDED.last_run_at, updated_at=now()
+         next_run_at=EXCLUDED.next_run_at, last_run_at=EXCLUDED.last_run_at, execution_mode=EXCLUDED.execution_mode,
+         failure_policy=EXCLUDED.failure_policy, max_concurrency=EXCLUDED.max_concurrency, updated_at=now()
        RETURNING *`,
       [id, s.projectId || null, s.appId || null, s.ownerId || null, s.recordingId || null, s.agentId || null,
-       s.kind || 'daily', s.cron || '', s.timezone || 'UTC', s.webhookTokenHash || '',
-       s.enabled !== false, s.nextRunAt || null, s.lastRunAt || null, s.createdAt || null],
+       s.title || '', s.kind || 'daily', s.cron || '', s.timezone || 'UTC', s.webhookTokenHash || '',
+       s.enabled !== false, s.nextRunAt || null, s.lastRunAt || null, s.executionMode || 'parallel', s.failurePolicy || 'continue', Math.max(1, Number(s.maxConcurrency) || 3), s.createdAt || null],
     );
     return mapSchedule(row);
+  },
+};
+
+function mapScheduleItem(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id, scheduleId: r.schedule_id, stageNo: Number(r.stage_no) || 1, position: Number(r.position) || 1,
+    runnableType: r.runnable_type || 'recording', runnableId: r.runnable_id || '', recordingId: r.recording_id || '',
+    enabled: r.enabled !== false, metadata: r.metadata || {}, createdAt: r.created_at, updatedAt: r.updated_at,
+  };
+}
+
+export const AutomationScheduleItems = {
+  async listForSchedule(scheduleId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationScheduleItems || []).filter((item: any) => item.scheduleId === scheduleId).sort((a: any, b: any) => a.stageNo - b.stageNo || a.position - b.position);
+    return (await query('SELECT * FROM automation_schedule_items WHERE schedule_id = $1 ORDER BY stage_no, position', [scheduleId])).map(mapScheduleItem);
+  },
+  async replaceForSchedule(scheduleId: string, items: any[]): Promise<any[]> {
+    if (!isPgEnabled()) {
+      db.automationScheduleItems = (db.automationScheduleItems || []).filter((item: any) => item.scheduleId !== scheduleId);
+      const saved = items.map((item, index) => ({ id: item.id || uid('SITEM'), scheduleId, stageNo: Math.max(1, Number(item.stageNo) || 1), position: index + 1, runnableType: item.runnableType || 'recording', runnableId: item.runnableId || '', recordingId: item.recordingId || '', enabled: item.enabled !== false, metadata: item.metadata || {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      db.automationScheduleItems.push(...saved);
+      return saved;
+    }
+    await query('DELETE FROM automation_schedule_items WHERE schedule_id = $1', [scheduleId]);
+    const saved: any[] = [];
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      const row = await queryOne(
+        `INSERT INTO automation_schedule_items (id,schedule_id,stage_no,position,runnable_type,runnable_id,recording_id,enabled,metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING *`,
+        [item.id || uid('SITEM'), scheduleId, Math.max(1, Number(item.stageNo) || 1), index + 1, item.runnableType || 'recording', item.runnableId || '', item.recordingId || '', item.enabled !== false, JSON.stringify(item.metadata || {})],
+      );
+      saved.push(mapScheduleItem(row));
+    }
+    return saved;
+  },
+};
+
+function mapScheduleExecution(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id, scheduleId: r.schedule_id, scheduledFor: r.scheduled_for, status: r.status,
+    executionMode: r.execution_mode || 'parallel', failurePolicy: r.failure_policy || 'continue', maxConcurrency: Number(r.max_concurrency) || 3,
+    summary: r.summary || {}, context: r.context || {}, startedAt: r.started_at, finishedAt: r.finished_at,
+    createdAt: r.created_at, updatedAt: r.updated_at,
+  };
+}
+
+export const AutomationScheduleExecutions = {
+  async listActive(): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationScheduleExecutions || []).filter((item: any) => ['queued', 'running'].includes(item.status));
+    return (await query("SELECT * FROM automation_schedule_executions WHERE status IN ('queued', 'running') ORDER BY created_at ASC")).map(mapScheduleExecution);
+  },
+  async listForSchedule(scheduleId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationScheduleExecutions || []).filter((item: any) => item.scheduleId === scheduleId).sort((a: any, b: any) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+    return (await query('SELECT * FROM automation_schedule_executions WHERE schedule_id = $1 ORDER BY created_at DESC', [scheduleId])).map(mapScheduleExecution);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return (db.automationScheduleExecutions || []).find((item: any) => item.id === id) || null;
+    return mapScheduleExecution(await queryOne('SELECT * FROM automation_schedule_executions WHERE id = $1', [id]));
+  },
+  async createOrGet(execution: any): Promise<{ execution: any; created: boolean }> {
+    if (!isPgEnabled()) {
+      const existing = (db.automationScheduleExecutions || []).find((item: any) => item.scheduleId === execution.scheduleId && item.scheduledFor === execution.scheduledFor);
+      if (existing) return { execution: existing, created: false };
+      const saved = { id: execution.id || uid('SEXEC'), status: 'queued', summary: {}, context: {}, maxConcurrency: 3, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...execution };
+      db.automationScheduleExecutions.unshift(saved);
+      return { execution: saved, created: true };
+    }
+    const row = await queryOne(
+      `INSERT INTO automation_schedule_executions (id,schedule_id,scheduled_for,status,execution_mode,failure_policy,max_concurrency,summary,context,started_at,finished_at)
+       VALUES ($1,$2,$3::timestamptz,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::timestamptz,$11::timestamptz)
+       ON CONFLICT (schedule_id,scheduled_for) DO NOTHING RETURNING *`,
+      [execution.id || uid('SEXEC'), execution.scheduleId, execution.scheduledFor, execution.status || 'queued', execution.executionMode || 'parallel', execution.failurePolicy || 'continue', Math.max(1, Number(execution.maxConcurrency) || 3), JSON.stringify(execution.summary || {}), JSON.stringify(execution.context || {}), execution.startedAt || null, execution.finishedAt || null],
+    );
+    if (row) return { execution: mapScheduleExecution(row), created: true };
+    return { execution: mapScheduleExecution(await queryOne('SELECT * FROM automation_schedule_executions WHERE schedule_id = $1 AND scheduled_for = $2::timestamptz', [execution.scheduleId, execution.scheduledFor])), created: false };
+  },
+  async upsert(execution: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const index = (db.automationScheduleExecutions || []).findIndex((item: any) => item.id === execution.id);
+      const saved = { ...(db.automationScheduleExecutions[index] || {}), ...execution, updatedAt: new Date().toISOString() };
+      if (index >= 0) db.automationScheduleExecutions[index] = saved; else db.automationScheduleExecutions.unshift(saved);
+      return saved;
+    }
+    return mapScheduleExecution(await queryOne(
+      `UPDATE automation_schedule_executions SET status=$2, summary=$3::jsonb, context=$4::jsonb, started_at=$5::timestamptz, finished_at=$6::timestamptz, updated_at=now() WHERE id=$1 RETURNING *`,
+      [execution.id, execution.status, JSON.stringify(execution.summary || {}), JSON.stringify(execution.context || {}), execution.startedAt || null, execution.finishedAt || null],
+    ));
   },
 };
 

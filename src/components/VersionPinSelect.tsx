@@ -57,7 +57,11 @@ export function VersionPinSelect({
       if (btnRef.current?.contains(e.target as Node) || menuRef.current?.contains(e.target as Node)) return;
       setOpen(false);
     };
-    const close = () => setOpen(false);
+    const close = (event: Event) => {
+      // The menu itself is scrollable; capture-phase window scroll also receives that event.
+      if (menuRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
     document.addEventListener('mousedown', away, true);
     window.addEventListener('scroll', close, true);
     window.addEventListener('resize', close);

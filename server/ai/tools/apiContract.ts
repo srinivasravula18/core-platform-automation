@@ -5,7 +5,6 @@
  * caller skips it gracefully. Cached per service base. No product paths are hardcoded here.
  */
 import { fetchOpenApiSpec, parseOpenApi } from '../../features/api-intelligence/discovery';
-import type { ApiEndpoint } from '../../features/api-intelligence/types';
 
 export interface AppApiContract {
   /** GET — list applications. */
@@ -33,7 +32,6 @@ export interface AppApiContract {
 }
 
 const cache = new Map<string, { contract: AppApiContract; at: number }>();
-const operationCache = new Map<string, { operations: ApiEndpoint[]; at: number }>();
 const TTL_MS = 10 * 60 * 1000;
 
 function match(endpoints: any[], method: string, re: RegExp): string | undefined {
@@ -47,7 +45,11 @@ export async function resolveAppApiContract(serviceBase: string, token?: string)
   if (!key) return {};
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.contract;
-  const endpoints = await resolveAppApiOperations(key, token);
+  let endpoints: any[] = [];
+  try {
+    const spec = await fetchOpenApiSpec(key, token);
+    if (spec) endpoints = parseOpenApi(spec, key).endpoints || [];
+  } catch { endpoints = []; }
   const contract: AppApiContract = {
     listApps: match(endpoints, 'GET', /\/apps$/),
     listObjects: match(endpoints, 'GET', /\{[^}]+\}\/objects$/),
@@ -63,33 +65,6 @@ export async function resolveAppApiContract(serviceBase: string, token?: string)
   };
   cache.set(key, { contract, at: Date.now() });
   return contract;
-}
-
-/** Complete live operation catalog for the restricted OpenAPI escape hatch. */
-export async function resolveAppApiOperations(serviceBase: string, token?: string): Promise<ApiEndpoint[]> {
-  const key = String(serviceBase || '').replace(/\/+$/, '');
-  if (!key) return [];
-  const hit = operationCache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.operations;
-  let operations: ApiEndpoint[] = [];
-  try {
-    const spec = await fetchOpenApiSpec(key, token);
-    if (spec) operations = parseOpenApi(spec, key).endpoints || [];
-  } catch {
-    operations = [];
-  }
-  operationCache.set(key, { operations, at: Date.now() });
-  return operations;
-}
-
-/** Authentication is also contract-derived; connected apps do not share one hardcoded login path. */
-export async function resolveAppLoginPath(serviceBase: string): Promise<string | undefined> {
-  const operations = await resolveAppApiOperations(serviceBase);
-  return operations.find((operation) =>
-    operation.method === 'POST'
-    && /(?:^|[\/_.-])login(?:$|[\/_.-])/i.test(`${operation.operationId || ''} ${operation.path}`)
-    && !/forgot|reset|impersonat|login-as/i.test(`${operation.operationId || ''} ${operation.path}`),
-  )?.path;
 }
 
 /** Substitute {appId}/{object}-style params (any param names) in a spec path template. */

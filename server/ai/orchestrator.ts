@@ -14,7 +14,6 @@
 import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse, ProviderImage } from './providers/types';
 import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
-import { maxToolIterations, ToolProgressTracker } from './toolProgress';
 import { GeminiProvider } from './providers/gemini';
 import { OpenAIProvider } from './providers/openai';
 import { AnthropicProvider } from './providers/anthropic';
@@ -26,8 +25,6 @@ import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
 import { logExecutionTrace, serializePrompt } from './tracer';
 import { rememberToolResult } from './memory/artifactMemory';
-import { capabilityFor } from './policy';
-import { verifyToolMutation } from './verification';
 import { getUserById } from '../features/auth/userStore';
 import { effectiveGrantsForUser, isAllowed } from '../features/auth/groupStore';
 
@@ -445,9 +442,8 @@ export class AgentOrchestrator {
     const toolSpecs = opts.tools.map((t) => t.spec);
     const toolByName = new Map(opts.tools.map((t) => [t.spec.name, t]));
     const ctx = opts.toolContext || {};
-    const maxSteps = maxToolIterations(opts.maxSteps);
+    const maxSteps = opts.maxSteps ?? 12;
     const maxAcceptRetries = opts.maxAcceptRetries ?? 2;
-    const progress = new ToolProgressTracker();
 
     const messages: ChatMessage[] = [...(opts.seedMessages || []), { role: 'user', content: opts.task }];
     const steps: AgentStep[] = [];
@@ -456,7 +452,6 @@ export class AgentOrchestrator {
     let acceptRetries = 0;
     let finalText = '';
     let stoppedReason: AgentRunResult['stoppedReason'] = 'max_steps';
-    let forcedStop: AgentRunResult['stoppedReason'] | null = null;
 
     for (let i = 0; i < maxSteps; i += 1) {
       if (opts.signal?.aborted) { stoppedReason = 'aborted'; break; }
@@ -500,10 +495,7 @@ export class AgentOrchestrator {
           const inv: ToolInvocation = { id: call.id, name: call.name, arguments: call.arguments };
           const tool = toolByName.get(call.name);
           const t0 = Date.now();
-          forcedStop ||= progress.recordAttempt(call.name, call.arguments);
-          if (forcedStop) {
-            inv.error = `Skipped because the tool loop stopped: ${forcedStop}.`;
-          } else if (!tool) {
+          if (!tool) {
             inv.error = `Unknown tool "${call.name}".`;
           } else {
             try {
@@ -514,7 +506,6 @@ export class AgentOrchestrator {
               } else if (capabilityFor(tool).effect === 'write') {
                 inv.verification = await verifyToolMutation(call.name, call.arguments, result, ctx)
                   .catch((error) => ({ ok: false, status: 'failed' as const, detail: `Verification failed: ${error?.message || error}` }));
-                if (inv.verification.status === 'failed') inv.error = `Mutation verification failed: ${inv.verification.detail}`;
               }
               toolResults.push({ name: call.name, arguments: call.arguments, result, verification: inv.verification });
               if (ctx.conversationId) {
@@ -524,14 +515,12 @@ export class AgentOrchestrator {
                   toolName: call.name,
                   arguments: call.arguments,
                   result,
-                  verification: inv.verification,
                 }).catch((error) => console.warn('[memory] artifact persistence failed:', error?.message || error));
               }
             } catch (err: any) {
               inv.error = err?.message || String(err);
             }
           }
-          forcedStop ||= progress.recordOutcome(!inv.error);
           inv.ms = Date.now() - t0;
           step.toolCalls.push(inv);
           // Feed the result (or error) back to the model as a tool message.
@@ -540,8 +529,8 @@ export class AgentOrchestrator {
             toolCallId: call.id,
             toolName: call.name,
             content: inv.error
-              ? safeJson({ ok: false, tool: call.name, error: inv.error, recovery: 'Correct the arguments or choose a different non-destructive tool. Do not repeat the same failing call.' })
-              : safeJson(inv.verification ? { result: inv.result, verification: inv.verification } : inv.result),
+              ? `ERROR: ${inv.error}`
+              : safeJson(inv.result),
           });
           
           // --- Trace Execution (Tool Call) ---
@@ -566,10 +555,6 @@ export class AgentOrchestrator {
         }
         steps.push(step);
         opts.onStep?.(step);
-        if (forcedStop) {
-          stoppedReason = forcedStop;
-          break;
-        }
         continue;
       }
 
@@ -642,33 +627,6 @@ export class AgentOrchestrator {
       return { finalText, steps, accepted: true, stoppedReason, toolResults, totalUsage };
     }
 
-    if (!forcedStop && stoppedReason === 'max_steps') stoppedReason = 'safety_ceiling';
-    if (stoppedReason !== 'aborted' && stoppedReason !== 'budget') {
-      messages.push({
-        role: 'user',
-        content: `The tool loop stopped because of ${stoppedReason}. Do not call tools. Briefly state what completed, what remains, and the next safe step.`,
-      });
-      try {
-        const wrap = await this.provider.chatWithTools({
-          system,
-          messages,
-          tools: [],
-          temperature: opts.temperature,
-          maxTokens: opts.maxTokensPerCall,
-          effort: this.effort,
-          signal: opts.signal,
-        });
-        finalText = String(wrap.text || '').trim();
-        if (wrap.usage) {
-          totalUsage.inputTokens += wrap.usage.inputTokens ?? 0;
-          totalUsage.outputTokens += wrap.usage.outputTokens ?? 0;
-          totalUsage.totalTokens += wrap.usage.totalTokens ?? 0;
-          totalUsage.costUsd += wrap.usage.costUsd ?? 0;
-        }
-      } catch {
-        finalText = finalText || `Stopped because of ${stoppedReason}. Review the completed tool results before continuing.`;
-      }
-    }
     return { finalText, steps, accepted: false, stoppedReason, toolResults, totalUsage };
   }
 }

@@ -61,6 +61,7 @@ export async function createRecording(input: { name: string; appUrl: string; bro
     // Stash the Test Case classification (from the New Case → Automation form) so finalize can
     // build a fully-classified case; caseId/scriptId get written back here for idempotency.
     metadata: {
+      source: 'recordplay',
       ...(input.caseMeta ? { caseMeta: input.caseMeta } : {}),
       browserPermissions: normalizeBrowserPermissionSettings(input.browserPermissions),
     },
