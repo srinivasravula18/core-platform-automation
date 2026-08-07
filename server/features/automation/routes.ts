@@ -889,6 +889,12 @@ export function registerAutomationRoutes(app: Express) {
   app.patch('/api/automation/schedules/:id', requireAuth, async (req: Request, res: Response) => {
     const s = await scopedGet((id) => AutomationSchedules.get(id), req.params.id, req) as any;
     if (!s) return res.status(404).json({ error: 'Schedule not found.' });
+    let recordingId = s.recordingId;
+    if (req.body?.scriptId) {
+      const recording = await recordingForScript(String(req.body.scriptId), reqScope(req));
+      if (!recording) return res.status(400).json({ error: 'The selected repository script is missing, empty, or outside your project scope.' });
+      recordingId = recording.id;
+    }
     const kind = (req.body?.kind || s.kind) as ScheduleKind;
     const cron = req.body?.cron ?? s.cron;
     const timezone = req.body?.timezone ?? s.timezone;
@@ -900,7 +906,7 @@ export function registerAutomationRoutes(app: Express) {
     if (kind === 'cron' && enabled && !next) return res.status(400).json({ error: 'Invalid cron expression.' });
     if (kind === 'once' && enabled && (!runAt || Number.isNaN(new Date(runAt).getTime()))) return res.status(400).json({ error: 'A valid run date is required.' });
     const saved = await AutomationSchedules.upsert({
-      ...s, kind, cron, timezone, enabled, title,
+      ...s, recordingId, kind, cron, timezone, enabled, title,
       nextRunAt: !enabled ? null : kind === 'once' ? new Date(runAt).toISOString() : next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
     });
     if (!isPostgresEnabled()) persistDataInBackground('schedule updated');

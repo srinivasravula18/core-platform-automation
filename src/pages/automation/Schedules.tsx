@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil, Eye } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
@@ -160,6 +161,7 @@ function describeRunAt(runAt: string, timeZone: string, tzLabel: string): string
 }
 
 export default function Schedules() {
+  const navigate = useNavigate();
   const flag = useRemoteAgentFlag();
   const { schedules, loading, refresh } = useSchedules();
   const { recordings } = useRecordings();
@@ -208,6 +210,19 @@ export default function Schedules() {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
     return (id: string) => m.get(id) || id;
   }, [recordings]);
+
+  const openSchedule = async (schedule: Schedule) => {
+    const job = lastJobByScheduleId.get(schedule.id);
+    const terminal = job && (Boolean(job.finishedAt) || ['done', 'failed', 'cancelled'].includes(job.status));
+    if (terminal) {
+      try {
+        const runs = await fetch('/api/runs').then((response) => response.json());
+        const linkedRun = (Array.isArray(runs) ? runs : []).find((run: any) => run.triggerMeta?.automationJobId === job.id);
+        if (linkedRun?.id) { navigate(`/runs/${linkedRun.id}`); return; }
+      } catch { /* Fall back to the schedule detail when the linked run is unavailable. */ }
+    }
+    setSelectedScheduleId(schedule.id);
+  };
 
   const toggle = async (id: string, enabled: boolean) => {
     try { const response = await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); if (!response.ok) throw new Error(); void refresh(); }
@@ -259,12 +274,12 @@ export default function Schedules() {
                 const activeJob = activeJobByScheduleId.get(s.id) || null;
                 const lastJob = lastJobByScheduleId.get(s.id) || null;
                 return (
-                <tr key={s.id} onClick={() => setSelectedScheduleId(s.id)} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
+                <tr key={s.id} onClick={() => { void openSchedule(s); }} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
                   <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">
-                    <button type="button" onClick={() => setSelectedScheduleId(s.id)} className="inline-flex items-center gap-1.5 text-left hover:text-[var(--accent)]" title="Open scheduled test">
-                      {s.title || nameFor(s.recordingId)} <Eye className="h-3.5 w-3.5" />
+                    <button type="button" onClick={(event) => { event.stopPropagation(); void openSchedule(s); }} className="flex max-w-[26rem] items-center gap-1.5 text-left hover:text-[var(--accent)]" title="Open scheduled test">
+                      <span className="truncate">{s.title || nameFor(s.recordingId)}</span> <Eye className="h-3.5 w-3.5 shrink-0" />
                     </button>
-                    {s.title && <div className="text-xs font-normal text-[var(--text-muted)]">{nameFor(s.recordingId)}</div>}
+                    {s.title && <div className="max-w-[26rem] truncate text-xs font-normal text-[var(--text-muted)]" title={nameFor(s.recordingId)}>{nameFor(s.recordingId)}</div>}
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
@@ -303,8 +318,8 @@ export default function Schedules() {
         )}
       </div>
 
-      <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} />
-      {editing && <EditScheduleModal schedule={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
+      <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} recordings={recordings} />
+      {editing && <NewScheduleModal isOpen schedule={editing} recordings={recordings} onClose={() => setEditing(null)} onCreated={() => { setEditing(null); refresh(); }} />}
       <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
@@ -546,7 +561,8 @@ function FolderPicker({ node, selectedId, counts, onSelect, depth = 0 }: { key?:
   </div>;
 }
 
-function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose: () => void; onCreated: () => void }) {
+function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [] }: { isOpen: boolean; onClose: () => void; onCreated: () => void; schedule?: Schedule | null; recordings?: any[] }) {
+  const isEditing = Boolean(schedule);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [title, setTitle] = useState('');
   const [tab, setTab] = useState<ScheduleTab>('daily');
@@ -568,9 +584,14 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
 
   useEffect(() => {
     if (!isOpen) return;
+    const initialTimezone = schedule?.timezone || detectTimezone();
     setLoading(true);
     setSelected(new Set());
-    setTitle('');
+    setTitle(schedule?.title || '');
+    setTab(schedule?.kind === 'once' ? 'once' : schedule ? 'cron' : 'daily');
+    setTimezone(initialTimezone);
+    setOnceAt(schedule?.nextRunAt ? utcIsoToZonedInput(schedule.nextRunAt, initialTimezone) : nextHourInZoneInput(initialTimezone));
+    setCronInput(schedule?.cron || 'At 04:05 on day-of-month 5');
     setSearch('');
     Promise.all([fetch('/api/folders').then((r) => r.json()), fetch('/api/scripts').then((r) => r.json())])
       .then(([folderData, scriptData]) => {
@@ -583,10 +604,15 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
         setFolders(tree);
         setScripts(available);
         setSelectedFolderId(available[0]?.folderId || UNCATEGORIZED_ID);
+        const selectedScriptId = schedule
+          ? available.find((script) => script.id === schedule.recordingId)?.id
+            || recordings.find((recording: any) => recording.id === schedule.recordingId)?.metadata?.scriptId
+          : '';
+        setSelected(selectedScriptId ? new Set([String(selectedScriptId)]) : new Set());
       })
       .catch(() => showToast('Could not load repository scripts.', { tone: 'error' }))
       .finally(() => setLoading(false));
-  }, [isOpen]);
+  }, [isOpen, schedule?.id]);
 
   // Resolve through the server so the preview uses the same parser the scheduler fires on.
   useEffect(() => {
@@ -615,7 +641,12 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       ? [script.name, script.title, script.filename].some((value) => String(value || '').toLowerCase().includes(query))
       : (script.folderId || UNCATEGORIZED_ID) === selectedFolderId);
   }, [scripts, search, selectedFolderId]);
-  const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id: string) => setSelected((prev) => {
+    if (isEditing) return prev.has(id) ? new Set() : new Set([id]);
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
   const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
   const tzLabel = timezoneLabel(timezone);
   const cron = tab === 'cron' ? cronResolved.expression : buildCron(tab, time, weekdays, monthDay);
@@ -631,8 +662,20 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
     if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast(`Pick a future date and time (${tzLabel}).`, { tone: 'error' }); return; }
     setBusy(true);
     try {
+      const payload = tab === 'once'
+        ? { kind: 'once', runAt, timezone, title: title.trim() }
+        : { kind: 'cron', cron, timezone, title: title.trim() };
+      if (schedule) {
+        const scriptId = [...selected][0];
+        const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, scriptId, enabled: schedule.enabled }) });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not update the schedule.');
+        showToast('Schedule updated.', { tone: 'success' });
+        onCreated();
+        onClose();
+        return;
+      }
       const results = await Promise.all([...selected].map(async (id) => {
-        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tab === 'once' ? { scriptId: id, kind: 'once', runAt, timezone, title: title.trim() } : { scriptId: id, kind: 'cron', cron, timezone, title: title.trim() }) });
+        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, scriptId: id }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
         return true;
       }));
@@ -648,17 +691,17 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New schedule" size="xl"
+    <Modal isOpen={isOpen} onClose={onClose} title={isEditing ? 'Edit schedule' : 'New schedule'} size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
         <button onClick={submit} disabled={busy || selected.size === 0 || !title.trim() || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
-          {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />} {isEditing ? 'Save Changes' : 'Create Schedule'}
         </button>
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-[var(--text-primary)]">Select Scripts from Test Repository<RequiredMark /></div>
-          <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected</div>
+          <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected{isEditing ? ' · one test per schedule' : ''}</div>
         </div>
         <label className="relative block w-full max-w-xs">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
