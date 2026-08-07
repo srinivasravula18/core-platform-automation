@@ -53,6 +53,19 @@ function toUsageObj(model: string, usage?: OpenAI.Responses.ResponseUsage): Prov
   return { ...usageObj, costUsd: estimateCost(model, usageObj) };
 }
 
+function openAIJsonFormat<T>(format: T): T | { type: 'json_object' } {
+  return JSON.stringify(format).includes('"propertyNames"') ? { type: 'json_object' } : format;
+}
+
+function safeZodTextFormat(schema: z.ZodTypeAny, name: string) {
+  try {
+    const format = zodTextFormat(schema, name);
+    return openAIJsonFormat(format);
+  } catch {
+    return { type: 'json_object' as const };
+  }
+}
+
 export async function callOpenAIResponsesStructured<T>(
   opts: CallOpenAIResponsesStructuredOptions<T>,
 ): Promise<OpenAIResponsesStructuredResult<T>> {
@@ -65,7 +78,7 @@ export async function callOpenAIResponsesStructured<T>(
     model: opts.model,
     input: opts.prompt,
     ...(opts.system ? { instructions: opts.system } : {}),
-    text: { format: zodTextFormat(opts.schema, opts.schemaName) },
+    text: { format: safeZodTextFormat(opts.schema, opts.schemaName) },
     ...(opts.effort ? { reasoning: { effort: opts.effort } } : {}),
     // Explicit request-storage/privacy policy for the graph path (architecture plan).
     store: false as const,
