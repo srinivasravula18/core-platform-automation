@@ -27,7 +27,7 @@ import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../servi
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
-import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs } from '../../../services/automation';
+import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs, resumeScheduleExecutions } from '../../../services/automation';
 import { isEvidenceOracleEnabled } from '../../../server/features/agent/evidenceOracleFlag';
 
 let processGuardsInstalled = false;
@@ -206,7 +206,9 @@ export async function startExpressServer() {
     // scheduler and let orphan recovery fail jobs the live process is still running.
     if (isRemoteAgentEnabled()) {
       startScheduler();
-      void recoverOrphanedJobs().catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
+      void recoverOrphanedJobs()
+        .then(() => resumeScheduleExecutions())
+        .catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
     }
   });
 }

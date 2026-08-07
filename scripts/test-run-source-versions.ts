@@ -20,4 +20,7 @@ assert.deepEqual(changes.map((change) => change.kind), ['Plan', 'Case']);
 assert.deepEqual(changes[0].fields, ['Status']);
 assert.equal(changes[1].versionText, '@v2 → @v3');
 assert.deepEqual(changes[1].fields, ['Steps']);
+assert.deepEqual(runSourceVersionChanges({ createdAt: '2026-01-01T00:00:00.000Z', caseIds: ['C1'] }, {
+  plans: [], suites: [], cases: [{ id: 'C1', title: 'Case', currentRevision: 99, updatedAt: '2026-02-01T00:00:00.000Z' }],
+}), []);
 console.log('Run source version checks passed.');

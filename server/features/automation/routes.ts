@@ -20,7 +20,7 @@ import { reqScope, scopeFilter } from '../../shared/scope';
 import { asyncRoute } from '../../shared/asyncRoute';
 import { requireAuth, isAuthed } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
-import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
+import { Agents, AutomationJobs, AutomationSchedules, AutomationScheduleItems, AutomationScheduleExecutions, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { scopeStamp } from '../../shared/scope';
@@ -176,6 +176,30 @@ export function registerAutomationRoutes(app: Express) {
     if (!row) return null;
     const [ok] = scopeFilter([row] as any[], reqScope(req));
     return ok ? row : null;
+  }
+
+  async function resolveScheduleItems(req: Request, fallbackRecordingId: string): Promise<any[]> {
+    const requested = Array.isArray(req.body?.items) && req.body.items.length
+      ? req.body.items
+      : [{ runnableType: 'recording', runnableId: fallbackRecordingId, recordingId: fallbackRecordingId }];
+    const resolved: any[] = [];
+    for (let index = 0; index < requested.length; index++) {
+      const item = requested[index] || {};
+      const runnableType = item.runnableType === 'script' || item.kind === 'script' ? 'script' : 'recording';
+      if (runnableType === 'script') {
+        const scriptId = String(item.runnableId || item.scriptId || '');
+        const script = await scopedGet((id) => Scripts.get(id), scriptId, req);
+        const recording = script ? await recordingForScript(script.id, reqScope(req)) : null;
+        if (!script || !recording) throw new Error(`Selected script ${index + 1} is missing, empty, or outside your project scope.`);
+        resolved.push({ runnableType, runnableId: script.id, recordingId: recording.id, stageNo: Math.max(1, Number(item.stageNo) || 1), enabled: item.enabled !== false });
+      } else {
+        const recordingId = String(item.recordingId || item.runnableId || '');
+        const recording = await scopedGet((id) => Recordings.get(id), recordingId, req);
+        if (!recording || recording.status !== 'ready' || !String(recording.script || '').trim()) throw new Error(`Selected recording ${index + 1} is unavailable.`);
+        resolved.push({ runnableType, runnableId: recording.id, recordingId: recording.id, stageNo: Math.max(1, Number(item.stageNo) || 1), enabled: item.enabled !== false });
+      }
+    }
+    return resolved;
   }
 
   async function createExecutionBatch(rec: any, dataset: any, agentId: string, rows: any[], scope: ReturnType<typeof reqScope>, opts: { stopOnFailure?: boolean; dataPolicy?: string } = {}) {
@@ -842,7 +866,14 @@ export function registerAutomationRoutes(app: Express) {
       }
       if (!recordingId) return res.status(400).json({ error: 'The selected test case/suite has no recorded script to schedule. Record it via New Case → Automation first.' });
     }
-    if (!recordingId) return res.status(400).json({ error: 'recordingId, scriptId, or a caseId/suiteId with a recording, is required.' });
+    if (!recordingId && !(Array.isArray(req.body?.items) && req.body.items.length)) return res.status(400).json({ error: 'Select at least one runnable test.' });
+    let items: any[];
+    try { items = await resolveScheduleItems(req, recordingId); }
+    catch (error: any) { return res.status(400).json({ error: error?.message || 'Could not resolve selected schedule tests.' }); }
+    recordingId ||= items[0]?.recordingId;
+    const executionMode = req.body?.executionMode === 'sequential' ? 'sequential' : 'parallel';
+    const failurePolicy = req.body?.failurePolicy === 'stop' ? 'stop' : 'continue';
+    const maxConcurrency = executionMode === 'sequential' ? 1 : Math.min(20, Math.max(1, Number(req.body?.maxConcurrency) || 3));
     const k = (kind || 'once') as ScheduleKind;
     const now = new Date();
     let webhookToken = '';
@@ -867,23 +898,27 @@ export function registerAutomationRoutes(app: Express) {
       enabled: enabled !== false,
       nextRunAt,
       lastRunAt: null,
+      executionMode,
+      failurePolicy,
+      maxConcurrency,
       createdAt: now.toISOString(),
       ...scopeStamp(reqScope(req)),
     });
+    await AutomationScheduleItems.replaceForSchedule(sched.id, items);
     if (!isPostgresEnabled()) persistDataInBackground('schedule created');
     // Raw webhook token is returned exactly once (only the hash is stored).
-    res.status(201).json({ schedule: sched, webhookToken: webhookToken || undefined });
+    res.status(201).json({ schedule: { ...sched, items }, webhookToken: webhookToken || undefined });
   });
 
   app.get('/api/automation/schedules', requireAuth, async (req: Request, res: Response) => {
     const mine = scopeFilter((await AutomationSchedules.list()) as any[], reqScope(req));
-    res.json({ schedules: mine });
+    res.json({ schedules: await Promise.all(mine.map(async (schedule: any) => ({ ...schedule, items: await AutomationScheduleItems.listForSchedule(schedule.id) }))) });
   });
 
   app.get('/api/automation/schedules/:id', requireAuth, async (req: Request, res: Response) => {
     const s = await scopedGet((id) => AutomationSchedules.get(id), req.params.id, req);
     if (!s) return res.status(404).json({ error: 'Schedule not found.' });
-    res.json({ schedule: s });
+    res.json({ schedule: { ...s, items: await AutomationScheduleItems.listForSchedule(s.id) } });
   });
 
   app.patch('/api/automation/schedules/:id', requireAuth, async (req: Request, res: Response) => {
@@ -899,22 +934,32 @@ export function registerAutomationRoutes(app: Express) {
       if (!recording) return res.status(400).json({ error: 'The selected repository script is missing, empty, or outside your project scope.' });
       recordingId = recording.id;
     }
+    let items = await AutomationScheduleItems.listForSchedule(s.id);
+    if (Array.isArray(req.body?.items)) {
+      try { items = await resolveScheduleItems(req, recordingId); }
+      catch (error: any) { return res.status(400).json({ error: error?.message || 'Could not resolve selected schedule tests.' }); }
+      recordingId = items[0]?.recordingId || recordingId;
+    }
     const kind = (req.body?.kind || s.kind) as ScheduleKind;
     const cron = req.body?.cron ?? s.cron;
     const timezone = req.body?.timezone ?? s.timezone;
     const enabled = req.body?.enabled ?? s.enabled;
     const runAt = req.body?.runAt ?? s.nextRunAt;
     const title = req.body?.title !== undefined ? String(req.body.title || '').trim().slice(0, 200) : s.title;
+    const executionMode = req.body?.executionMode === 'sequential' ? 'sequential' : req.body?.executionMode === 'parallel' ? 'parallel' : s.executionMode || 'parallel';
+    const failurePolicy = req.body?.failurePolicy === 'stop' ? 'stop' : req.body?.failurePolicy === 'continue' ? 'continue' : s.failurePolicy || 'continue';
+    const maxConcurrency = executionMode === 'sequential' ? 1 : Math.min(20, Math.max(1, Number(req.body?.maxConcurrency ?? s.maxConcurrency) || 3));
     if (!String(title || '').trim()) return res.status(400).json({ error: 'Schedule title is required.' });
     const next = enabled && kind !== 'once' ? computeNextRun(kind, cron, timezone, new Date()) : null;
     if (kind === 'cron' && enabled && !next) return res.status(400).json({ error: 'Invalid cron expression.' });
     if (kind === 'once' && enabled && (!runAt || Number.isNaN(new Date(runAt).getTime()))) return res.status(400).json({ error: 'A valid run date is required.' });
     const saved = await AutomationSchedules.upsert({
-      ...s, recordingId, kind, cron, timezone, enabled, title,
+      ...s, recordingId, kind, cron, timezone, enabled, title, executionMode, failurePolicy, maxConcurrency,
       nextRunAt: !enabled ? null : kind === 'once' ? new Date(runAt).toISOString() : next && kind !== 'now' ? next.toISOString() : s.nextRunAt,
     });
+    if (Array.isArray(req.body?.items)) items = await AutomationScheduleItems.replaceForSchedule(saved.id, items);
     if (!isPostgresEnabled()) persistDataInBackground('schedule updated');
-    res.json({ schedule: saved });
+    res.json({ schedule: { ...saved, items } });
   });
 
   app.delete('/api/automation/schedules/:id', requireAuth, async (req: Request, res: Response) => {
@@ -923,6 +968,20 @@ export function registerAutomationRoutes(app: Express) {
     const ok = await AutomationSchedules.remove(req.params.id);
     if (!isPostgresEnabled()) persistDataInBackground('schedule removed');
     res.json({ ok });
+  });
+
+  app.get('/api/automation/schedules/:id/executions', requireAuth, async (req: Request, res: Response) => {
+    const schedule = await scopedGet((id) => AutomationSchedules.get(id), req.params.id, req);
+    if (!schedule) return res.status(404).json({ error: 'Schedule not found.' });
+    res.json({ executions: await AutomationScheduleExecutions.listForSchedule(schedule.id) });
+  });
+
+  app.get('/api/automation/schedule-executions/:id', requireAuth, async (req: Request, res: Response) => {
+    const execution = await AutomationScheduleExecutions.get(req.params.id);
+    const schedule = execution ? await scopedGet((id) => AutomationSchedules.get(id), execution.scheduleId, req) : null;
+    if (!execution || !schedule) return res.status(404).json({ error: 'Schedule execution not found.' });
+    const jobs = scopeFilter((await AutomationJobs.list()).filter((job: any) => job.scheduleExecutionId === execution.id), reqScope(req));
+    res.json({ execution, schedule, jobs });
   });
 
   /* ---------- artifacts ---------- */

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, readAutomationRunResponse, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { allCasesHaveRunTags, casesForPlan, casesForRun, casesForSuite, getRunStats, manualRunSelection, readAutomationRunResponse, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../core/shared/testRunStatus';
 
 const suites = [
@@ -13,6 +13,7 @@ const cases = [
   { id: 'C3', title: 'Other', testSuiteId: 'S3' },
 ];
 assert.deepEqual(casesForPlan(cases, suites, 'P1').map(({ id }) => id), ['C1', 'C2']);
+assert.deepEqual(casesForSuite(cases, suites, 'S1').map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(scriptsForCases(cases.slice(0, 2), [
   { id: 'X1', caseId: 'C1', code: 'one' },
   { id: 'X2', agentRunId: 'A1', title: 'Second', code: 'two' },

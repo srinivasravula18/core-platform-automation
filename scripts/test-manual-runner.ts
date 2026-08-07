@@ -4,6 +4,8 @@ import {
   isManualOutcome,
   rollupCaseOutcome,
   computeRunRollup,
+  advanceManualStepTiming,
+  isManualRunActive,
 } from '../core/shared/manualRun';
 import { collectManualResultEvidence } from '../core/shared/runEvidence';
 
@@ -26,6 +28,21 @@ assert.equal(rollupCaseOutcome([{ outcome: 'Not Applicable' }, { outcome: 'Not A
 assert.equal(rollupCaseOutcome([{ outcome: 'Passed' }, { outcome: 'Not Run' }]), 'Paused', 'partially executed → Paused');
 // Failed dominates Blocked/Retest regardless of order.
 assert.equal(rollupCaseOutcome([{ outcome: 'Blocked' }, { outcome: 'Failed' }, { outcome: 'Retest' }]), 'Failed');
+
+// ----- sequential per-step timing -----
+{
+  const first = advanceManualStepTiming([
+    { outcome: 'Passed', startedAt: '2026-01-01T00:00:00.000Z' },
+    { outcome: 'Not Run' },
+  ], 0, '2026-01-01T00:00:02.000Z');
+  assert.equal(first.steps[0].durationMs, 2000);
+  assert.equal(first.steps[1].startedAt, '2026-01-01T00:00:02.000Z');
+  const second = advanceManualStepTiming([{ ...first.steps[0] }, { ...first.steps[1], outcome: 'Passed' }], 1, '2026-01-01T00:00:05.000Z');
+  assert.equal(second.steps[1].durationMs, 3000);
+  assert.equal(second.durationMs, 5000);
+}
+assert.equal(isManualRunActive({ startedAt: '2026-01-01T00:00:00.000Z', status: 'In Progress' }), true);
+assert.equal(isManualRunActive({ startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:01:00.000Z', status: 'Stopped' }), false);
 
 // ----- run-level roll-up -----
 assert.deepEqual(computeRunRollup([]), { passed: 0, failed: 0, totalExecutions: 0, status: 'Not Started', state: 'Not Started', progress: '0/0 evaluated' });

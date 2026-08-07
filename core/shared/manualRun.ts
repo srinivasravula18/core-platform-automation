@@ -39,6 +39,26 @@ export function rollupCaseOutcome(stepResults: Array<{ outcome?: string }> = [])
   return 'Passed';
 }
 
+// Completing one step starts the next step's clock. The case duration is the sum of completed steps,
+// excluding time spent between steps or on another case.
+export function advanceManualStepTiming(steps: any[], index: number, completedAt: string, fallbackStartedAt?: string | null) {
+  const next = steps.map((step) => ({ ...step }));
+  const step = next[index];
+  if (!step) return { steps: next, durationMs: 0 };
+  if (!step.startedAt) step.startedAt = fallbackStartedAt || completedAt;
+  if (!/^(Not Run|Paused)$/i.test(String(step.outcome || ''))) {
+    step.completedAt ||= completedAt;
+    step.durationMs = Math.max(0, Date.parse(step.completedAt) - Date.parse(step.startedAt));
+    const following = next[index + 1];
+    if (following && !following.startedAt && String(following.outcome || 'Not Run') === 'Not Run') following.startedAt = completedAt;
+  }
+  return { steps: next, durationMs: next.reduce((total, item) => total + Math.max(0, Number(item.durationMs) || 0), 0) };
+}
+
+export function isManualRunActive(run: any): boolean {
+  return Boolean(run?.startedAt) && !run?.completedAt && !/^(stopped|cancelled|canceled)$/i.test(String(run?.status || run?.state || ''));
+}
+
 export interface RunRollup {
   passed: number;
   failed: number;

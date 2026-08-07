@@ -668,11 +668,12 @@ export default function TestRuns() {
           </div>
 
           {sourceVersionChanges.length > 0 && (
-            <div className="mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+            <details className="group mx-5 mt-4 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3">
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                <ChevronRight className="h-4 w-4 text-amber-500 transition-transform group-open:rotate-90" />
                 <GitCompareArrows className="h-4 w-4 text-amber-500" />
                 Source version changes ({sourceVersionChanges.length})
-              </div>
+              </summary>
               <p className="mt-1 text-xs text-[var(--text-muted)]">These linked plans, suites, or cases changed after this run captured them.</p>
               <div className="mt-2 divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-card)]">
                 {sourceVersionChanges.map((change) => (
@@ -684,7 +685,7 @@ export default function TestRuns() {
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           {selectedRun.mode === 'manual' ? (

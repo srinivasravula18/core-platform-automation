@@ -111,6 +111,8 @@ export const db: any = {
   automationJobs: [] as any[],
   automationJobPauses: [] as any[],
   automationSchedules: [] as any[],
+  automationScheduleItems: [] as any[],
+  automationScheduleExecutions: [] as any[],
   automationArtifacts: [] as any[],
   automationEvents: [] as any[],
   // Conversational Runtime Phase 1 (single-process only): versioned session snapshots,
@@ -170,6 +172,8 @@ function getPersistableDbSnapshot() {
     automationJobs: db.automationJobs,
     automationJobPauses: db.automationJobPauses,
     automationSchedules: db.automationSchedules,
+    automationScheduleItems: db.automationScheduleItems,
+    automationScheduleExecutions: db.automationScheduleExecutions,
     automationArtifacts: db.automationArtifacts,
     automationEvents: db.automationEvents,
     conversationSessions: db.conversationSessions,
@@ -242,6 +246,8 @@ export async function loadPersistedData() {
     db.automationJobs = Array.isArray(data.automationJobs) ? data.automationJobs : [];
     db.automationJobPauses = Array.isArray(data.automationJobPauses) ? data.automationJobPauses : [];
     db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
+    db.automationScheduleItems = Array.isArray(data.automationScheduleItems) ? data.automationScheduleItems : [];
+    db.automationScheduleExecutions = Array.isArray(data.automationScheduleExecutions) ? data.automationScheduleExecutions : [];
     db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];
     db.automationEvents = Array.isArray(data.automationEvents) ? data.automationEvents : [];
     db.conversationSessions = Array.isArray(data.conversationSessions) ? data.conversationSessions : [];

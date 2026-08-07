@@ -48,6 +48,21 @@ export function casesForPlan(cases: any[], suites: any[], planId: string): any[]
   );
 }
 
+export function casesForSuite(cases: any[], suites: any[], suiteId: string): any[] {
+  const suiteIds = new Set([suiteId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const suite of suites) {
+      if (!suiteIds.has(suite.id) && suiteParentIds(suite).some((id) => suiteIds.has(id))) {
+        suiteIds.add(suite.id);
+        changed = true;
+      }
+    }
+  }
+  return cases.filter((testCase) => caseSuiteIds(testCase).some((id) => suiteIds.has(id)));
+}
+
 export function scriptsForCases(cases: any[], scripts: any[]): any[] {
   const selected = new Map<string, any>();
   for (const testCase of cases) {

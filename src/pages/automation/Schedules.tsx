@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil, Eye } from 'lucide-react';
+import { ChevronDown, Code2, Info, Loader2, Search, Trash2, CalendarClock, Plus, Pencil, Eye } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { useRemoteAgentFlag, useSchedules, useRecordings, useJobs, useAgentEvents, jobStatusMeta, ACTIVE_JOB_STATUSES, type Schedule, type Job } from '@/src/lib/useAutomation';
+import { casesForPlan, casesForSuite } from '@/src/lib/manualTestRun';
 
 function fmt(iso: string | null): string {
   if (!iso) return '—';
@@ -527,11 +528,9 @@ function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule;
   </Modal>;
 }
 
-type FolderNode = { id: string; name: string; parentId?: string | null; children: FolderNode[] };
 type Runnable = { kind: 'script' | 'recording'; scriptId?: string; recordingId?: string; caseId?: string; caseName?: string; name?: string; folderId?: string | null; tags?: string[] };
 type RepositoryCase = { id: string; title?: string; tags?: string[]; steps?: unknown[]; testPlanId?: string; testPlanIds?: string[]; testSuiteId?: string; testSuiteIds?: string[] };
 type RepositoryGroup = { id: string; name?: string; title?: string };
-const UNCATEGORIZED_ID = '__uncategorized__';
 const runnableKey = (runnable: Runnable) => `${runnable.kind}:${runnable.kind === 'recording' ? runnable.recordingId : runnable.scriptId}`;
 const matchesSearch = (values: unknown[], tags: string[] = [], search: string) => {
   const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -541,39 +540,11 @@ const matchesSearch = (values: unknown[], tags: string[] = [], search: string) =
     : [...values, ...tags].some((value) => String(value || '').toLowerCase().includes(term)));
 };
 
-function buildFolderTree(folders: Omit<FolderNode, 'children'>[]): FolderNode[] {
-  const byId = new Map(folders.map((folder) => [folder.id, { ...folder, children: [] } as FolderNode]));
-  const roots: FolderNode[] = [];
-  byId.forEach((folder) => {
-    const parent = folder.parentId ? byId.get(folder.parentId) : undefined;
-    (parent ? parent.children : roots).push(folder);
-  });
-  const sort = (nodes: FolderNode[]) => nodes.sort((a, b) => a.name.localeCompare(b.name)).forEach((node) => sort(node.children));
-  sort(roots);
-  return roots;
-}
-
-function FolderPicker({ node, selectedId, counts, onSelect, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; counts: Map<string, number>; onSelect: (id: string) => void; depth?: number }) {
-  const [open, setOpen] = useState(true);
-  const hasChildren = node.children.length > 0;
-  return <div>
-    <div className={`flex items-center rounded-md ${selectedId === node.id ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'}`}>
-      <button type="button" onClick={() => hasChildren && setOpen((value) => !value)} aria-label={`${open ? 'Collapse' : 'Expand'} ${node.name}`} className="ml-1 rounded p-1 disabled:opacity-0" disabled={!hasChildren}>
-        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
-      </button>
-      <button type="button" onClick={() => onSelect(node.id)} className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left text-sm" style={{ paddingLeft: `${depth * 12}px` }}>
-        <Folder className="h-4 w-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{node.name}</span>
-        <span className="text-xs tabular-nums opacity-70">{counts.get(node.id) || 0}</span>
-      </button>
-    </div>
-    {open && node.children.map((child) => <FolderPicker key={child.id} node={child} selectedId={selectedId} counts={counts} onSelect={onSelect} depth={depth + 1} />)}
-  </div>;
-}
-
 function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [] }: { isOpen: boolean; onClose: () => void; onCreated: () => void; schedule?: Schedule | null; recordings?: any[] }) {
   const isEditing = Boolean(schedule);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedPlanIds, setSelectedPlanIds] = useState<Set<string>>(new Set());
+  const [selectedSuiteIds, setSelectedSuiteIds] = useState<Set<string>>(new Set());
   const [title, setTitle] = useState('');
   const [tab, setTab] = useState<ScheduleTab>('daily');
   const [time, setTime] = useState('02:00');
@@ -587,43 +558,45 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
   const [showCronHelp, setShowCronHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [folders, setFolders] = useState<FolderNode[]>([]);
   const [runnables, setRunnables] = useState<Runnable[]>([]);
   const [cases, setCases] = useState<RepositoryCase[]>([]);
   const [plans, setPlans] = useState<RepositoryGroup[]>([]);
   const [suites, setSuites] = useState<RepositoryGroup[]>([]);
-  const [selectedFolderId, setSelectedFolderId] = useState('');
+  const [selectionSource, setSelectionSource] = useState<'individual' | 'plan' | 'suite'>('individual');
   const [search, setSearch] = useState('');
+  const [executionMode, setExecutionMode] = useState<'sequential' | 'parallel'>('parallel');
+  const [failurePolicy, setFailurePolicy] = useState<'stop' | 'continue'>('continue');
+  const [maxConcurrency, setMaxConcurrency] = useState(3);
 
   useEffect(() => {
     if (!isOpen) return;
     const initialTimezone = schedule?.timezone || detectTimezone();
     setLoading(true);
     setSelected(new Set());
+    setSelectedPlanIds(new Set());
+    setSelectedSuiteIds(new Set());
     setTitle(schedule?.title || '');
     setTab(schedule?.kind === 'once' ? 'once' : schedule ? 'cron' : 'daily');
     setTimezone(initialTimezone);
     setOnceAt(schedule?.nextRunAt ? utcIsoToZonedInput(schedule.nextRunAt, initialTimezone) : nextHourInZoneInput(initialTimezone));
     setCronInput(schedule?.cron || 'At 04:05 on day-of-month 5');
+    setExecutionMode(schedule?.executionMode || 'parallel');
+    setFailurePolicy(schedule?.failurePolicy || 'continue');
+    setMaxConcurrency(schedule?.maxConcurrency || 3);
     setSearch('');
-    Promise.all([fetch('/api/folders').then((r) => r.json()), fetch('/api/automation/runnables').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/plans').then((r) => r.json()), fetch('/api/suites').then((r) => r.json())])
-      .then(([folderData, runnableData, caseData, planData, suiteData]) => {
+    setSelectionSource('individual');
+    Promise.all([fetch('/api/automation/runnables').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/plans').then((r) => r.json()), fetch('/api/suites').then((r) => r.json())])
+      .then(([runnableData, caseData, planData, suiteData]) => {
         const available = (Array.isArray(runnableData?.runnables) ? runnableData.runnables : [])
           .map((runnable: Runnable) => ({ ...runnable, folderId: runnable.folderId == null ? null : String(runnable.folderId) }));
-        const normalizedFolders = (Array.isArray(folderData) ? folderData : []).map((folder) => ({ ...folder, id: String(folder.id), parentId: folder.parentId == null ? null : String(folder.parentId) }));
-        const tree = buildFolderTree(normalizedFolders);
-        tree.unshift({ id: UNCATEGORIZED_ID, name: 'Uncategorized', children: [] });
-        setFolders(tree);
         setRunnables(available);
         setCases(Array.isArray(caseData) ? caseData : []);
         setPlans(Array.isArray(planData) ? planData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
-        setSelectedFolderId(available[0]?.folderId || UNCATEGORIZED_ID);
-        const selectedScriptId = schedule
-          ? available.find((runnable) => runnable.recordingId === schedule.recordingId)
-            || recordings.find((recording: any) => recording.id === schedule.recordingId)?.metadata?.scriptId
-          : '';
-        setSelected(selectedScriptId ? new Set([typeof selectedScriptId === 'string' ? `script:${selectedScriptId}` : runnableKey(selectedScriptId)]) : new Set());
+        const initial = schedule?.items?.length
+          ? schedule.items.map((item) => `${item.runnableType}:${item.runnableId}`)
+          : schedule ? [runnableKey(available.find((runnable) => runnable.recordingId === schedule.recordingId) || { kind: 'recording', recordingId: schedule.recordingId } as Runnable)] : [];
+        setSelected(new Set(initial));
       })
       .catch(() => showToast('Could not load repository scripts.', { tone: 'error' }))
       .finally(() => setLoading(false));
@@ -645,36 +618,50 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     return () => clearTimeout(timer);
   }, [tab, cronInput, timezone]);
 
-  const counts = useMemo(() => {
-    const result = new Map<string, number>();
-    runnables.forEach((runnable) => result.set(runnable.folderId || UNCATEGORIZED_ID, (result.get(runnable.folderId || UNCATEGORIZED_ID) || 0) + 1));
-    return result;
-  }, [runnables]);
   const visibleRunnables = useMemo(() => {
-    return runnables.filter((runnable) => search.trim()
-      ? matchesSearch([runnable.name, runnable.caseName], runnable.tags, search)
-      : (runnable.folderId || UNCATEGORIZED_ID) === selectedFolderId);
-  }, [runnables, search, selectedFolderId]);
+    return runnables.filter((runnable) => !search.trim() || matchesSearch([runnable.name, runnable.caseName], runnable.tags, search));
+  }, [runnables, search]);
   const matchingManualCases = useMemo(() => {
     if (!search.trim()) return [];
     const runnableCaseIds = new Set(runnables.map((runnable) => String(runnable.caseId || '')).filter(Boolean));
     return cases.filter((testCase) => !runnableCaseIds.has(String(testCase.id)) && Array.isArray(testCase.steps) && testCase.steps.length > 0
       && matchesSearch([testCase.title], testCase.tags, search));
   }, [cases, runnables, search]);
+  const casesInGroup = useCallback((groupId: string, kind: 'plan' | 'suite') => kind === 'plan'
+    ? casesForPlan(cases, suites, groupId)
+    : casesForSuite(cases, suites, groupId), [cases, suites]);
+  const runnableIdsForGroup = useCallback((groupId: string, kind: 'plan' | 'suite') => {
+    const caseIds = new Set(casesInGroup(groupId, kind).map((testCase) => String(testCase.id)));
+    return runnables.filter((runnable) => caseIds.has(String(runnable.caseId || ''))).map(runnableKey);
+  }, [casesInGroup, runnables]);
+  const plansWithRunnableCounts = useMemo(() => plans.map((plan) => ({ ...plan, caseCount: casesInGroup(plan.id, 'plan').length, runnableCount: runnableIdsForGroup(plan.id, 'plan').length })), [plans, casesInGroup, runnableIdsForGroup]);
+  const suitesWithRunnableCounts = useMemo(() => suites.map((suite) => ({ ...suite, caseCount: casesInGroup(suite.id, 'suite').length, runnableCount: runnableIdsForGroup(suite.id, 'suite').length })), [suites, casesInGroup, runnableIdsForGroup]);
+  const selectedIds = useMemo(() => {
+    const ids = new Set(selected);
+    selectedPlanIds.forEach((id) => runnableIdsForGroup(id, 'plan').forEach((key) => ids.add(key)));
+    selectedSuiteIds.forEach((id) => runnableIdsForGroup(id, 'suite').forEach((key) => ids.add(key)));
+    return ids;
+  }, [selected, selectedPlanIds, selectedSuiteIds, runnableIdsForGroup]);
+  const selectedRunnables = useMemo(() => [...selectedIds].map((id) => runnables.find((runnable) => runnableKey(runnable) === id)).filter(Boolean) as Runnable[], [selectedIds, runnables]);
+  const visibleGroups = useMemo(() => {
+    const groups = selectionSource === 'plan' ? plansWithRunnableCounts : suitesWithRunnableCounts;
+    const query = search.trim().toLowerCase();
+    return query ? groups.filter((group) => String(group.name || group.title || group.id).toLowerCase().includes(query)) : groups;
+  }, [selectionSource, plansWithRunnableCounts, suitesWithRunnableCounts, search]);
   const toggle = (id: string) => setSelected((prev) => {
-    if (isEditing) return prev.has(id) ? new Set() : new Set([id]);
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
-  const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
-  const addGroupScripts = (groupId: string, kind: 'plan' | 'suite') => {
-    const field = kind === 'plan' ? 'testPlan' : 'testSuite';
-    const caseIds = new Set(cases.filter((testCase) => [testCase[`${field}Id` as keyof RepositoryCase], ...(testCase[`${field}Ids` as keyof RepositoryCase] as string[] || [])].map(String).includes(groupId)).map((testCase) => String(testCase.id)));
-    const ids = runnables.filter((runnable) => caseIds.has(String(runnable.caseId || ''))).map(runnableKey);
-    if (!ids.length) { showToast(`No runnable scripts are linked to this test ${kind}.`, { tone: 'error' }); return; }
-    setSelected((prev) => isEditing ? new Set([ids[0]]) : new Set([...prev, ...ids]));
+  const toggleGroup = (id: string, kind: 'plan' | 'suite') => {
+    const setter = kind === 'plan' ? setSelectedPlanIds : setSelectedSuiteIds;
+    setter((previous) => {
+      const next = new Set(previous);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
+  const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
   const tzLabel = timezoneLabel(timezone);
   const cron = tab === 'cron' ? cronResolved.expression : buildCron(tab, time, weekdays, monthDay);
   const runAt = tab === 'once' ? zonedInputToUtcIso(onceAt, timezone) : '';
@@ -682,36 +669,39 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
   const scheduleReady = tab === 'once' ? Boolean(runAt) : Boolean(cron) && !(tab === 'cron' && cronResolved.error);
 
   const submit = async () => {
-    if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
+    if (selectedIds.size === 0) { showToast('Select at least one runnable test case.', { tone: 'error' }); return; }
     if (!title.trim()) { showToast('Enter a schedule title.', { tone: 'error' }); return; }
     if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : tab === 'cron' ? (cronResolved.error || 'Enter a schedule we can read.') : 'Pick a date and time.', { tone: 'error' }); return; }
     // A one-off in the past would be dispatched by the very next scheduler tick.
     if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast(`Pick a future date and time (${tzLabel}).`, { tone: 'error' }); return; }
     setBusy(true);
     try {
+      const selectedItems = [...selectedIds].map((id, index) => {
+        const runnable = runnables.find((item) => runnableKey(item) === id);
+        if (!runnable) return null;
+        return runnable.kind === 'recording'
+          ? { runnableType: 'recording', runnableId: runnable.recordingId, recordingId: runnable.recordingId, stageNo: executionMode === 'sequential' ? index + 1 : 1 }
+          : { runnableType: 'script', runnableId: runnable.scriptId, stageNo: executionMode === 'sequential' ? index + 1 : 1 };
+      }).filter(Boolean);
+      if (selectedItems.length !== selectedIds.size) throw new Error('One or more selected tests are no longer available. Refresh and try again.');
       const payload = tab === 'once'
         ? { kind: 'once', runAt, timezone, title: title.trim() }
         : { kind: 'cron', cron, timezone, title: title.trim() };
+      const workflow = { items: selectedItems, executionMode, failurePolicy, maxConcurrency: executionMode === 'sequential' ? 1 : maxConcurrency };
       if (schedule) {
-        const runnable = runnables.find((item) => runnableKey(item) === [...selected][0]);
-        const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...(runnable?.kind === 'recording' ? { recordingId: runnable.recordingId } : { scriptId: runnable?.scriptId }), enabled: schedule.enabled }) });
+        const response = await fetch(`/api/automation/schedules/${schedule.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...workflow, enabled: schedule.enabled }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not update the schedule.');
         showToast('Schedule updated.', { tone: 'success' });
         onCreated();
         onClose();
         return;
       }
-      const results = await Promise.all([...selected].map(async (id) => {
-        const runnable = runnables.find((item) => runnableKey(item) === id);
-        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...(runnable?.kind === 'recording' ? { recordingId: runnable.recordingId } : { scriptId: runnable?.scriptId }) }) });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
-        return true;
-      }));
-      const ok = results.filter(Boolean).length;
-      if (ok === 0) throw new Error();
-      showToast(`Created ${ok} cron schedule${ok > 1 ? 's' : ''}.`, { tone: 'success' });
-      if (ok < selected.size) showToast(`${selected.size - ok} script${selected.size - ok > 1 ? 's were' : ' was'} skipped.`, { tone: 'error' });
+      const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, ...workflow }) });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
+      showToast('Schedule created.', { tone: 'success' });
       setSelected(new Set());
+      setSelectedPlanIds(new Set());
+      setSelectedSuiteIds(new Set());
       onCreated();
       onClose();
     } catch (error: any) { showToast(error?.message || 'Could not create the schedule.', { tone: 'error' }); }
@@ -722,51 +712,34 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     <Modal isOpen={isOpen} onClose={onClose} title={isEditing ? 'Edit schedule' : 'New schedule'} size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy || selected.size === 0 || !title.trim() || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+        <button onClick={submit} disabled={busy || selectedIds.size === 0 || !title.trim() || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} {isEditing ? 'Save Changes' : 'Create Schedule'}
         </button>
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Select runnable tests<RequiredMark /></div>
-          <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected{isEditing ? ' · one test per schedule' : ''}</div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Select schedule scope<RequiredMark /></div>
+          <div className="mt-0.5 text-xs text-[var(--text-muted)]">Choose any number of plans, suites, or runnable test cases.</div>
         </div>
         <label className="relative block w-full max-w-lg">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search scripts, recordings, or tags"
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={selectionSource === 'individual' ? 'Search test cases by name or @tag' : `Search test ${selectionSource}s`}
             className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-8 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
         </label>
       </div>
-      {!isEditing && (
-        <div className="mb-3 grid gap-3 sm:grid-cols-2">
-          <label className="text-xs font-medium text-[var(--text-muted)]">Add scripts from a test plan
-            <select value="" onChange={(event) => { if (event.target.value) addGroupScripts(event.target.value, 'plan'); }} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-              <option value="">Select a plan…</option>
-              {plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name || plan.title || plan.id}</option>)}
-            </select>
-          </label>
-          <label className="text-xs font-medium text-[var(--text-muted)]">Add scripts from a test suite
-            <select value="" onChange={(event) => { if (event.target.value) addGroupScripts(event.target.value, 'suite'); }} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-              <option value="">Select a suite…</option>
-              {suites.map((suite) => <option key={suite.id} value={suite.id}>{suite.name || suite.title || suite.id}</option>)}
-            </select>
-          </label>
-        </div>
-      )}
-      <div className="grid min-h-64 grid-cols-[minmax(180px,0.8fr)_minmax(0,2fr)] overflow-hidden rounded-md border border-[var(--border)]">
-        <div className="max-h-72 overflow-auto border-r border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
-          {folders.map((folder) => <FolderPicker key={folder.id} node={folder} selectedId={selectedFolderId} counts={counts} onSelect={(id) => { setSelectedFolderId(id); setSearch(''); }} />)}
-        </div>
-        <div className="max-h-72 overflow-auto">
+      <div className="mb-3 flex gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/50 p-1" aria-label="Select tests from">
+        {([['individual', 'Test cases', selected.size], ['plan', 'Test plans', selectedPlanIds.size], ['suite', 'Test suites', selectedSuiteIds.size]] as const).map(([id, label, count]) => <button key={id} type="button" onClick={() => { setSelectionSource(id); setSearch(''); }} aria-pressed={selectionSource === id} className={`flex flex-1 items-center justify-center gap-2 rounded px-3 py-2 text-sm font-medium ${selectionSource === id ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'}`}>{label}{count > 0 && <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] tabular-nums">{count}</span>}</button>)}
+      </div>
+      {selectionSource === 'individual' ? <div className="min-h-64 max-h-72 overflow-auto rounded-md border border-[var(--border)]">
           {loading ? <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Loading scripts…</div>
-            : visibleRunnables.length === 0 && matchingManualCases.length === 0 ? <div className="p-4 text-sm text-[var(--text-muted)]">{search ? 'No tests match your search.' : 'No runnable tests in this folder.'}</div>
+            : visibleRunnables.length === 0 && matchingManualCases.length === 0 ? <div className="p-4 text-sm text-[var(--text-muted)]">No tests match your search.</div>
             : visibleRunnables.map((runnable) => (
               <label key={runnableKey(runnable)} className="flex cursor-pointer items-center gap-3 border-b border-[var(--border)] px-3 py-2.5 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
                 <input type="checkbox" checked={selected.has(runnableKey(runnable))} onChange={() => toggle(runnableKey(runnable))} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
                 <Code2 className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-[var(--text-primary)]">{runnable.name}</span>
-                  <span className="block truncate text-xs text-[var(--text-muted)]">{runnable.caseName || (runnable.kind === 'recording' ? 'Record & Play' : 'Repository script')}</span>
+                  <span className="block truncate font-medium text-[var(--text-primary)]">{runnable.caseName || runnable.name}</span>
+                  <span className="block truncate text-xs text-[var(--text-muted)]">{runnable.caseName ? runnable.name : (runnable.kind === 'recording' ? 'Record & Play' : 'Repository script')}</span>
                 </span>
               </label>
             ))}
@@ -776,7 +749,40 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
               <span className="min-w-0 flex-1"><span className="block truncate font-medium">{testCase.title || testCase.id}</span><span className="block truncate text-xs">Manual steps · cannot be scheduled automatically</span></span>
             </div>
           ))}
-        </div>
+      </div> : <div className="max-h-72 min-h-64 overflow-auto rounded-md border border-[var(--border)]">
+        <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]/40 px-4 py-2 text-xs text-[var(--text-muted)]">Select any number of test {selectionSource}s. Overlapping cases are included only once.</div>
+        {visibleGroups.length ? visibleGroups.map((group) => <label key={group.id} className={`flex items-center gap-3 border-b border-[var(--border)] px-4 py-3 text-left text-sm last:border-0 ${group.runnableCount ? 'cursor-pointer hover:bg-[var(--bg-secondary)]' : 'cursor-not-allowed opacity-60'}`}>
+          <input type="checkbox" disabled={!group.runnableCount} checked={(selectionSource === 'plan' ? selectedPlanIds : selectedSuiteIds).has(group.id)} onChange={() => toggleGroup(group.id, selectionSource)} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
+          <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{group.name || group.title || group.id}</span>
+          <span className="shrink-0 text-xs text-[var(--text-muted)]">{group.caseCount} case{group.caseCount === 1 ? '' : 's'}</span>
+          <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${group.runnableCount ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'bg-[var(--border)] text-[var(--text-muted)]'}`}>{group.runnableCount} script{group.runnableCount === 1 ? '' : 's'}</span>
+        </label>) : <div className="p-4 text-sm text-[var(--text-muted)]">No test {selectionSource}s match your search.</div>}
+      </div>}
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-2 text-xs text-[var(--text-muted)]">
+        <span className="font-medium text-[var(--text-primary)]">Selected:</span>
+        <span>{selectedPlanIds.size} plan{selectedPlanIds.size === 1 ? '' : 's'}</span><span>·</span>
+        <span>{selectedSuiteIds.size} suite{selectedSuiteIds.size === 1 ? '' : 's'}</span><span>·</span>
+        <span>{selected.size} individual case{selected.size === 1 ? '' : 's'}</span><span>·</span>
+        <span className="rounded-full bg-[var(--accent)]/15 px-2 py-0.5 font-semibold text-[var(--accent)]">{selectedIds.size} runnable script{selectedIds.size === 1 ? '' : 's'}</span>
+      </div>
+      {selectedRunnables.length > 0 && <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+        <div className="mb-2 text-xs font-medium text-[var(--text-muted)]">Workflow order</div>
+        <ol className="max-h-40 space-y-1 overflow-auto text-sm text-[var(--text-primary)]">{selectedRunnables.map((runnable, index) => <li key={runnableKey(runnable)}>{index + 1}. {runnable.caseName || runnable.name}</li>)}</ol>
+      </div>}
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <label className="text-xs font-medium text-[var(--text-muted)]">Execution mode
+          <select value={executionMode} onChange={(event) => setExecutionMode(event.target.value as 'sequential' | 'parallel')} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+            <option value="parallel">Parallel</option><option value="sequential">Sequential</option>
+          </select>
+        </label>
+        <label className="text-xs font-medium text-[var(--text-muted)]">On failure
+          <select value={failurePolicy} onChange={(event) => setFailurePolicy(event.target.value as 'stop' | 'continue')} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+            <option value="continue">Continue remaining tests</option><option value="stop">Stop remaining tests</option>
+          </select>
+        </label>
+        <label className="text-xs font-medium text-[var(--text-muted)]">Parallel limit
+          <input type="number" min={1} max={20} value={executionMode === 'sequential' ? 1 : maxConcurrency} disabled={executionMode === 'sequential'} onChange={(event) => setMaxConcurrency(Math.min(20, Math.max(1, Number(event.target.value) || 1)))} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] disabled:opacity-50" />
+        </label>
       </div>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
         Schedule title<RequiredMark />

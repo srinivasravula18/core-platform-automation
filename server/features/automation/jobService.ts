@@ -62,7 +62,7 @@ const setStatus = setJobStatus;
  * scheduler so scheduled runs fire even when the user's agent is offline. The caller then invokes
  * the server runner. No agent dispatch happens here.
  */
-export async function createServerJob(input: { recordingId: string; scheduleId?: string; trigger?: JobTrigger }, scope: Scope) {
+export async function createServerJob(input: { recordingId: string; scheduleId?: string; trigger?: JobTrigger; script?: string; scheduleExecutionId?: string; scheduleItemId?: string; stageNo?: number; position?: number }, scope: Scope) {
   const now = new Date().toISOString();
   const job = await AutomationJobs.upsert({
     id: uid('JOB'),
@@ -74,6 +74,11 @@ export async function createServerJob(input: { recordingId: string; scheduleId?:
     queuedAt: now,
     summary: {},
     error: '',
+    script: input.script || '',
+    scheduleExecutionId: input.scheduleExecutionId || '',
+    scheduleItemId: input.scheduleItemId || '',
+    stageNo: input.stageNo,
+    position: input.position,
     ...scopeStamp(scope),
   });
   persist('server job created');
