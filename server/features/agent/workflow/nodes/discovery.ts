@@ -28,6 +28,9 @@ export interface RunDiscoveryNodeInput {
   auth?: { storageStatePath?: string; sessionStorageState?: { origin: string; items: Record<string, string> } };
   /** Prior same-mission selectors are hints only; every one is revalidated on the live page before reuse. */
   priorElements?: VerifiedElement[];
+  /** Goal terms (object nouns from the prompt) — steer discovery toward the object the goal names instead of
+   * scraping only the landing page. Empty ⇒ legacy goal-blind behaviour. */
+  goalTerms?: string[];
 }
 
 export interface DiscoveryPageSummary {
@@ -151,11 +154,10 @@ async function markOpenFormOverlay(page: any): Promise<string | null> {
   return found ? '[data-tf-form-scope="1"]' : null;
 }
 
-/** Goal-aware discovery — ON by default; GOAL_AWARE_DISCOVERY_V1=0/false/off reverts to the goal-blind
- * single-page scrape. App-agnostic: it only matches captured control labels against the goal's OWN terms. */
+/** Goal-aware discovery — permanently on, no env flag. App-agnostic: it only matches captured
+ * control labels against the goal's OWN terms. */
 function isGoalAwareDiscoveryEnabled(): boolean {
-  const raw = String(process.env.GOAL_AWARE_DISCOVERY_V1 ?? '').trim().toLowerCase();
-  return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
+  return true;
 }
 
 /** Object-affinity: how many goal terms appear (as substrings) in a control's accessible name. */
@@ -213,11 +215,12 @@ async function navigateToGoalObject(page: any, elements: VerifiedElement[], goal
  * (inline panel OR new route), then RESTORES the list state (re-navigates if the URL changed) so the rest of
  * the catalog stays valid. Read-mostly: it never clicks Save/Delete — the real submit happens at execution.
  */
-async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, maxElements?: number): Promise<BehaviorObservation | null> {
+async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, goalTerms: string[] = [], maxElements?: number): Promise<BehaviorObservation | null> {
   const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
-  const opener = elements.find((e) => e.status === 'verified' && e.interactive && e.resolved_selector
-    && ['button', 'link', 'menuitem'].includes(String(e.role || ''))
-    && FORM_OPENER_LABEL.test(String(e.name || '').trim()));
+  // Prefer the create opener that matches the goal (e.g. "New Role" for a Role goal); tie/none ⇒ the first
+  // opener (legacy behaviour). Stable sort keeps document order among equal-affinity openers.
+  const opener = elements.filter(isCreateOpener)
+    .sort((a, b) => goalAffinity(b.name, goalTerms) - goalAffinity(a.name, goalTerms))[0];
   if (!opener) return null;
   let behavior: BehaviorObservation | null = null;
   const beforeUrl = String(page.url?.() || '');
@@ -314,9 +317,14 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         const elements = await captureVerifiedElementsForOpenPage(page, { maxElements: input.maxElements });
         await revalidatePriorElements(page, elements, input.priorElements);
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
+        // Goal-aware step (flag-gated, additive): if the landing page exposes no create form, navigate to the
+        // object the goal names first so its create modal is captured — the fix for "authoring blocked / timeout
+        // on an unreachable control". Empty goalTerms (flag off) ⇒ this no-ops and behaviour is unchanged.
+        const goalTerms = isGoalAwareDiscoveryEnabled() && Array.isArray(input.goalTerms) ? input.goalTerms : [];
+        if (goalTerms.length) await navigateToGoalObject(page, elements, goalTerms, targetUrl, input.maxElements);
         // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
         // Also returns the observed form behaviour (BEHAVIOR_ORACLE_V1) probed while the form was open.
-        const behavior = await exploreFormState(page, elements, targetUrl, input.maxElements);
+        const behavior = await exploreFormState(page, elements, targetUrl, goalTerms, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.
         const artifacts = sessionArtifacts(sessionId);

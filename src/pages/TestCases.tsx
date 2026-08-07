@@ -378,7 +378,7 @@ export default function TestCases() {
       setIsCaseModalOpen(false);
       fetchCases();
     } catch (error: any) {
-      setAttachmentError(error.message || 'Could not save test case.');
+      showAlert(error.message || 'Could not save test case.');
     }
   };
 
