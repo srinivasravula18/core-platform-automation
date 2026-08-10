@@ -194,8 +194,13 @@ export default function TestRuns() {
   }, []);
 
   // Quiet runs-only refetch (no full-page loading flash) used to poll a live automation run.
+  const runsInFlight = useRef(false);
   const refreshRunsQuiet = useCallback(async () => {
-    try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
+    if (runsInFlight.current) return;
+    runsInFlight.current = true;
+    try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); }
+    catch { /* keep */ }
+    finally { runsInFlight.current = false; }
   }, []);
 
   const pendingRun = (location.state as any)?.pendingRun;
@@ -210,6 +215,15 @@ export default function TestRuns() {
     if (!hasRunningRuns) return;
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
+  }, [hasRunningRuns, refreshRunsQuiet]);
+
+  // Background tabs throttle setInterval, so also resync on visibility/focus regain.
+  useEffect(() => {
+    if (!hasRunningRuns) return;
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshRunsQuiet(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
   }, [hasRunningRuns, refreshRunsQuiet]);
 
   // Tick a 1s clock while any run is mid-flight (started, not yet completed) so the Duration column

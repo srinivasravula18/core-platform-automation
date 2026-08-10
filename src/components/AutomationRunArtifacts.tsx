@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Download, FileVideo, Image as ImageIcon, FileArchive, FileText, Copy } from 'lucide-react';
 import { showToast } from '@/src/lib/dialog';
 import { useAgentEvents, useJobPauses, jobStatusMeta, type Job } from '@/src/lib/useAutomation';
@@ -60,14 +60,24 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
   const [clock, setClock] = useState(() => Date.now());
   const { pauses } = useJobPauses(jobId);
 
+  // Interval ticks, visibility/focus regain, and SSE pushes can all fire close together; without a
+  // guard each would fire its own overlapping fetch, and slow ones queue up behind the origin's
+  // concurrent-connection cap instead of the run ever refreshing.
+  const jobInFlight = useRef(false);
+  const artifactsInFlight = useRef(false);
   const loadJob = useCallback(async () => {
-    if (summaryOnly) return;
-    try { const d = await fetch(`/api/automation/jobs/${jobId}`).then((r) => r.json()); setJob(d?.job || null); } catch { /* keep */ }
+    if (summaryOnly || jobInFlight.current) return;
+    jobInFlight.current = true;
+    try { const d = await fetch(`/api/automation/jobs/${jobId}`).then((r) => r.json()); setJob(d?.job || null); }
+    catch { /* keep */ }
+    finally { jobInFlight.current = false; }
   }, [jobId, summaryOnly]);
   const loadArtifacts = useCallback(async () => {
     if (summaryOnly) { setLoading(false); return; }
+    if (artifactsInFlight.current) return;
+    artifactsInFlight.current = true;
     try { const a = await fetch(`/api/automation/jobs/${jobId}/artifacts`).then((r) => r.json()); setArtifacts(Array.isArray(a?.artifacts) ? a.artifacts : []); }
-    finally { setLoading(false); }
+    finally { setLoading(false); artifactsInFlight.current = false; }
   }, [jobId, summaryOnly]);
 
   useEffect(() => { setLogs([]); void loadJob(); void loadArtifacts(); }, [loadJob, loadArtifacts]);
@@ -78,6 +88,15 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
     const timer = window.setInterval(() => { void loadJob(); void loadArtifacts(); }, 2000);
     return () => window.clearInterval(timer);
   }, [job?.status, loadJob, loadArtifacts]);
+
+  // Background tabs throttle setInterval, so also resync on visibility/focus regain.
+  useEffect(() => {
+    if (summaryOnly) return;
+    const onVisible = () => { if (document.visibilityState === 'visible') { void loadJob(); void loadArtifacts(); } };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
+  }, [summaryOnly, loadJob, loadArtifacts]);
 
   useAgentEvents((evt) => {
     if (summaryOnly) return;
