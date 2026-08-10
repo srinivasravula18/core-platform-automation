@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bug, ChevronLeft, ChevronRight, Code2, Search } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Timestamp } from '@/src/components/Timestamp';
@@ -7,6 +7,7 @@ import { OutcomeDot, outcomeStyle } from './manualRunner/OutcomeSelect';
 import { RunSummaryPanel } from './manualRunner/RunSummaryPanel';
 import { applyExecutionProgress, type ExecutionStepProgress } from '@/core/shared/automationProgress';
 import { useAgentEvents } from '@/src/lib/useAutomation';
+import { runExecutionState } from '@/src/lib/manualTestRun';
 
 function outcomeFor(steps: any[]) {
   const statuses = steps.map((step) => String(step?.outcome || step?.status || ''));
@@ -45,18 +46,38 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
   const [filter, setFilter] = useState<'all' | 'failed' | 'passed' | 'not-run'>('all');
   const [executionSteps, setExecutionSteps] = useState<ExecutionStepProgress[]>([]);
   const jobId = String(run.triggerMeta?.automationJobId || '');
+  const executionStepsInFlight = useRef(false);
   const loadExecutionSteps = useCallback(async () => {
     if (!jobId) return setExecutionSteps([]);
+    if (executionStepsInFlight.current) return;
+    executionStepsInFlight.current = true;
     try {
       const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}`).then((response) => response.json());
       setExecutionSteps(Array.isArray(data?.job?.summary?.executionSteps) ? data.job.summary.executionSteps : []);
     } catch { /* keep the last durable result */ }
+    finally { executionStepsInFlight.current = false; }
   }, [jobId]);
   // The parent polls the linked run while execution is active. Reload the job summary when that
   // run becomes terminal too; otherwise this workspace keeps the initial queued step list and
   // renders Not Run even though the server already recorded the final result.
   useEffect(() => { setExecutionSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps, run.status, run.completedAt]);
   useAgentEvents((event) => { if (event.scopeType === 'job' && event.scopeId === jobId) void loadExecutionSteps(); });
+
+  // SSE is the primary channel here; poll as a fallback and resync on visibility/focus regain,
+  // matching AutomationRunArtifacts/TestRuns so this panel can't fall behind them.
+  const running = runExecutionState(run).running;
+  useEffect(() => {
+    if (!running || !jobId) return;
+    const timer = window.setInterval(() => { void loadExecutionSteps(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [running, jobId, loadExecutionSteps]);
+  useEffect(() => {
+    if (!running || !jobId) return;
+    const onVisible = () => { if (document.visibilityState === 'visible') void loadExecutionSteps(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
+  }, [running, jobId, loadExecutionSteps]);
   const results = useMemo(() => cases.map((testCase) => {
     const stepResults = stepsForCase(run, testCase, executionSteps);
     return { caseId: testCase.id, caseTitle: testCase.title, priority: testCase.priority, tags: testCase.tags || [], outcome: outcomeFor(stepResults), stepResults };
