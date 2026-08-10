@@ -50,7 +50,7 @@ function stepTone(status: ExecutionStepProgress['status']): string {
   return 'text-blue-400';
 }
 
-export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, runDuration }: { jobId: string; videoOnly?: boolean; runSummary?: { passed: number; failed: number; skipped: number; blocked: number; retest: number; untested: number }; runDuration?: string }) {
+export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly = false, hideSummary = false, hideProgress = false, progressOnly = false, runSummary, runDuration }: { jobId: string; videoOnly?: boolean; summaryOnly?: boolean; hideSummary?: boolean; hideProgress?: boolean; progressOnly?: boolean; runSummary?: { passed: number; failed: number; skipped: number; blocked: number; retest: number; untested: number }; runDuration?: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -61,23 +61,26 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
   const { pauses } = useJobPauses(jobId);
 
   const loadJob = useCallback(async () => {
+    if (summaryOnly) return;
     try { const d = await fetch(`/api/automation/jobs/${jobId}`).then((r) => r.json()); setJob(d?.job || null); } catch { /* keep */ }
-  }, [jobId]);
+  }, [jobId, summaryOnly]);
   const loadArtifacts = useCallback(async () => {
+    if (summaryOnly) { setLoading(false); return; }
     try { const a = await fetch(`/api/automation/jobs/${jobId}/artifacts`).then((r) => r.json()); setArtifacts(Array.isArray(a?.artifacts) ? a.artifacts : []); }
     finally { setLoading(false); }
-  }, [jobId]);
+  }, [jobId, summaryOnly]);
 
   useEffect(() => { setLogs([]); void loadJob(); void loadArtifacts(); }, [loadJob, loadArtifacts]);
 
   // SSE can be missed while a tab is hidden or reconnecting; poll until the durable job is terminal.
   useEffect(() => {
-    if (job && !['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status)) return;
+    if (summaryOnly || (job && !['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status))) return;
     const timer = window.setInterval(() => { void loadJob(); void loadArtifacts(); }, 2000);
     return () => window.clearInterval(timer);
   }, [job?.status, loadJob, loadArtifacts]);
 
   useAgentEvents((evt) => {
+    if (summaryOnly) return;
     if (evt.scopeType !== 'job' || evt.scopeId !== jobId) return;
     void loadJob();
     if (evt.type === 'job.log' && evt.data.line) setLogs((p) => [...p.slice(-499), String(evt.data.line)]);
@@ -85,6 +88,7 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
   });
 
   useEffect(() => {
+    if (summaryOnly) return;
     let urls: string[] = [];
     (async () => {
       for (const a of artifacts.filter((x) => x.kind === 'video' || x.kind === 'screenshot')) {
@@ -92,7 +96,7 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
       }
     })();
     return () => { urls.forEach((u) => URL.revokeObjectURL(u)); };
-  }, [artifacts, jobId]);
+  }, [artifacts, jobId, summaryOnly]);
 
   const s = job?.summary || {};
   const status = job?.status || 'queued';
@@ -109,10 +113,10 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
   const progress = automationProgressPercent(status === 'awaiting_user' ? 'running' : status, Number((s as any).stepCompleted) || completedSteps, stepTotal, String((s as any).event || ''));
 
   useEffect(() => {
-    if (!running) return;
+    if (summaryOnly || !running) return;
     const timer = window.setInterval(() => setClock(Date.now()), 250);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [running, summaryOnly]);
 
   if (videoOnly) {
     return video && previews[video.id]
@@ -120,22 +124,28 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
       : <div className="flex min-h-32 items-center justify-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Generating video preview…</div>;
   }
 
+  const summary = <>
+    <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      Automated execution
+      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold normal-case tracking-normal ${meta.cls}`}>{meta.label}</span>
+    </div>
+    <div className="grid grid-cols-2 divide-x divide-y divide-[var(--border)] overflow-hidden rounded-md border border-[var(--border)] sm:grid-cols-4 xl:grid-cols-7 xl:divide-y-0">
+      <Stat label="Passed" value={runSummary?.passed ?? (s as any).passed ?? 0} />
+      <Stat label="Failed" value={runSummary?.failed ?? (s as any).failed ?? 0} />
+      <Stat label="Skipped" value={runSummary?.skipped ?? (s as any).skipped ?? 0} />
+      <Stat label="Blocked" value={runSummary?.blocked ?? 0} />
+      <Stat label="Retest" value={runSummary?.retest ?? 0} />
+      <Stat label="Untested" value={runSummary?.untested ?? 0} />
+      <Stat label="Duration" value={runDuration || duration(Number((s as any).durationMs) || elapsedMs)} />
+    </div>
+  </>;
+
+  if (summaryOnly) return <div className="mx-5 mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/30 px-5 py-4">{summary}</div>;
+
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 px-4 py-4">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-        Execution Artifacts
-        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
-      </div>
-      <div className="grid gap-2 grid-cols-2 sm:grid-cols-4 xl:grid-cols-7">
-        <Stat label="Passed" value={runSummary?.passed ?? (s as any).passed ?? 0} />
-        <Stat label="Failed" value={runSummary?.failed ?? (s as any).failed ?? 0} />
-        <Stat label="Skipped" value={runSummary?.skipped ?? (s as any).skipped ?? 0} />
-        <Stat label="Blocked" value={runSummary?.blocked ?? 0} />
-        <Stat label="Retest" value={runSummary?.retest ?? 0} />
-        <Stat label="Untested" value={runSummary?.untested ?? 0} />
-        <Stat label="Duration" value={runDuration || duration(Number((s as any).durationMs) || elapsedMs)} />
-      </div>
-      {(running || steps.length > 0) && (
+    <div className="border border-[var(--border)] bg-[var(--bg-secondary)]/30 px-4 py-4">
+      {!hideSummary && summary}
+      {!hideProgress && (running || steps.length > 0) && (
         <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-sm font-semibold text-[var(--text-primary)]">Execution Progress</div>
@@ -190,6 +200,7 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
           </div>
         </div>
       )}
+      {!progressOnly && <>
       {job?.error && <div className="mt-2 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">{job.error}</div>}
 
       {pauses.length > 0 && (
@@ -253,14 +264,15 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, runSummary, r
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-200">{logs.join('\n')}</pre>
         </div>
       )}
+      </>}
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-center">
-      <div className="text-lg font-semibold text-[var(--text-primary)]">{value}</div>
+    <div className="bg-[var(--bg-card)] px-3 py-2.5 text-center">
+      <div className={`text-lg font-semibold ${label === 'Passed' ? 'text-emerald-400' : label === 'Failed' ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>{value}</div>
       <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div>
     </div>
   );

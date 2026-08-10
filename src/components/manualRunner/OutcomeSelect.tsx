@@ -19,6 +19,10 @@ export function outcomeStyle(outcome: string) {
   return OUTCOME_STYLE[outcome] || OUTCOME_STYLE['Not Run'];
 }
 
+function outcomeLabel(outcome: string) {
+  return outcome === 'Paused' ? 'In Progress' : outcome;
+}
+
 export function OutcomeDot({ outcome }: { outcome: string }) {
   return <span className={cn('inline-block h-2.5 w-2.5 shrink-0 rounded-full', outcomeStyle(outcome).dot)} />;
 }
@@ -46,7 +50,7 @@ export function OutcomeSelect({
         aria-label="Set outcome"
       >
         {SELECTABLE_MANUAL_OUTCOMES.map((o) => (
-          <option key={o} value={o} className="bg-[var(--bg-card)] text-[var(--text-primary)]">{o}</option>
+          <option key={o} value={o} className="bg-[var(--bg-card)] text-[var(--text-primary)]">{outcomeLabel(o)}</option>
         ))}
       </select>
     </span>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bug, Check, X, Circle, Clock, PanelLeftClose, PanelLeftOpen, Play, Square } from 'lucide-react';
+import { Bug, Check, X, Circle, Clock, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Play, Search, Square } from 'lucide-react';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
@@ -45,10 +45,10 @@ function ManualExecutionArtifacts({ results, duration, status }: { results: any[
     untested: outcomes.filter((outcome) => outcome === 'Not Run' || outcome === 'Paused').length,
   };
   const meta = status === 'Passed' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : status === 'Failed' ? 'text-red-400 border-red-500/30 bg-red-500/10' : 'text-[var(--text-muted)] border-[var(--border)] bg-[var(--bg-secondary)]';
-  return <div className="mx-5 mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-4">
-    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">Execution Artifacts <span className={`rounded-full border px-2 py-0.5 text-xs ${meta}`}>{status}</span></div>
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
-      {Object.entries({ Passed: stats.passed, Failed: stats.failed, Skipped: stats.skipped, Blocked: stats.blocked, Retest: stats.retest, Untested: stats.untested, Duration: duration }).map(([label, value]) => <div key={label} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-center"><div className="text-lg font-semibold text-[var(--text-primary)]">{value}</div><div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div></div>)}
+  return <div className="mx-5 mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/30 px-5 py-4">
+    <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Manual execution <span className={`rounded-full border px-2 py-0.5 text-[10px] normal-case tracking-normal ${meta}`}>{status}</span></div>
+    <div className="grid grid-cols-2 divide-x divide-y divide-[var(--border)] overflow-hidden rounded-md border border-[var(--border)] sm:grid-cols-4 xl:grid-cols-7 xl:divide-y-0">
+      {Object.entries({ Passed: stats.passed, Failed: stats.failed, Skipped: stats.skipped, Blocked: stats.blocked, Retest: stats.retest, Untested: stats.untested, Duration: duration }).map(([label, value]) => <div key={label} className="bg-[var(--bg-card)] px-3 py-2.5 text-center"><div className={`text-lg font-semibold ${label === 'Passed' ? 'text-emerald-400' : label === 'Failed' ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>{value}</div><div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div></div>)}
     </div>
   </div>;
 }
@@ -83,6 +83,8 @@ export function ManualRunner({
   const [selectedCase, setSelectedCase] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOutcome, setBulkOutcome] = useState<ManualOutcome>('Passed');
+  const [caseQuery, setCaseQuery] = useState('');
+  const [caseFilter, setCaseFilter] = useState<'all' | 'failed' | 'passed' | 'not-run'>('all');
   const [busy, setBusy] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [isCasePanelMinimized, setIsCasePanelMinimized] = useState(false);
@@ -95,8 +97,8 @@ export function ManualRunner({
   const rollup = computeRunRollup(results);
   const executionEditable = editable && isManualRunActive(run);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const [r, d] = await Promise.all([
         fetch(`/api/runs/${encodeURIComponent(run.id)}/results`).then((x) => x.json()),
@@ -107,7 +109,7 @@ export function ManualRunner({
     } catch {
       setResults([]);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [run.id]);
 
@@ -179,13 +181,13 @@ export function ManualRunner({
   // Start a manual run (no scripts) — begins the clock; the tester then records outcomes/evidence.
   const startRun = () => run_(async () => {
     await api(`/api/runs/${encodeURIComponent(run.id)}/start`, {});
-    await load();
+    await load(false);
   });
 
   // Stop/finish a manual run — freezes the duration and marks it Completed.
   const stopRun = () => run_(async () => {
     await api(`/api/runs/${encodeURIComponent(run.id)}/stop`, {});
-    await load();
+    await load(false);
   });
 
   const toggleSelect = (caseId: string) => setSelected((prev) => {
@@ -194,6 +196,8 @@ export function ManualRunner({
     return next;
   });
   const allSelected = results.length > 0 && selected.size === results.length;
+  const visibleResults = results.filter((result) => (caseFilter === 'all' || (caseFilter === 'not-run' ? String(result.outcome || 'Not Run') === 'Not Run' : String(result.outcome || '').toLowerCase() === caseFilter)) && `${result.caseTitle || ''} ${result.caseId} ${(caseById.get(result.caseId)?.tags || []).join(' ')}`.toLowerCase().includes(caseQuery.toLowerCase()));
+  const resultCount = (outcome: string) => results.filter((result) => String(result.outcome || 'Not Run') === outcome).length;
 
   const selectedResult = results.find((r) => r.caseId === selectedCase) || null;
   // A case-less manual run authors its own steps: one result keyed to the run itself. No left case list.
@@ -204,12 +208,18 @@ export function ManualRunner({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <ManualExecutionArtifacts results={results} duration={formatDuration(run, now)} status={rollup.status} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden bg-[var(--bg-secondary)]/20">
         {/* LEFT: bulk toolbar + test-points list (hidden for a standalone step-authored run) */}
         {!standalone && !isCasePanelMinimized && (
-        <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--border)]">
+        <aside className="flex h-[calc(100dvh-10rem)] w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-card)]">
+          <div className="border-b border-[var(--border)] p-3">
+            <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]"><span>Cases in this run</span><span className="normal-case tracking-normal">{results.length - resultCount('Not Run')} of {results.length} evaluated</span></div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--bg-secondary)]"><div className="h-full bg-[var(--accent)] transition-[width]" style={{ width: `${results.length ? ((results.length - resultCount('Not Run')) / results.length) * 100 : 0}%` }} /></div>
+            <label className="relative mt-3 block"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" /><input value={caseQuery} onChange={(event) => setCaseQuery(event.target.value)} placeholder="Search cases…" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-1.5 pl-8 pr-2 text-xs outline-none focus:border-[var(--accent)]" /></label>
+            <div className="mt-2 flex flex-wrap gap-1">{([['all', `All ${results.length}`], ['failed', `Failed ${resultCount('Failed')}`], ['passed', `Passed ${resultCount('Passed')}`], ['not-run', `Not started ${resultCount('Not Run')}`]] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setCaseFilter(value)} className={`rounded-full border px-2 py-1 text-[10px] font-medium ${caseFilter === value ? 'border-[var(--accent)]/30 bg-[var(--accent)]/15 text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>{label}</button>)}</div>
+          </div>
           {editable && (
-            <div className="flex flex-nowrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5">
+            <div className="hidden flex-nowrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5">
               <label className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--text-muted)]">
                 <input type="checkbox" disabled={!executionEditable} checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(results.map((r) => r.caseId)))} />
                 {selected.size ? `${selected.size} selected` : 'All'}
@@ -220,24 +230,24 @@ export function ManualRunner({
               <button type="button" disabled={busy || !executionEditable} onClick={bulkSet} className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                 Apply{selected.size ? ` (${selected.size})` : ' all'}
               </button>
-              <button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]">
-                <PanelLeftClose className="h-4 w-4" />
+              <button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="group shrink-0 rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]">
+                <PanelLeftClose className="h-4 w-4 transition-transform duration-200 group-hover:-translate-x-0.5" />
               </button>
             </div>
           )}
           {!editable && <div className="flex justify-end border-b border-[var(--border)] px-3 py-2"><button type="button" onClick={() => setIsCasePanelMinimized(true)} title="Minimize test case panel" aria-label="Minimize test case panel" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"><PanelLeftClose className="h-4 w-4" /></button></div>}
-          <div className="border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          <div className="hidden border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
             <span className="font-medium text-[var(--text-primary)]">{rollup.status}</span> · {rollup.progress}
           </div>
           <ul className="min-h-0 flex-1 overflow-y-auto">
             {results.length === 0 ? (
               <li className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">No test points in this run.</li>
-            ) : results.map((result) => {
+            ) : visibleResults.map((result) => {
               const isSelected = result.caseId === selectedCase;
               const title = result.caseTitle || caseById.get(result.caseId)?.title || result.caseId;
               return (
-                <li key={result.caseId} className={isSelected ? 'bg-[var(--bg-secondary)]' : ''}>
-                  <div className="flex items-center gap-2 px-3 py-2">
+                <li key={result.caseId} className={isSelected ? 'border-l-2 border-[var(--accent)] bg-[var(--accent)]/10' : 'border-l-2 border-transparent hover:bg-[var(--bg-secondary)]/60'}>
+                  <div className="flex items-center gap-2 px-3 py-2.5">
                     {editable && <input type="checkbox" disabled={!executionEditable} checked={selected.has(result.caseId)} onChange={() => toggleSelect(result.caseId)} onClick={(e) => e.stopPropagation()} />}
                     <button type="button" onClick={() => setSelectedCase(result.caseId)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
                       <OutcomeDot outcome={result.outcome || 'Not Run'} />
@@ -261,12 +271,19 @@ export function ManualRunner({
               );
             })}
           </ul>
+          <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2">
+            <button type="button" disabled={!selectedCase || results.findIndex((result) => result.caseId === selectedCase) === 0} onClick={() => { const index = results.findIndex((result) => result.caseId === selectedCase); if (index > 0) setSelectedCase(results[index - 1].caseId); }} aria-label="Previous test case" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button>
+            <span className="text-[10px] text-[var(--text-muted)]">{results.findIndex((result) => result.caseId === selectedCase) + 1} / {results.length}</span>
+            <button type="button" disabled={!selectedCase || results.findIndex((result) => result.caseId === selectedCase) === results.length - 1} onClick={() => { const index = results.findIndex((result) => result.caseId === selectedCase); if (index >= 0 && index < results.length - 1) setSelectedCase(results[index + 1].caseId); }} aria-label="Next test case" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
+          </div>
+          {resultCount('Failed') > 0 && <button type="button" onClick={() => setSelectedCase(results.find((result) => String(result.outcome || '') === 'Failed')?.caseId || null)} className="mx-3 mb-2 rounded-md border border-[var(--border)] py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]">Jump to first failed</button>}
+          {selectedResult && <div className="border-t border-[var(--border)] overflow-y-auto"><RunSummaryPanel run={run} planName={planName} suiteName={suiteName} result={selectedResult} linkedDefects={defects.filter((d: any) => d.linkedCaseId === selectedResult.caseId)} disabled={!executionEditable} authoringDisabled={!executionEditable} onFieldChange={(patch) => setCaseField(selectedResult.caseId, patch)} /></div>}
         </aside>
         )}
 
         {/* RIGHT: selected case result detail */}
         <section className="flex min-w-0 flex-1 flex-col overflow-auto">
-          {!standalone && isCasePanelMinimized && <div className="border-b border-[var(--border)] px-3 py-2"><button type="button" onClick={() => setIsCasePanelMinimized(false)} className="inline-flex items-center gap-1.5 rounded px-1 py-1 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"><PanelLeftOpen className="h-4 w-4" /> Show test cases</button></div>}
+          {!standalone && isCasePanelMinimized && <div className="border-b border-[var(--border)] px-3 py-2"><button type="button" onClick={() => setIsCasePanelMinimized(false)} className="group inline-flex animate-[pulse_0.35s_ease-out] items-center gap-1.5 rounded px-1 py-1 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"><PanelLeftOpen className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" /> Show test cases</button></div>}
           {!selectedResult ? (
             <div className="p-8 text-sm text-[var(--text-muted)]">Select a test case to view its result.</div>
           ) : (
@@ -373,13 +390,17 @@ function ResultDetail({
   return (
     <>
       {/* Result header bar */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-[var(--border)] px-5 py-3">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-[var(--border)] bg-[var(--bg-card)] px-5 py-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{result.caseTitle || result.caseId}</div>
+          <div className="mt-0.5 font-mono text-[10px] text-[var(--text-muted)]">{result.caseId}</div>
+        </div>
         <div className="flex items-center gap-2">
           {/* Start run: a manual run needs no scripts — this just begins the run + duration clock.
               While in progress, Stop finishes it and freezes the duration. */}
-          {editable && runNotStarted ? (
+          {editable && (runNotStarted || runTerminal) ? (
             <button type="button" disabled={busy} onClick={onStart} className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-              <Play className="h-4 w-4" /> Start run
+              <Play className="h-4 w-4" /> {runTerminal ? 'Restart run' : 'Start run'}
             </button>
           ) : (
             <>
@@ -424,17 +445,6 @@ function ResultDetail({
           )}
         </div>
       </div>
-
-      <RunSummaryPanel
-        run={run}
-        planName={planName}
-        suiteName={suiteName}
-        result={result}
-        linkedDefects={defects.filter((d: any) => d.linkedCaseId === result.caseId)}
-        disabled={!executionEditable}
-        authoringDisabled={!executionEditable}
-        onFieldChange={onFieldChange}
-      />
 
       {/* Steps */}
       <div className="px-5 pb-6">

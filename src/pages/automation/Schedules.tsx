@@ -8,6 +8,7 @@ import { RequiredMark } from '@/src/components/RequiredMark';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { useRemoteAgentFlag, useSchedules, useRecordings, useJobs, useAgentEvents, jobStatusMeta, ACTIVE_JOB_STATUSES, type Schedule, type Job } from '@/src/lib/useAutomation';
 import { casesForPlan, casesForSuite } from '@/src/lib/manualTestRun';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 
 function fmt(iso: string | null): string {
   if (!iso) return '—';
@@ -170,6 +171,7 @@ export default function Schedules() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Schedule | null>(null);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState>(null);
 
   // The job that started when a schedule most recently fired, while it is still running — keyed by
   // scheduleId so the row can show live progress instead of only the stale "Last Run" timestamp.
@@ -211,6 +213,9 @@ export default function Schedules() {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
     return (id: string) => m.get(id) || id;
   }, [recordings]);
+  const itemsFor = useCallback((schedule: Schedule) => schedule.items?.length
+    ? schedule.items
+    : [{ id: `legacy-${schedule.id}`, recordingId: schedule.recordingId, runnableId: schedule.recordingId, runnableType: 'recording' as const, stageNo: 1, position: 1, enabled: true }], []);
 
   const openSchedule = async (schedule: Schedule) => {
     const job = lastJobByScheduleId.get(schedule.id);
@@ -235,6 +240,12 @@ export default function Schedules() {
     try { await fetch(`/api/automation/schedules/${id}`, { method: 'DELETE' }); showToast('Schedule deleted.', { tone: 'success' }); void refresh(); }
     catch { showToast('Could not delete the schedule.', { tone: 'error' }); }
   };
+
+  const sortedSchedules = sortRows(schedules, sort, {
+    schedule: (s) => s.title || nameFor(s.recordingId), runsAt: (s) => s.nextRunAt,
+    lastRun: (s) => s.lastRunAt, status: (s) => activeJobByScheduleId.get(s.id)?.status || lastJobByScheduleId.get(s.id)?.status,
+    enabled: (s) => s.enabled,
+  });
 
   if (flag === false) return <div className="p-6 text-sm text-[var(--text-muted)]">The local desktop agent feature is not enabled on this server.</div>;
 
@@ -262,25 +273,29 @@ export default function Schedules() {
           <table className="w-full min-w-[720px] whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
-                <th className="px-4 py-2.5 font-medium">Schedule</th>
-                <th className="px-4 py-2.5 font-medium">Runs At</th>
-                <th className="px-4 py-2.5 font-medium">Last Run</th>
-                <th className="px-4 py-2.5 font-medium">Status</th>
-                <th className="px-4 py-2.5 font-medium">Enabled</th>
+                <SortableHeader label="Schedule" column="schedule" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5 font-medium" />
+                <SortableHeader label="Runs At" column="runsAt" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5 font-medium" />
+                <SortableHeader label="Last Run" column="lastRun" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5 font-medium" />
+                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5 font-medium" />
+                <SortableHeader label="Enabled" column="enabled" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5 font-medium" />
                 <th className="px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {schedules.map((s) => {
+              {sortedSchedules.map((s) => {
                 const activeJob = activeJobByScheduleId.get(s.id) || null;
                 const lastJob = lastJobByScheduleId.get(s.id) || null;
+                const scheduledItems = itemsFor(s);
+                const scheduledNames = scheduledItems.map((item) => nameFor(item.recordingId));
                 return (
                 <tr key={s.id} onClick={() => { void openSchedule(s); }} className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)] focus-within:bg-[var(--bg-secondary)]">
                   <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">
                     <button type="button" onClick={(event) => { event.stopPropagation(); void openSchedule(s); }} className="flex max-w-[26rem] items-center gap-1.5 text-left hover:text-[var(--accent)]" title="Open scheduled test">
                       <span className="truncate">{s.title || nameFor(s.recordingId)}</span> <Eye className="h-3.5 w-3.5 shrink-0" />
                     </button>
-                    {s.title && <div className="max-w-[26rem] truncate text-xs font-normal text-[var(--text-muted)]" title={nameFor(s.recordingId)}>{nameFor(s.recordingId)}</div>}
+                    <div className="max-w-[26rem] truncate text-xs font-normal text-[var(--text-muted)]" title={scheduledNames.join('\n')}>
+                      {scheduledItems.length === 1 ? scheduledNames[0] : `${scheduledItems.length} selected tests · ${scheduledNames.slice(0, 2).join(' · ')}${scheduledItems.length > 2 ? '…' : ''}`}
+                    </div>
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
@@ -321,22 +336,30 @@ export default function Schedules() {
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} recordings={recordings} />
       {editing && <NewScheduleModal isOpen schedule={editing} recordings={recordings} onClose={() => setEditing(null)} onCreated={() => { setEditing(null); refresh(); }} />}
-      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} onClose={() => setSelectedScheduleId(null)} />
+      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} recordings={recordings} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
 }
 
-function ScheduleRecordingModal({ schedule, recording, resultJob, resultJobIsLive, onClose }: { schedule: Schedule | null; recording: any | null; resultJob: Job | null; resultJobIsLive: boolean; onClose: () => void }) {
+function ScheduleRecordingModal({ schedule, recording, recordings, resultJob, resultJobIsLive, onClose }: { schedule: Schedule | null; recording: any | null; recordings: any[]; resultJob: Job | null; resultJobIsLive: boolean; onClose: () => void }) {
+  const scheduledItems = schedule?.items?.length
+    ? schedule.items
+    : schedule ? [{ id: `legacy-${schedule.id}`, recordingId: schedule.recordingId, runnableId: schedule.recordingId, runnableType: 'recording' as const, stageNo: 1, position: 1, enabled: true }] : [];
+  const recordingById = new Map(recordings.map((item) => [item.id, item]));
   return <Modal isOpen={!!schedule} onClose={onClose} title="Scheduled test" size="xl"
     footer={<div className="flex justify-end"><button type="button" onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Close</button></div>}>
     {!schedule ? null : <div className="space-y-4">
-      <div><div className="text-lg font-medium text-[var(--text-primary)]">{recording?.name || schedule.recordingId}</div><p className="mt-1 text-sm text-[var(--text-muted)]">This recording runs when the schedule fires.</p></div>
+      <div><div className="text-lg font-medium text-[var(--text-primary)]">{scheduledItems.length === 1 ? recording?.name || schedule.recordingId : `${scheduledItems.length} scheduled tests`}</div><p className="mt-1 text-sm text-[var(--text-muted)]">All selected tests run when this schedule fires.</p></div>
+      <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Selected tests ({scheduledItems.length})</div>
+        <ol className="max-h-40 space-y-1 overflow-auto text-sm text-[var(--text-primary)]">{scheduledItems.map((item, index) => <li key={item.id}>{index + 1}. {recordingById.get(item.recordingId)?.name || item.recordingId}</li>)}</ol>
+      </div>
       <dl className="grid gap-3 text-sm sm:grid-cols-2">
         {schedule.title && <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Title</dt><dd className="mt-1 text-[var(--text-primary)]">{schedule.title}</dd></div>}
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Next run</dt><dd className="mt-1 text-[var(--text-primary)]">{fmt(schedule.nextRunAt)}</dd></div>
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Schedule</dt><dd className="mt-1 font-mono text-[var(--text-primary)]">{schedule.cron || schedule.kind} <span className="font-sans text-xs text-[var(--text-muted)]">({timezoneLabel(schedule.timezone || 'UTC')})</span></dd></div>
-        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Target URL</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
-        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Test case</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">{scheduledItems.length > 1 ? 'First target URL' : 'Target URL'}</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">{scheduledItems.length > 1 ? 'First test case' : 'Test case'}</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
       </dl>
       {resultJob && (
         <div>
@@ -344,7 +367,16 @@ function ScheduleRecordingModal({ schedule, recording, resultJob, resultJobIsLiv
           <AutomationRunArtifacts jobId={resultJob.id} />
         </div>
       )}
-      {recording?.script ? <pre className="max-h-80 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{recording.script}</code></pre> : <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">The recording is no longer available.</div>}
+      <div>
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">Scripts ({scheduledItems.length})</div>
+        <div className="space-y-2">{scheduledItems.map((item, index) => {
+          const itemRecording = recordingById.get(item.recordingId);
+          return <details key={item.id} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-[var(--text-primary)]">{index + 1}. {itemRecording?.name || item.recordingId}</summary>
+            {itemRecording?.script ? <pre className="max-h-80 overflow-auto border-t border-[var(--border)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{itemRecording.script}</code></pre> : <div className="border-t border-[var(--border)] p-3 text-sm text-amber-300">This recording is no longer available.</div>}
+          </details>;
+        })}</div>
+      </div>
     </div>}
   </Modal>;
 }

@@ -14,6 +14,7 @@ import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { AutomatedRunWorkspace } from '@/src/components/AutomatedRunWorkspace';
 import { RunPausePrompt } from '@/src/components/RunPausePrompt';
 import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
@@ -533,6 +534,7 @@ export default function TestRuns() {
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
+    const selectedCanClose = isPendingReviewTestRun(selectedRun) || /^(stopped|cancelled|canceled)$/i.test(String(selectedRun.status || ''));
     const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
     // Resolved from the run's own cases (not a stored display string) so it reflects real composition.
     const runLineageSuiteIds = Array.from(new Set(selectedRunCases.flatMap((testCase) => caseSuiteIds(testCase))));
@@ -568,19 +570,24 @@ export default function TestRuns() {
 
     return (
       <div className="app-page-shell min-h-full">
-        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
-          <div className="p-5 border-b border-[var(--border)]">
-            <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
+        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl shadow-black/10">
+          <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]/35 px-5 py-4">
+            <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] mb-3">
               <button onClick={() => navigate('/runs')} className="inline-flex items-center gap-1 hover:text-[var(--text-primary)]">
                 <ArrowLeft className="w-4 h-4" /> Test Runs
               </button>
               <span>/</span>
               <span className="font-mono">{selectedRun.id}</span>
             </div>
-            <h1 className="truncate text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="truncate text-xl font-semibold tracking-tight text-[var(--text-primary)]">{selectedRun.name}</h1>
+              <span className={cn('inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold', selectedRun.mode === 'manual' ? 'border-sky-500/30 bg-sky-500/10 text-sky-300' : 'border-violet-500/30 bg-violet-500/10 text-violet-300')}>
+                {selectedRun.mode === 'manual' ? 'Manual run' : `Automated · ${selectedRun.executionMode === 'headed' ? 'Headed' : 'Headless'}`}
+              </span>
+            </div>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-                <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
+                <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap font-medium', /pass/i.test(selectedRun.status) ? 'text-emerald-400' : /fail/i.test(selectedRun.status) ? 'text-red-400' : 'text-[var(--text-secondary)]')}><span className={cn('h-2 w-2 rounded-full', /pass/i.test(selectedRun.status) ? 'bg-emerald-400' : /fail/i.test(selectedRun.status) ? 'bg-red-400' : 'bg-slate-500')} /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
                 {selectedRun.triggerMeta?.scheduleId && (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-medium text-indigo-400">
@@ -602,7 +609,7 @@ export default function TestRuns() {
                 {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {isPendingReviewTestRun(selectedRun) && can('runs:update') && (
+                {selectedCanClose && can('runs:update') && (
                   <button
                     onClick={() => { void handleCloseRun(selectedRun); }}
                     disabled={closingRunId === selectedRun.id}
@@ -628,7 +635,7 @@ export default function TestRuns() {
                     disabled={stoppingRunId === selectedRun.id}
                     className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping…' : 'Stop Run'}
+                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping all…' : 'Stop all execution'}
                   </button>
                 )}
                 {selectedRun.mode !== 'manual' && can('runs:execute') && (
@@ -701,17 +708,26 @@ export default function TestRuns() {
             </div>
           )}
 
-          {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
+          <AutomationRunArtifacts
+            jobId={selectedRun.triggerMeta?.automationJobId || selectedRun.id}
+            summaryOnly
+            runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+            runDuration={formatRunDuration(selectedRun, now)}
+          />
+
           {selectedRun.triggerMeta?.automationJobId && (
-            <div className="p-5 border-b border-[var(--border)] overflow-auto">
+            <div className="border-b border-[var(--border)] p-5 overflow-auto">
               <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
               <AutomationRunArtifacts
                 jobId={selectedRun.triggerMeta.automationJobId}
+                hideSummary
+                progressOnly
                 runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
                 runDuration={formatRunDuration(selectedRun, now)}
               />
             </div>
           )}
+
           {evidenceItems.length > 0 && (
             <div className="border-b border-[var(--border)] p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -771,6 +787,22 @@ export default function TestRuns() {
             </div>
           )}
 
+          <AutomatedRunWorkspace run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} />
+
+          {!selectedIsRunning && selectedRun.triggerMeta?.automationJobId && (
+            <div className="border-b border-[var(--border)] p-5 overflow-auto">
+              <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
+              <AutomationRunArtifacts
+                jobId={selectedRun.triggerMeta.automationJobId}
+                hideSummary
+                hideProgress
+                runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+                runDuration={formatRunDuration(selectedRun, now)}
+              />
+            </div>
+          )}
+
+          <div className="hidden">
           <div className="h-2 bg-[var(--bg-secondary)] flex">
             {selectedIsRunning ? (
               <div
@@ -1007,6 +1039,7 @@ export default function TestRuns() {
                 </tbody>
               </table>
             </div>
+          </div>
           </div>
           </>)}
         </div>

@@ -16,9 +16,10 @@ import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
-import { createJob, tryDispatch } from '../automation/jobService';
+import { createJob, createServerJob, tryDispatch } from '../automation/jobService';
 import { isAgentConnected } from '../automation/agentGateway';
 import { recordingForScript } from '../automation/recordingService';
+import { runJobOnServer } from '../automation/serverRunner';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
@@ -671,7 +672,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/runs/:id/close', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
-    if (!isPendingReviewTestRun(run)) return res.status(409).json({ error: 'Only a run pending review can be closed.' });
+    if (!isPendingReviewTestRun(run) && !/^(stopped|cancelled|canceled)$/i.test(String(run.status || ''))) return res.status(409).json({ error: 'Only a run pending review, stopped, or cancelled can be closed.' });
     const scope = reqScope(req);
     const closed = await Runs.upsert({
       ...run,
@@ -810,6 +811,44 @@ export function registerResourceRoutes(app: Express) {
           await tryDispatch(job.id);
           return res.status(202).json({ run: runningRun, executionMode: 'headed', message: runningRun.progress });
         }
+      }
+
+      // A single headless script can use the durable automation job runner too.  That runner is
+      // the source of the live Playwright-step events shown in the Test Run execution flow.
+      const recording = runnableScripts.length === 1
+        ? await recordingForScript(String(runnableScripts[0].id), scope)
+        : null;
+      if (recording) {
+        const job = await createServerJob({
+          recordingId: recording.id,
+          trigger: 'manual',
+          script: String(runnableScripts[0].code || ''),
+        }, scope);
+        const runningRun = {
+          ...run,
+          status: 'Running',
+          state: 'In Progress',
+          progress: 'Running headless on server',
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          evidence: [],
+          steps: [],
+          passed: 0,
+          failed: 0,
+          totalExecutions: 0,
+          executionTime: '',
+          triggerType: 'automation',
+          triggerMeta: {
+            ...withoutAutomationJobMeta(run.triggerMeta),
+            automationJobId: job.id,
+            executionMode: 'headless',
+            automationExecution: { completed: 0, total: 0, percent: 5, phase: 'queued' },
+          },
+        };
+        await Runs.upsert(runningRun);
+        res.status(202).json({ run: runningRun, jobId: job.id, executionMode: 'headless', message: runningRun.progress });
+        setImmediate(() => void runJobOnServer(job.id).catch((error) => console.error('[automation] headless run failed:', error?.message || error)));
+        return;
       }
 
       const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
@@ -2019,7 +2058,8 @@ Rules:
       const stepResults = Array.isArray(r.stepResults) ? r.stepResults.map((step: any, index: number) => index === 0 && !step.startedAt ? { ...step, startedAt: now } : step) : [];
       await RunCaseResults.upsert({ ...r, startedAt: now, stepResults });
     }
-    const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: run.startedAt || now, completedAt: null, progress: 'Run in progress' };
+    const restart = /^(stopped|cancelled|canceled)$/i.test(String(run.status || ''));
+    const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: restart ? now : run.startedAt || now, completedAt: null, progress: 'Run in progress' };
     await Runs.upsert(started);
     if (!isPgEnabled()) persistDataInBackground('manual start');
     logActivity(req, `Started manual run: ${run.name}`, { type: 'run', entityId: run.id });
