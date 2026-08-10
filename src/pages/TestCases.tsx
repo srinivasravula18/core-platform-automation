@@ -6,8 +6,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Paperclip, X, Video } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
-import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
-import { sortByTime, type TimeSortKey } from '@/src/lib/time';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -94,7 +93,7 @@ export default function TestCases() {
   const [platformFilter, setPlatformFilter] = useState('All');
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('newestCreated');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const filterRef = useRef<HTMLDivElement | null>(null);
   // Advanced filter state (bug: expanded filter set + AND/OR combine logic).
   const emptyFilters = {
@@ -806,7 +805,7 @@ export default function TestCases() {
     if (!conds.length) return true;
     return matchMode === 'all' ? conds.every(Boolean) : conds.some(Boolean);
   };
-  const filteredCases: any[] = sortByTime(cases.filter((testCase) => {
+  const filteredCases: any[] = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
     const appLabel = appName(testCase.appId || '');
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
@@ -815,7 +814,23 @@ export default function TestCases() {
     const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
     return matchesSearch && matchesPlatform && matchesApp && (!suiteScopeId || resolveSuiteIds(testCase).includes(suiteScopeId)) && advancedMatch(testCase);
-  }), timeSort);
+  });
+  const sortedCases = sortRows(filteredCases, sort, {
+    id: (tc) => tc.id,
+    title: (tc) => tc.title,
+    scope: (tc) => caseScopeLabel(tc),
+    plans: (tc) => resolvePlanIds(tc).map((id) => plans.find((plan) => String(plan.id) === String(id))?.name || id).join(', '),
+    suites: (tc) => resolveSuiteIds(tc).map((id) => suites.find((suite) => String(suite.id) === String(id))?.name || id).join(', '),
+    defects: (tc) => (activeDefectIdsByCase.get(String(tc.id)) || []).join(', '),
+    status: (tc) => tc.status,
+    automation: (tc) => tc.automationStatus,
+    type: (tc) => normalizeTestCaseTypes(tc).join(', '),
+    script: (tc) => tc.scriptName || tc.script || '',
+    evidence: (tc) => tc.evidence?.length || tc.attachments?.length || 0,
+    tags: (tc) => normalizeTags(tc.tags || []).join(', '),
+    lastRun: (tc) => tc.lastRunAt || tc.metadata?.lastRunAt,
+    updated: (tc) => tc.updatedAt || tc.metadata?.updatedAt,
+  });
 
   const setNotInAnyRunFilter = (enabled: boolean) => {
     setFilters((current) => ({ ...current, notInAnyRun: enabled }));
@@ -1312,7 +1327,6 @@ export default function TestCases() {
                 <div className="flex flex-col gap-3">
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sort By</label>
-                    <TimeSortSelect value={timeSort} onChange={setTimeSort} className="w-full" />
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1471,43 +1485,43 @@ export default function TestCases() {
             <div className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</div>
           ) : (
             <DataTable
-              rowCount={filteredCases.length}
+              rowCount={sortedCases.length}
               rowHeight={53}
               height="100%"
               ariaLabel="Test cases"
               tableClassName="w-full min-w-[2040px] table-fixed text-left text-sm"
-              onActivateRow={(index) => openEditModal(filteredCases[index])}
+              onActivateRow={(index) => openEditModal(sortedCases[index])}
               emptyState={<div className="py-8 text-center text-[var(--text-muted)]">No test cases found.</div>}
               renderHeaderRow={() => (
                 <tr className="text-[var(--text-muted)]">
                   <th className="font-medium py-3 px-4 w-10">
                     <input
                       type="checkbox"
-                      checked={bulk.allSelected(filteredCases.map((testCase) => testCase.id))}
-                      onChange={() => bulk.toggleAll(filteredCases.map((testCase) => testCase.id))}
+                      checked={bulk.allSelected(sortedCases.map((testCase) => testCase.id))}
+                      onChange={() => bulk.toggleAll(sortedCases.map((testCase) => testCase.id))}
                       className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
                       title="Select all visible cases"
                     />
                   </th>
-                  <th className="font-medium py-3 px-4 w-20" scope="col">ID</th>
-                  <th className="font-medium py-3 px-4 w-64" scope="col">Title</th>
-                  <th className="font-medium py-3 px-4 w-44" scope="col">Platform / App</th>
-                  <th className="font-medium py-3 px-4 w-40" scope="col">Test Plan</th>
-                  <th className="font-medium py-3 px-4 w-40" scope="col">Test Suite</th>
-                  <th className="font-medium py-3 px-4 w-32" scope="col">Defect IDs</th>
-                  <th className="font-medium py-3 px-4 w-28" scope="col">Status</th>
-                  <th className="font-medium py-3 px-4 w-44" scope="col">Automation Status</th>
-                  <th className="font-medium py-3 px-4 w-36" scope="col">Type Of Test Case</th>
-                  <th className="font-medium py-3 px-4 w-32" scope="col">Script</th>
-                  <th className="font-medium py-3 px-4 w-32" scope="col">Evidence</th>
-                  <th className="font-medium py-3 px-4 w-28" scope="col">Tags</th>
-                  <th className="font-medium py-3 px-4 w-32" scope="col">Last Run</th>
-                  <th className="font-medium py-3 px-4 w-32" scope="col">Updated</th>
+                  <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-20" />
+                  <SortableHeader label="Title" column="title" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-64" />
+                  <SortableHeader label="Platform / App" column="scope" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
+                  <SortableHeader label="Test Plan" column="plans" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-40" />
+                  <SortableHeader label="Test Suite" column="suites" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-40" />
+                  <SortableHeader label="Defect IDs" column="defects" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                  <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
+                  <SortableHeader label="Automation Status" column="automation" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
+                  <SortableHeader label="Type Of Test Case" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-36" />
+                  <SortableHeader label="Script" column="script" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                  <SortableHeader label="Evidence" column="evidence" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                  <SortableHeader label="Tags" column="tags" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
+                  <SortableHeader label="Last Run" column="lastRun" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                  <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
                   <th className="font-medium py-3 px-4 w-24 text-right" scope="col">Actions</th>
                 </tr>
               )}
               renderRow={(index, rowProps) => {
-                const tc = filteredCases[index];
+                const tc = sortedCases[index];
                 return (
                   <tr
                     key={tc.id}

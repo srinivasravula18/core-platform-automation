@@ -18,6 +18,14 @@ export interface ExecutionStepProgress {
   error?: string;
 }
 
+export function applyExecutionProgress<T extends Record<string, any>>(authoredSteps: T[], executionSteps: ExecutionStepProgress[]): T[] {
+  const executedByIndex = new Map(executionSteps.map((step) => [step.index - 1, step]));
+  return authoredSteps.map((step, index) => {
+    const executed = executedByIndex.get(index);
+    return executed ? { ...step, outcome: executed.status, durationMs: executed.durationMs } : step;
+  });
+}
+
 export function mergeExecutionProgress(prior: Record<string, any>, detail: Record<string, any>): Record<string, any> {
   const next = { ...prior, ...detail };
   if (detail.event !== 'step_started' && detail.event !== 'step_finished') return next;

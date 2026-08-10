@@ -96,7 +96,15 @@ export default function RecordPlay() {
       setOutputPath(data.outputPath || outputPath);
       setSavedRecordingId(savedData.recording.id);
       setPreviewJobId('');
-      setStatus('Recording saved. Preview is ready below.');
+      if (can('record-play:execute')) {
+        const preview = await fetch(`/api/automation/recordings/${encodeURIComponent(savedData.recording.id)}/video-preview`, { method: 'POST' });
+        const previewData = await preview.json().catch(() => ({}));
+        if (!preview.ok || !previewData.job?.id) throw new Error(previewData.error || 'Recording saved, but the video preview could not start.');
+        setPreviewJobId(previewData.job.id);
+        setStatus('Recording saved. Creating video preview from the recorded script.');
+      } else {
+        setStatus('Recording saved. You do not have permission to create its video preview.');
+      }
     } catch (err: any) {
       void showAlert(err.message || 'Failed to stop recorder.');
     } finally {

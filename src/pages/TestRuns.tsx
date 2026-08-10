@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CalendarClock, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
-import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
-import { sortByTime, type TimeSortKey } from '@/src/lib/time';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, withoutAutomationJobMeta } from '@/core/shared/testRunStatus';
@@ -109,7 +108,7 @@ export default function TestRuns() {
   const [suites, setSuites] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('test runs');
   const [runView, setRunView] = useUrlState('view', 'active', ['active', 'closed'] as const);
@@ -244,7 +243,7 @@ export default function TestRuns() {
 
   const filteredRuns = useMemo(() => {
     const base = runView === 'active' ? activeRuns : closedRuns;
-    return sortByTime(base.filter((run) => {
+    return base.filter((run) => {
       const searchable = `${run.name || ''} ${run.id || ''} ${run.suiteName || ''} ${run.requestedBy || ''}`.toLowerCase();
       const matchesSearch = aiSearch.isAiQuery(searchTerm)
         ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(run.id) : true)
@@ -264,8 +263,19 @@ export default function TestRuns() {
       if (selectedView === 'Automated Runs') return run.mode !== 'manual';
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
-    }), timeSort);
-  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter, timeSort]);
+    });
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter]);
+  const sortedRuns = sortRows(filteredRuns, sort, {
+    run: (run) => run.name || run.id,
+    type: (run) => run.mode === 'manual' ? 'Manual' : `Automated ${run.executionMode || ''}`,
+    scripts: (run) => scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts).map(scriptLabel).join(', '),
+    tests: (run) => getRunStats(run).total,
+    duration: (run) => formatRunDuration(run, now),
+    started: (run) => runStartedAt(run) || run.createdAt || run.date,
+    status: (run) => run.status,
+    failure: (run) => getRunStats(run).failed,
+    updated: (run) => run.metadata?.updatedAt || run.updatedAt || run.date,
+  });
 
   const statusOptions = Array.from(new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', ...runs.map((run) => String(run.status || 'Not Started'))]));
   const requesterOptions = Array.from(new Set(runs.map((run) => String(run.requestedBy || '').trim()).filter(Boolean))).sort();
@@ -1338,7 +1348,6 @@ export default function TestRuns() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input value={searchTerm} onChange={(e) => { const v = e.target.value; setSearchTerm(v); if (aiSearch.isAiQuery(v)) aiSearch.run(v, runs.map((r) => ({ id: r.id, name: r.name, status: r.status, suiteName: r.suiteName, requestedBy: r.requestedBy, date: r.date }))); else aiSearch.reset(); }} placeholder="Search runs…  or @ai find smartly" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
             </div>
-            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
             <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
             <div ref={filterRef} className="relative">
               <button onClick={() => setIsFilterOpen((open) => !open)} aria-expanded={isFilterOpen} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"><Filter className="w-4 h-4" /> Filters{activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}</button>
@@ -1377,33 +1386,33 @@ export default function TestRuns() {
             <div className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</div>
           ) : (
             <DataTable
-              rowCount={filteredRuns.length}
+              rowCount={sortedRuns.length}
               rowHeight={72}
               height="100%"
               ariaLabel="Test runs"
               tableClassName="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap"
-              onActivateRow={(index) => navigate(`/runs/${filteredRuns[index].id}`)}
+              onActivateRow={(index) => navigate(`/runs/${sortedRuns[index].id}`)}
               emptyState={<div className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</div>}
               renderHeaderRow={() => (
                 <tr>
                   <th className="px-4 py-3 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
+                    <input type="checkbox" checked={bulk.allSelected(sortedRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(sortedRuns.map((run) => run.id))} />
                   </th>
                   <th className="px-4 py-3 w-10"></th>
-                  <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
-                  <th className="w-52 px-4 py-3 font-medium" scope="col">Type</th>
-                  <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
-                  <th className="w-52 px-4 py-3 font-medium" scope="col">Run Date &amp; Time</th>
-                  <th className="w-56 px-4 py-3 font-medium" scope="col">Tests Status</th>
-                  <th className="w-40 px-4 py-3 font-medium" scope="col">Failure Analysis</th>
-                  <th className="w-32 px-4 py-3 font-medium" scope="col">Updated</th>
+                  <SortableHeader label="Run" column="run" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
+                  <SortableHeader label="Type" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                  <SortableHeader label="Scripts" column="scripts" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-64 px-4 py-3 font-medium" />
+                  <SortableHeader label="Tests" column="tests" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 font-medium" />
+                  <SortableHeader label="Duration" column="duration" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 font-medium" />
+                  <SortableHeader label="Run Date & Time" column="started" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                  <SortableHeader label="Tests Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-56 px-4 py-3 font-medium" />
+                  <SortableHeader label="Failure Analysis" column="failure" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-40 px-4 py-3 font-medium" />
+                  <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
                   <th className="w-20 px-4 py-3"></th>
                 </tr>
               )}
               renderRow={(index, rowProps) => {
-                const run = filteredRuns[index];
+                const run = sortedRuns[index];
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts);
                 const scriptNames = runScripts.map(scriptLabel);

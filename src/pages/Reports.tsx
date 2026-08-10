@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
-import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
-import { sortByTime, type TimeSortKey } from '@/src/lib/time';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { downloadFile, reportMetrics, reportTypeLabel, toReportHTML } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
@@ -293,7 +292,7 @@ export default function Reports() {
   
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('reports');
   const [statusFilter, setStatusFilter] = useUrlState('status', 'All', ['All', 'Passed', 'Failed'] as const);
@@ -491,7 +490,7 @@ export default function Reports() {
     setNewReportSteps(reindexed);
   };
 
-  const filteredReports: any[] = sortByTime(reports.filter(r => {
+  const filteredReports: any[] = reports.filter(r => {
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(r.id) : true)
       : (r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -500,12 +499,22 @@ export default function Reports() {
     const matchesStatus = statusFilter === 'All' || r.status === statusFilter;
     const matchesUpdated = passesTimeFilter(r.metadata?.updatedAt || r.updatedAt || r.date, updatedFilter);
     return matchesSearch && matchesStatus && matchesUpdated;
-  }), timeSort);
+  });
   const runById = useMemo(() => new Map(runs.map((run) => [String(run.id), run])), [runs]);
   const reportMetricsById = useMemo(() => new Map(reports.map((report) => [report.id, reportMetrics(report, {
     run: runById.get(String(report.runId || '')),
     cases,
   })])), [reports, runById, cases]);
+  const sortedReports = sortRows(filteredReports, sort, {
+    id: (report) => report.id,
+    runId: (report) => report.runId,
+    scenario: (report) => report.name,
+    type: (report) => reportTypeLabel(report, { run: runById.get(String(report.runId || '')), cases }),
+    result: (report) => { const count = stepCounts(report); return `${count.passed}/${count.failed}`; },
+    duration: (report) => report.executionTime,
+    status: (report) => report.status,
+    updated: (report) => report.metadata?.updatedAt || report.updatedAt || report.date,
+  });
   const totalReportCases = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.caseCount || 0), 0);
   const totalReportSteps = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.stepCount || 0), 0);
   const passedReportSteps = filteredReports.reduce((total, report) => {
@@ -531,7 +540,7 @@ export default function Reports() {
             filename="test-reports"
             title="Test Reports"
             formats={['csv', 'json', 'md', 'pdf']}
-            rows={filteredReports}
+            rows={sortedReports}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'runId', label: 'Run ID' },
@@ -601,7 +610,6 @@ export default function Reports() {
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
               />
             </div>
-            <TimeSortSelect value={timeSort} onChange={setTimeSort} className="shrink-0" />
             <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} className="shrink-0" />
             <div className="flex shrink-0 bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
               {(['All', 'Passed', 'Failed'] as const).map((tab) => (
@@ -636,23 +644,23 @@ export default function Reports() {
             <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
-                  <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
+                  <input type="checkbox" checked={bulk.allSelected(sortedReports.map((r) => r.id))} onChange={() => bulk.toggleAll(sortedReports.map((r) => r.id))} />
                 </th>
-                <th className="w-24 px-4 py-3">ID</th>
-                <th className="w-28 px-4 py-3">Run ID</th>
-                <th className="px-4 py-3">Test Scenario</th>
-                <th className="w-28 px-4 py-3">Type</th>
-                <th className="w-32 px-4 py-3">Pass / Fail</th>
-                <th className="w-28 px-4 py-3">Duration</th>
-                <th className="w-28 px-4 py-3">Status</th>
-                <th className="w-32 px-4 py-3">Updated</th>
+                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-24 px-4 py-3" />
+                <SortableHeader label="Run ID" column="runId" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
+                <SortableHeader label="Test Scenario" column="scenario" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-3" />
+                <SortableHeader label="Type" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
+                <SortableHeader label="Pass / Fail" column="result" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3" />
+                <SortableHeader label="Duration" column="duration" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
+                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
+                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3" />
                 <th className="w-14 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {filteredReports.length === 0 ? (
                 <tr><td colSpan={10} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
-              ) : filteredReports.map((r) => {
+              ) : sortedReports.map((r) => {
                 const c = stepCounts(r);
                 const type = reportTypeLabel(r, { run: runById.get(String(r.runId || '')), cases });
                 return (

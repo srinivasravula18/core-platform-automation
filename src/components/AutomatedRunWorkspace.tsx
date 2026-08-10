@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bug, ChevronLeft, ChevronRight, Code2, Search } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Timestamp } from '@/src/components/Timestamp';
 import { ManualStepRunner, type StepResult } from './manualRunner/ManualStepRunner';
 import { OutcomeDot } from './manualRunner/OutcomeSelect';
 import { RunSummaryPanel } from './manualRunner/RunSummaryPanel';
+import { applyExecutionProgress, type ExecutionStepProgress } from '@/core/shared/automationProgress';
+import { useAgentEvents } from '@/src/lib/useAutomation';
 
 function outcomeFor(steps: any[]) {
   const statuses = steps.map((step) => String(step?.outcome || step?.status || ''));
@@ -14,18 +16,19 @@ function outcomeFor(steps: any[]) {
   return 'Not Run';
 }
 
-function stepsForCase(run: any, testCase: any): StepResult[] {
+function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProgress[]): StepResult[] {
   const all = Array.isArray(run.steps) ? run.steps : [];
   const matched = all.filter((step: any) => String(step.testCaseId || '') === String(testCase.id)
     || String(step.testCaseTitle || '') === String(testCase.title || ''));
   const source = matched.length ? matched : (Array.isArray(testCase.steps) ? testCase.steps : []);
-  return source.map((step: any) => ({
+  const authored = source.map((step: any) => ({
     action: step.action || step.description || step.name || '—',
     expected: step.expected || step.expectedResult || '—',
     outcome: step.outcome || step.status || 'Not Run',
     durationMs: Number(step.durationMs) || undefined,
     screenshots: Array.isArray(step.screenshots) ? step.screenshots : [],
   }));
+  return applyExecutionProgress(authored, executionSteps);
 }
 
 export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any; cases: any[]; plans: any[]; suites: any[] }) {
@@ -34,10 +37,21 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'failed' | 'passed' | 'not-run'>('all');
+  const [executionSteps, setExecutionSteps] = useState<ExecutionStepProgress[]>([]);
+  const jobId = String(run.triggerMeta?.automationJobId || '');
+  const loadExecutionSteps = useCallback(async () => {
+    if (!jobId) return setExecutionSteps([]);
+    try {
+      const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}`).then((response) => response.json());
+      setExecutionSteps(Array.isArray(data?.job?.summary?.executionSteps) ? data.job.summary.executionSteps : []);
+    } catch { /* keep the last durable result */ }
+  }, [jobId]);
+  useEffect(() => { setExecutionSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps]);
+  useAgentEvents((event) => { if (event.scopeType === 'job' && event.scopeId === jobId) void loadExecutionSteps(); });
   const results = useMemo(() => cases.map((testCase) => {
-    const stepResults = stepsForCase(run, testCase);
+    const stepResults = stepsForCase(run, testCase, executionSteps);
     return { caseId: testCase.id, caseTitle: testCase.title, priority: testCase.priority, tags: testCase.tags || [], outcome: outcomeFor(stepResults), stepResults };
-  }), [cases, run]);
+  }), [cases, executionSteps, run]);
   useEffect(() => { if (results.length && !results.some((result) => result.caseId === selectedCaseId)) setSelectedCaseId(results[0].caseId); }, [results, selectedCaseId]);
 
   const active = results.find((result) => result.caseId === selectedCaseId) || null;

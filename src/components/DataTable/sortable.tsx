@@ -26,5 +26,5 @@ export function sortRows<T>(rows: T[], sort: SortState, values: Record<string, (
 
 export function SortableHeader({ label, column, sort, onSort, className = '', children }: { label: string; column: string; sort: SortState; onSort: (column: string) => void; className?: string; children?: ReactNode }) {
   const active = sort?.key === column;
-  return <th className={className} scope="col" aria-sort={active ? sort.direction : 'none'}><button type="button" onClick={() => onSort(column)} className="inline-flex items-center gap-1 text-left hover:text-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]">{children || label}<span aria-hidden="true" className={active ? '' : 'opacity-40'}>{active && sort.direction === 'descending' ? '↓' : '↑'}</span></button></th>;
+  return <th className={className} scope="col" aria-sort={active ? sort.direction : 'none'}><button type="button" onClick={() => onSort(column)} className="flex w-full items-center justify-between gap-2 text-left hover:text-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]">{children || label}<span aria-hidden="true" className={`ml-auto shrink-0 ${active ? '' : 'opacity-40'}`}>{active && sort.direction === 'descending' ? '↓' : '↑'}</span></button></th>;
 }

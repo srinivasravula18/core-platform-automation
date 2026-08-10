@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ChevronDown, ChevronRight, CornerDownRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
-import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
-import { sortByTime, type TimeSortKey } from '@/src/lib/time';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -106,7 +105,7 @@ export default function TestPlans() {
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const filterRef = useRef<HTMLDivElement | null>(null);
   const [filters, setFilters] = useState(emptyTestPlanFilters);
@@ -443,15 +442,28 @@ export default function TestPlans() {
   const activePlans = plans.filter((plan) => !/completed|cancelled|archived/i.test(plan.status || ''));
   const closedPlans = plans.filter((plan) => /completed|cancelled|archived/i.test(plan.status || ''));
   const visiblePlans = planView === 'active' ? activePlans : closedPlans;
-  const filteredPlans: any[] = sortByTime(visiblePlans.filter((plan) => {
+  const filteredPlans: any[] = visiblePlans.filter((plan) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
       : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.description || ''} ${plan.owner || ''} ${(plan.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesUpdated = passesTimeFilter(plan.metadata?.updatedAt || plan.updatedAt, updatedFilter);
     return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode) && matchesUpdated;
-  }), timeSort);
+  });
   const hierarchyRows = buildTestPlanHierarchy(filteredPlans, collapsedPlanIds);
+  const sortedPlanRows = sortRows(hierarchyRows, sort, {
+    name: (row) => row.plan.name,
+    parent: (row) => plans.find((plan) => plan.id === row.plan.parentPlanId)?.name || '',
+    id: (row) => row.plan.id,
+    owner: (row) => row.plan.owner,
+    status: (row) => row.plan.status,
+    risk: (row) => row.plan.riskLevel,
+    dates: (row) => row.plan.startDate || row.plan.endDate,
+    runs: (row) => getPlanRuns(row.plan).length,
+    suites: (row) => getPlanSuites(row.plan.id).length,
+    cases: (row) => getPlanCases(row.plan.id).length,
+    updated: (row) => row.plan.metadata?.updatedAt || row.plan.updatedAt,
+  });
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -1064,7 +1076,6 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
-          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div ref={filterRef} className="relative">
             <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
@@ -1145,17 +1156,17 @@ export default function TestPlans() {
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="w-80 px-4 py-3 font-medium">Name</th>
-                <th className="w-52 px-4 py-3 font-medium">Parent Plan</th>
-                <th className="w-32 px-4 py-3 font-medium">ID</th>
-                <th className="w-48 px-4 py-3 font-medium">Owner</th>
-                <th className="w-40 px-4 py-3 font-medium">Status</th>
-                <th className="w-32 px-4 py-3 font-medium">Risk Level</th>
-                <th className="w-52 px-4 py-3 font-medium">Start / End Date</th>
-                <th className="w-28 px-4 py-3 text-center font-medium">Linked Runs</th>
-                <th className="w-28 px-4 py-3 text-center font-medium">Linked Suites</th>
-                <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
-                <th className="font-medium py-3 px-4 w-32">Updated</th>
+                <SortableHeader label="Name" column="name" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
+                <SortableHeader label="Parent Plan" column="parent" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
+                <SortableHeader label="Owner" column="owner" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-48 px-4 py-3 font-medium" />
+                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-40 px-4 py-3 font-medium" />
+                <SortableHeader label="Risk Level" column="risk" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
+                <SortableHeader label="Start / End Date" column="dates" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                <SortableHeader label="Linked Runs" column="runs" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 text-center font-medium" />
+                <SortableHeader label="Linked Suites" column="suites" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 text-center font-medium" />
+                <SortableHeader label="Test Cases" column="cases" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 text-center font-medium" />
+                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
                 <th className="font-medium py-3 px-4 w-52 text-right">Actions</th>
               </tr>
             </thead>
@@ -1164,7 +1175,7 @@ export default function TestPlans() {
                 <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
                 <tr><td colSpan={13} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
-              ) : hierarchyRows.map(({ plan, depth, hasChildren }) => {
+              ) : sortedPlanRows.map(({ plan, depth, hasChildren }) => {
                 const planCases = getPlanCases(plan.id);
                 const planSuites = getPlanSuites(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;

@@ -119,9 +119,9 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
   }, [running, summaryOnly]);
 
   if (videoOnly) {
-    return video && previews[video.id]
-      ? <video src={previews[video.id]} controls className="max-h-[70vh] w-full rounded border border-[var(--border)] bg-black" />
-      : <div className="flex min-h-32 items-center justify-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Generating video preview…</div>;
+    if (video && previews[video.id]) return <video src={previews[video.id]} controls className="max-h-[70vh] w-full rounded border border-[var(--border)] bg-black" />;
+    if (loading || running) return <div className="flex min-h-32 items-center justify-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Generating video preview…</div>;
+    return <div className="flex min-h-32 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center text-sm text-amber-300">{job?.error ? `Video preview failed: ${job.error}` : 'The run finished, but no video artifact was produced. Retry the preview and check that Playwright FFmpeg is installed.'}</div>;
   }
 
   const summary = <>
@@ -222,6 +222,11 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
             <div className="mt-3">
               <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Video (Every Action)</div>
               <video src={previews[video.id]} controls className="max-h-72 w-full rounded border border-[var(--border)]" />
+            </div>
+          )}
+          {!running && !video && (
+            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+              {job?.error ? `Video unavailable: ${job.error}` : 'This run completed without a video artifact. Check the agent artifact-upload logs and Playwright FFmpeg installation.'}
             </div>
           )}
           {screenshots.length > 0 && (
