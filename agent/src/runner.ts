@@ -78,7 +78,8 @@ export function configTemplate(engine: string, headed: boolean, hasPauses = fals
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
-  timeout: ${hasPauses ? 0 : 60000},
+  // No per-test ceiling — a script runs until its own steps finish (or the user cancels it).
+  timeout: 0,
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry

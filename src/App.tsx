@@ -12,6 +12,7 @@ import { FEATURES, grantAllows, featureKeyForPath } from '@/src/lib/features';
 import { appBasePath } from '@/src/lib/base-path';
 import { DialogHost } from '@/src/lib/dialog';
 import { useResizableTables } from '@/src/lib/useResizableTables';
+import { useTablePagination } from '@/src/lib/useTablePagination';
 import { searchResultHref } from '@/src/lib/controllerIntent';
 
 import AgentConsole from '@/src/pages/AgentConsole';
@@ -431,6 +432,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   }, [projectsLoaded, fetchProjects]);
 
   useResizableTables();
+  useTablePagination();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);

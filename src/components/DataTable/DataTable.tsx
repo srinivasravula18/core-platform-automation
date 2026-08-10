@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useState } from 'react';
 import { useVirtualizedRows } from './useVirtualizedRows';
 import { useKeyboardRowNav } from './useKeyboardRowNav';
 
@@ -26,6 +26,8 @@ type DataTableProps = {
   footer?: ReactNode;
 };
 
+const PAGE_SIZE = 2000;
+
 /**
  * Windowed, keyboard-navigable table shell. Consumers keep their existing per-row JSX (inline
  * dropdowns, action buttons, etc.) and only move it behind `renderRow(index)` — DataTable adds
@@ -37,17 +39,30 @@ export function DataTable({
   theadClassName = 'sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--bg-secondary)]',
   containerStyle, emptyState, footer,
 }: DataTableProps) {
-  const { containerRef, onScroll, startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useVirtualizedRows({ rowCount, rowHeight });
-  const { focusedIndex, setFocusedIndex, registerRow, onRowKeyDown } = useKeyboardRowNav({ rowCount, onActivate: onActivateRow });
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(rowCount / PAGE_SIZE));
+  const pageStart = page * PAGE_SIZE;
+  const pageRowCount = Math.max(0, Math.min(PAGE_SIZE, rowCount - pageStart));
+  const { containerRef, onScroll, startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useVirtualizedRows({ rowCount: pageRowCount, rowHeight });
+  const { focusedIndex, setFocusedIndex, registerRow, onRowKeyDown } = useKeyboardRowNav({ rowCount: pageRowCount, onActivate: onActivateRow == null ? undefined : (index) => onActivateRow(index + pageStart) });
+
+  useEffect(() => {
+    if (page >= pageCount) setPage(pageCount - 1);
+  }, [page, pageCount]);
+
+  useEffect(() => {
+    containerRef.current?.scrollTo({ top: 0 });
+  }, [page, containerRef]);
 
   const visibleRows: ReactNode[] = [];
   for (let index = startIndex; index < endIndex; index += 1) {
-    visibleRows.push(renderRow(index, {
+    const rowIndex = index + pageStart;
+    visibleRows.push(renderRow(rowIndex, {
       ref: (el) => registerRow(index, el),
       tabIndex: focusedIndex === index ? 0 : -1,
       onKeyDown: onRowKeyDown(index),
       onFocus: () => setFocusedIndex(index),
-      'aria-rowindex': index + 2,
+      'aria-rowindex': rowIndex + 2,
     }));
   }
 
@@ -68,6 +83,13 @@ export function DataTable({
           {bottomSpacerHeight > 0 && <tr aria-hidden="true" style={{ height: bottomSpacerHeight }}><td colSpan={100} /></tr>}
         </tbody>
       </table>
+      {pageCount > 1 && (
+        <div className="flex items-center justify-end gap-3 border-t border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          <button type="button" onClick={() => setPage((current) => current - 1)} disabled={page === 0} className="rounded border border-[var(--border)] px-2 py-1 hover:text-[var(--text-primary)] disabled:opacity-50">Previous</button>
+          <span aria-live="polite">Page {page + 1} of {pageCount} ({rowCount.toLocaleString()} rows)</span>
+          <button type="button" onClick={() => setPage((current) => current + 1)} disabled={page === pageCount - 1} className="rounded border border-[var(--border)] px-2 py-1 hover:text-[var(--text-primary)] disabled:opacity-50">Next</button>
+        </div>
+      )}
       {footer}
     </div>
   );
