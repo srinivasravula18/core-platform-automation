@@ -16,6 +16,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 
 // A defect's failure snapshot lives in its `evidence` (captured at the failing run). Pull the first usable image URL.
@@ -43,6 +44,7 @@ export default function Defects() {
   const aiSearch = useAiSearch('defects');
   const [filters, setFilters] = useState({ severities: [] as string[], statuses: [] as string[], assignees: [] as string[] });
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>(null);
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement | null>(null);
@@ -187,6 +189,10 @@ export default function Defects() {
     const matchesUpdated = passesTimeFilter(defect.metadata?.updatedAt || defect.updatedAt, updatedFilter);
     return matchesSearch && matchesSeverity && matchesStatus && matchesAssignee && matchesUpdated;
   }), timeSort);
+  const sortedDefects = sortRows(filteredDefects, sort, {
+    id: (defect) => defect.id, title: (defect) => defect.title, severity: (defect) => defect.severity,
+    status: (defect) => defect.status, updated: (defect) => defect.metadata?.updatedAt || defect.updatedAt,
+  });
   const severityOptions = Array.from(new Set(['Low', 'Medium', 'High', 'Critical', ...defects.map((defect) => String(defect.severity || 'Medium'))]));
   const statusOptions = Array.from(new Set([...DEFECT_STATUSES, ...defects.map((defect) => String(defect.status || 'Open'))]));
   const assigneeOptions = Array.from(new Set(defects.map((defect) => String(defect.assignedTo || '').trim()).filter(Boolean))).sort();
@@ -418,13 +424,13 @@ export default function Defects() {
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filteredDefects.map((d) => d.id))} onChange={() => bulk.toggleAll(filteredDefects.map((d) => d.id))} />
+                  <input type="checkbox" checked={bulk.allSelected(sortedDefects.map((d) => d.id))} onChange={() => bulk.toggleAll(sortedDefects.map((d) => d.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-44">ID</th>
-                <th className="font-medium py-3 px-4">Title</th>
-                <th className="font-medium py-3 px-4 w-32">Severity</th>
-                <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4 w-32">Updated</th>
+                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
+                <SortableHeader label="Title" column="title" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
+                <SortableHeader label="Severity" column="severity" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
+                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
@@ -433,7 +439,7 @@ export default function Defects() {
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
               ) : filteredDefects.length === 0 ? (
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
-              ) : filteredDefects.map((defect) => (
+              ) : sortedDefects.map((defect) => (
                 <Fragment key={defect.id}>
                 <tr
                   onClick={() => hasRichReport(defect) ? setExpandedId(expandedId === defect.id ? null : defect.id) : openEditModal(defect)}
