@@ -89,14 +89,15 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
     return () => window.clearInterval(timer);
   }, [job?.status, loadJob, loadArtifacts]);
 
-  // Background tabs throttle setInterval, so also resync on visibility/focus regain.
+  // Background tabs throttle setInterval, so also resync on visibility/focus regain — only while the
+  // job is still non-terminal, same as the poll above, so a finished run's video isn't refetched.
   useEffect(() => {
-    if (summaryOnly) return;
+    if (summaryOnly || (job && !['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(job.status))) return;
     const onVisible = () => { if (document.visibilityState === 'visible') { void loadJob(); void loadArtifacts(); } };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
     return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
-  }, [summaryOnly, loadJob, loadArtifacts]);
+  }, [summaryOnly, job?.status, loadJob, loadArtifacts]);
 
   useAgentEvents((evt) => {
     if (summaryOnly) return;
@@ -108,14 +109,28 @@ export function AutomationRunArtifacts({ jobId, videoOnly = false, summaryOnly =
 
   useEffect(() => {
     if (summaryOnly) return;
-    let urls: string[] = [];
+    let cancelled = false;
+    const toLoad = artifacts.filter((a) => (a.kind === 'video' || a.kind === 'screenshot') && !previews[a.id]);
     (async () => {
-      for (const a of artifacts.filter((x) => x.kind === 'video' || x.kind === 'screenshot')) {
-        try { const url = await fetchBlobUrl(jobId, a.id); urls.push(url); setPreviews((p) => ({ ...p, [a.id]: url })); } catch { /* skip */ }
+      for (const a of toLoad) {
+        try {
+          const url = await fetchBlobUrl(jobId, a.id);
+          if (cancelled) { URL.revokeObjectURL(url); return; }
+          setPreviews((p) => (p[a.id] ? p : { ...p, [a.id]: url }));
+        } catch { /* skip */ }
       }
     })();
-    return () => { urls.forEach((u) => URL.revokeObjectURL(u)); };
+    return () => { cancelled = true; };
+    // previews intentionally excluded — re-running per fetched id would refetch everything already loaded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artifacts, jobId, summaryOnly]);
+
+  // Blob URLs accumulate across a run's whole polling lifetime (re-fetch is now skipped, so nothing
+  // frees the earlier ones); revoke them all on unmount via a ref so this sees the latest map, not
+  // the empty one captured by an empty-deps effect.
+  const previewsRef = useRef(previews);
+  previewsRef.current = previews;
+  useEffect(() => () => { Object.values(previewsRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
 
   const s = job?.summary || {};
   const status = job?.status || 'queued';
