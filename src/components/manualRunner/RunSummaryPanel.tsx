@@ -62,7 +62,6 @@ export function RunSummaryPanel({
           <Field label="Completed time">{result.completedAt ? <Timestamp value={result.completedAt} /> : '—'}</Field>
           <Field label="Test plan">{planName || run.testPlanId || '—'}</Field>
           <Field label="Test suite">{suiteName || run.suiteName || '—'}</Field>
-          <Field label="Test case">{result.caseTitle || result.caseId}</Field>
           <EditableField label="Priority" value={result.priority} disabled={disabled || authoringDisabled} caseId={result.caseId} field="priority" onFieldChange={onFieldChange} placeholder="e.g. 2 / High" />
         </div>
       </div>

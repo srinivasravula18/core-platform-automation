@@ -131,11 +131,14 @@ function linkedReportCases(report: any, context: ReportContext): any[] {
 export function reportMetrics(report: any, context: ReportContext = {}) {
   const results = Array.isArray(context.results) ? context.results : [];
   const linkedCases = linkedReportCases(report, context);
-  const stepCaseTitles = new Set((report.steps || []).map((step: any) => String(step?.testCaseTitle || '').trim()).filter(Boolean));
-  const caseCount = linkedCases.length || results.length || stepCaseTitles.size || ((report.steps || []).length ? 1 : Number(report.totalExecutions) || 0);
-  const resultSteps = results.reduce((total, result) => total + (Array.isArray(result?.stepResults) ? result.stepResults.length : 0), 0);
+  const executed = (step: any) => !/^(not run|untested|paused)$/i.test(String(step?.outcome || ''));
+  const reportSteps = (report.steps || []).filter(executed);
+  const stepCaseTitles = new Set(reportSteps.map((step: any) => String(step?.testCaseTitle || step?.testCaseId || '').trim()).filter(Boolean));
+  const executedResults = results.filter((result) => !/^(not run|paused)$/i.test(String(result?.outcome || '')));
+  const caseCount = stepCaseTitles.size || executedResults.length || (reportSteps.length ? 1 : 0);
+  const resultSteps = executedResults.reduce((total, result) => total + (Array.isArray(result?.stepResults) ? result.stepResults.filter(executed).length : 0), 0);
   const authoredSteps = linkedCases.reduce((total, testCase) => total + (Array.isArray(testCase?.steps) ? testCase.steps.length : 0), 0);
-  return { caseCount, stepCount: resultSteps || authoredSteps || (report.steps || []).length };
+  return { caseCount, stepCount: resultSteps || reportSteps.length || (caseCount ? authoredSteps : 0) };
 }
 
 export function reportTypeLabel(report: any, context: ReportContext = {}): string {

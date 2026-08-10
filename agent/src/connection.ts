@@ -24,6 +24,7 @@ export class ConnectionManager {
   private backoff = 1_000;
   private heartbeat: NodeJS.Timeout | null = null;
   private closing = false;
+  private pendingFrames: string[] = [];
   readonly recorder: Recorder;
   readonly runner: Runner;
 
@@ -60,6 +61,7 @@ export class ConnectionManager {
       this.backoff = 1_000;
       this.log.info('connected to cloud');
       this.send('hello', { telemetry: collectTelemetry() });
+      while (this.pendingFrames.length && ws.readyState === WebSocket.OPEN) ws.send(this.pendingFrames.shift()!);
       this.runner.advertiseOpenPauses();
       this.startHeartbeat();
     });
@@ -115,8 +117,11 @@ export class ConnectionManager {
   }
 
   send(type: string, payload: Record<string, unknown>): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type, agentId: this.config.agentId, seq: ++this.seq, payload }));
+    const frame = JSON.stringify({ type, agentId: this.config.agentId, seq: ++this.seq, payload });
+    if (this.ws?.readyState === WebSocket.OPEN) { this.ws.send(frame); return; }
+    // Keep terminal execution signals through a reconnect; otherwise the cloud can remain Running
+    // after Playwright has already exited locally.
+    if (type !== 'heartbeat') this.pendingFrames.push(frame);
   }
 
   private onMessage(raw: import('ws').RawData): void {

@@ -5,6 +5,7 @@ import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
 import { Timestamp } from '@/src/components/Timestamp';
 import { computeRunRollup, isManualRunActive, type ManualOutcome } from '@/core/shared/manualRun';
+import { isClosedTestRun } from '@/core/shared/testRunStatus';
 import { OutcomeSelect, OutcomeDot, SELECTABLE_MANUAL_OUTCOMES } from './OutcomeSelect';
 import { ManualStepRunner, type StepResult } from './ManualStepRunner';
 import { RunSummaryPanel } from './RunSummaryPanel';
@@ -379,13 +380,10 @@ function ResultDetail({
   const executionEditable = editable && isManualRunActive(run);
   const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
   // A started-but-unevaluated case reads "In progress", not "Not run".
-  const status = runStopped
-    ? { Icon: Square, label: 'Stopped', cls: 'text-[var(--text-muted)]' }
-    : runCancelled
-    ? { Icon: Square, label: 'Cancelled', cls: 'text-[var(--text-muted)]' }
-    : resultInProgress && (!result.outcome || result.outcome === 'Not Run')
+  const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
     ? { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
+  const runStatus = runStopped ? 'Stopped' : runCancelled ? 'Cancelled' : runInProgress ? 'In Progress' : 'Not Started';
 
   return (
     <>
@@ -398,7 +396,7 @@ function ResultDetail({
         <div className="flex items-center gap-2">
           {/* Start run: a manual run needs no scripts — this just begins the run + duration clock.
               While in progress, Stop finishes it and freezes the duration. */}
-          {editable && (runNotStarted || runTerminal) ? (
+          {editable && !isClosedTestRun(run) && (runNotStarted || runTerminal) ? (
             <button type="button" disabled={busy} onClick={onStart} className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
               <Play className="h-4 w-4" /> {runTerminal ? 'Restart run' : 'Start run'}
             </button>
@@ -436,11 +434,8 @@ function ResultDetail({
               <Bug className="h-4 w-4" /> Create bug
             </button>
           )}
-          {runTerminal ? (
-            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm font-medium ${status.cls}`}>
-              <status.Icon className="h-3.5 w-3.5" /> {status.label}
-            </span>
-          ) : executionEditable && (
+          <span className="inline-flex shrink-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm font-medium text-[var(--text-primary)]">Run: {runStatus}</span>
+          {!runTerminal && executionEditable && (
             <span className="shrink-0"><OutcomeSelect value={result.outcome || 'Not Run'} onChange={onCaseOutcome} /></span>
           )}
         </div>

@@ -259,6 +259,20 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
+async function createReportForRun(run: any, scope: any) {
+  const results = await RunCaseResults.listForRun(run.id);
+  const manualSteps = results.flatMap((result: any) => (Array.isArray(result.stepResults) ? result.stepResults : []).map((step: any, index: number) => ({
+    step: String(index + 1), action: String(step.action || ''), expected: String(step.expected || ''),
+    actual: String(step.actual || ''), outcome: String(step.outcome || 'Not Run'), reason: String(step.comment || ''),
+    testCaseId: result.caseId === run.id ? '' : result.caseId, testCaseTitle: result.caseTitle || '',
+    screenshot: Array.isArray(step.screenshots) ? step.screenshots[0] || '' : '', screenshots: step.screenshots || [],
+  })));
+  const steps = manualSteps.length ? manualSteps : (Array.isArray(run.steps) ? run.steps : []);
+  const passed = results.length ? results.filter((r: any) => r.outcome === 'Passed').length : Number(run.passed) || 0;
+  const failed = results.length ? results.filter((r: any) => /fail/i.test(String(r.outcome))).length : Number(run.failed) || 0;
+  await createReportFromRun(run, scope, { passed, failed, steps, targetUrl: run.targetUrl || '', suiteName: run.suiteName, evidence: run.evidence || [] });
+}
+
 const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped', 'Cancelled']);
 
 function manualRunStatus(value: unknown): string | null {
@@ -734,6 +748,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/runs/:id/execute', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (isClosedTestRun(run)) return res.status(409).json({ error: 'A closed test run cannot be executed.' });
     if (activeManualRunExecutions.has(run.id) || (isRunningRun(run) && !isStaleManualRun(run))) {
       return res.status(409).json({ error: 'This run is already executing.' });
     }
@@ -922,8 +937,8 @@ export function registerResourceRoutes(app: Express) {
             const evidence = Array.isArray(result.screenshotUrls) ? result.screenshotUrls : [];
             const updated = withManualExecutionMeta({
               ...latest,
-              status: result.ok ? 'Completed' : 'Failed',
-              state: result.ok ? 'Completed' : 'Blocked',
+              status: result.ok ? 'Passed — Pending Review' : 'Failed — Pending Review',
+              state: 'Pending Review',
               totalExecutions: Number(result.total) || tests.length,
               passed: Number(result.passed) || 0,
               failed: Number(result.failed) || 0,
@@ -970,8 +985,8 @@ export function registerResourceRoutes(app: Express) {
               // the UI can show it instead of a silent, unexplained zero (see TestRuns.tsx banner).
               await Runs.upsert(withManualExecutionMeta({
                 ...latest,
-                status: 'Failed',
-                state: 'Blocked',
+                status: 'Failed — Pending Review',
+                state: 'Pending Review',
                 progress: error?.message || 'Execution failed before any test ran.',
                 completedAt: new Date().toISOString(),
               }, {
@@ -2052,6 +2067,7 @@ Rules:
   app.post('/api/runs/:id/start', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (isClosedTestRun(run)) return res.status(409).json({ error: 'A closed test run cannot be started.' });
     const now = new Date().toISOString();
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (!r.startedAt) {
@@ -2077,9 +2093,22 @@ Rules:
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
     const stopped = { ...rolled, state: 'Stopped', status: 'Stopped', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
+    await createReportForRun(stopped, reqScope(req));
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
     res.json({ success: true, run: stopped });
+  });
+
+  // Materialize the same durable report used by Reports for any completed/stopped run.
+  app.post('/api/runs/:id/report', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!run.completedAt && !/^(completed|failed|stopped|cancelled|canceled)/i.test(String(run.status || ''))) {
+      return res.status(409).json({ error: 'Complete or stop the test run before viewing its report.' });
+    }
+    await createReportForRun(run, reqScope(req));
+    const reportId = `REP-${String(run.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}`;
+    res.json({ success: true, reportId });
   });
 
   // Bulk-set the case outcome across many cases (the "Pass all" / "Mark Blocked" toolbar).
@@ -2241,8 +2270,8 @@ Rules:
         title: String(req.body?.title || `${result.caseTitle || result.caseId} failed`),
         description: String(req.body?.description || result.comment || ''),
         stepsToReproduce: reproduce,
-        expected: (failed[0]?.expected) || '',
-        actual: (failed[0]?.actual) || result.comment || '',
+        expected: (failed[0]?.expected) || steps[0]?.expected || 'The test case should complete as specified.',
+        actual: (failed[0]?.actual) || result.comment || `${result.caseTitle || result.caseId} was marked ${result.outcome || 'Failed'}.`,
         severity: String(req.body?.severity || 'Medium'),
         status: 'New',
         linkedCaseId,

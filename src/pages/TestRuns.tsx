@@ -507,6 +507,10 @@ export default function TestRuns() {
   const handleStopRun = async (run: any) => {
     if (!await showConfirm('Stop this running execution?', { title: 'Stop Test Run', confirmText: 'Stop Run', tone: 'danger' })) return;
     setStoppingRunId(run.id);
+    // End the local running state immediately. The cancellation request then terminates the agent
+    // process in the background; the UI must not remain stuck on “Stopping all…” if that process
+    // takes time to exit or its connection is reconnecting.
+    setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Cancelled', state: 'Cancelled', completedAt: new Date().toISOString(), progress: 'Stopped by user' } : item));
     try {
       const jobId = String(run.triggerMeta?.automationJobId || '');
       const url = jobId
@@ -515,12 +519,22 @@ export default function TestRuns() {
       const response = await fetch(url, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Failed to stop test run.');
-      await refreshRunsQuiet();
+      void refreshRunsQuiet();
     } catch (error: any) {
+      void refreshRunsQuiet();
       void showAlert(error.message || 'Failed to stop test run.');
     } finally {
       setStoppingRunId('');
     }
+  };
+
+  const handleViewReport = async (run: any) => {
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/report`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to prepare the run report.');
+      navigate(`/reports?runId=${encodeURIComponent(run.id)}&reportId=${encodeURIComponent(data.reportId || '')}`);
+    } catch (error: any) { void showAlert(error.message || 'Failed to view the run report.'); }
   };
 
   // Automated runs execute Playwright scripts, so only cases that HAVE a linked script are runnable.
@@ -652,12 +666,15 @@ export default function TestRuns() {
                 {selectedRun.mode !== 'manual' && can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}
-                  disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
-                  title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
+                  disabled={isClosedTestRun(selectedRun) || selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
+                  title={isClosedTestRun(selectedRun) ? 'A closed test run cannot be executed' : selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                   className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <PlayCircle className="h-4 w-4" /> Run Scripts
                 </button>
+                )}
+                {selectedRun.completedAt && (
+                  <button onClick={() => { void handleViewReport(selectedRun); }} className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"><Download className="h-4 w-4" /> View Report</button>
                 )}
               </div>
             </div>
@@ -1467,8 +1484,8 @@ export default function TestRuns() {
                         {can('runs:execute') && (
                         <button
                           onClick={(event) => { event.stopPropagation(); if (run.mode === 'manual') void startManualRun(run); else void handleExecuteRuns([run]); }}
-                          disabled={run.mode !== 'manual' && (running || !hasScripts)}
-                          title={run.mode === 'manual' ? 'Start This Manual Run' : (hasScripts ? 'Run Linked Playwright Scripts' : 'No Playwright scripts are linked to this run')}
+                          disabled={closed || (run.mode !== 'manual' && (running || !hasScripts))}
+                          title={closed ? 'A closed test run cannot be executed' : run.mode === 'manual' ? 'Start This Manual Run' : (hasScripts ? 'Run Linked Playwright Scripts' : 'No Playwright scripts are linked to this run')}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}

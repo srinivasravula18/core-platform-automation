@@ -127,7 +127,16 @@ function parseSummary(runDir: string): Record<string, number> {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
     const s = raw.stats || {};
-    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0) };
+    const tests: any[] = [];
+    const visit = (suite: any) => {
+      for (const spec of suite?.specs || []) for (const test of spec.tests || []) {
+        const result = test.results?.[test.results.length - 1] || {};
+        tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+      }
+      for (const child of suite?.suites || []) visit(child);
+    };
+    visit(raw);
+    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0), tests } as any;
   } catch { return {}; }
 }
 

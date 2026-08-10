@@ -14,7 +14,6 @@ import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
-import { agentRunStatusForList } from '../../../core/shared/testRunStatus';
 import { automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
@@ -371,7 +370,13 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const failed = Number(summary.failed || 0);
   const skipped = Number(summary.skipped || 0);
   const cancelled = status === 'cancelled';
-  const runStatus = cancelled ? 'Cancelled' : agentRunStatusForList(status === 'done' ? 'completed' : 'failed');
+  const runStatus = cancelled ? 'Cancelled' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
+  const onlyCaseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
+  const steps = Array.isArray(summary.tests) ? summary.tests.map((test: any, index: number) => ({
+    step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: test.title || '',
+    expected: 'Playwright script completes successfully.', outcome: /pass/i.test(String(test.status)) ? 'Passed' : /skip/i.test(String(test.status)) ? 'Skipped' : 'Failed',
+    reason: test.error || '', actual: test.error || '', durationMs: Number(test.durationMs) || 0,
+  })) : run.steps || [];
   await Runs.upsert({
     ...run,
     status: runStatus,
@@ -387,6 +392,7 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
     },
     executionTime: summary.durationMs ? `${Math.round(Number(summary.durationMs) / 1000)}s` : run.executionTime,
     completedAt: new Date().toISOString(),
+    steps,
   });
   persist('automation run synced');
 }

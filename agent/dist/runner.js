@@ -151,8 +151,10 @@ export class Runner {
         const outputFailure = output.join('\n').slice(-4000);
         const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : '');
         this.send('job.progress', { jobId: job.jobId, phase: 'uploading' });
-        await this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
         this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
+        // Execution is complete before evidence transfer. Report the result immediately so the Test Run
+        // does not remain Running while potentially slow screenshots, traces, and videos upload.
+        void this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
         this.log.info({ jobId: job.jobId, exitCode, summary }, 'job finished');
     }
     execute(job, runDir, control) {
@@ -191,6 +193,17 @@ export class Runner {
         try {
             const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
             const stats = raw.stats || {};
+            const tests = [];
+            const visit = (suite) => {
+                for (const spec of suite?.specs || [])
+                    for (const test of spec.tests || []) {
+                        const result = test.results?.[test.results.length - 1] || {};
+                        tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+                    }
+                for (const child of suite?.suites || [])
+                    visit(child);
+            };
+            visit(raw);
             return {
                 expected: stats.expected || 0,
                 unexpected: stats.unexpected || 0,
@@ -199,6 +212,7 @@ export class Runner {
                 flaky: stats.flaky || 0,
                 skipped: stats.skipped || 0,
                 durationMs: Math.round(stats.duration || 0),
+                tests,
             };
         }
         catch {

@@ -3,7 +3,7 @@ import { Bug, ChevronLeft, ChevronRight, Code2, Search } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Timestamp } from '@/src/components/Timestamp';
 import { ManualStepRunner, type StepResult } from './manualRunner/ManualStepRunner';
-import { OutcomeDot } from './manualRunner/OutcomeSelect';
+import { OutcomeDot, outcomeStyle } from './manualRunner/OutcomeSelect';
 import { RunSummaryPanel } from './manualRunner/RunSummaryPanel';
 import { applyExecutionProgress, type ExecutionStepProgress } from '@/core/shared/automationProgress';
 import { useAgentEvents } from '@/src/lib/useAutomation';
@@ -11,8 +11,9 @@ import { useAgentEvents } from '@/src/lib/useAutomation';
 function outcomeFor(steps: any[]) {
   const statuses = steps.map((step) => String(step?.outcome || step?.status || ''));
   if (statuses.some((status) => /fail/i.test(status))) return 'Failed';
-  if (statuses.some((status) => /pass/i.test(status))) return 'Passed';
   if (statuses.some((status) => /block/i.test(status))) return 'Blocked';
+  if (statuses.some((status) => /retest/i.test(status))) return 'Retest';
+  if (statuses.some((status) => /pass/i.test(status))) return 'Passed';
   return 'Not Run';
 }
 
@@ -21,14 +22,19 @@ function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProg
   const matched = all.filter((step: any) => String(step.testCaseId || '') === String(testCase.id)
     || String(step.testCaseTitle || '') === String(testCase.title || ''));
   const source = matched.length ? matched : (Array.isArray(testCase.steps) ? testCase.steps : []);
-  const authored = source.map((step: any) => ({
+  const authored: StepResult[] = source.map((step: any) => ({
     action: step.action || step.description || step.name || '—',
     expected: step.expected || step.expectedResult || '—',
     outcome: step.outcome || step.status || 'Not Run',
     durationMs: Number(step.durationMs) || undefined,
     screenshots: Array.isArray(step.screenshots) ? step.screenshots : [],
   }));
-  return applyExecutionProgress(authored, executionSteps);
+  const progressed = applyExecutionProgress<StepResult>(authored, executionSteps);
+  const isOnlyCase = Array.isArray(run.caseIds) && run.caseIds.length === 1 && String(run.caseIds[0]) === String(testCase.id);
+  const savedOutcome = outcomeFor(matched.length ? matched : (isOnlyCase ? all : []));
+  return savedOutcome === 'Not Run' || progressed.some((step) => step.outcome !== 'Not Run')
+    ? progressed
+    : progressed.map((step) => ({ ...step, outcome: savedOutcome }));
 }
 
 export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any; cases: any[]; plans: any[]; suites: any[] }) {
@@ -46,7 +52,10 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
       setExecutionSteps(Array.isArray(data?.job?.summary?.executionSteps) ? data.job.summary.executionSteps : []);
     } catch { /* keep the last durable result */ }
   }, [jobId]);
-  useEffect(() => { setExecutionSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps]);
+  // The parent polls the linked run while execution is active. Reload the job summary when that
+  // run becomes terminal too; otherwise this workspace keeps the initial queued step list and
+  // renders Not Run even though the server already recorded the final result.
+  useEffect(() => { setExecutionSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps, run.status, run.completedAt]);
   useAgentEvents((event) => { if (event.scopeType === 'job' && event.scopeId === jobId) void loadExecutionSteps(); });
   const results = useMemo(() => cases.map((testCase) => {
     const stepResults = stepsForCase(run, testCase, executionSteps);
@@ -87,7 +96,7 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
     </aside>
     <section className="min-w-0 flex-1 overflow-auto">
       {!active ? <div className="p-8 text-sm text-[var(--text-muted)]">No test cases in this run.</div> : <>
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-[var(--border)] bg-[var(--bg-card)] px-5 py-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-[var(--text-primary)]">{active.caseTitle || active.caseId}</div><div className="mt-0.5 font-mono text-[10px] text-[var(--text-muted)]">{active.caseId}</div></div><span className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-300"><Code2 className="h-4 w-4" /> Automated</span><div className="ml-auto flex items-center gap-4 text-sm text-[var(--text-muted)]"><span>Start Time <span className="text-[var(--text-primary)]">{run.startedAt ? <Timestamp value={run.startedAt} /> : '—'}</span></span><span>Duration {run.executionTime || '—'}</span><label className="flex items-center gap-2 text-[var(--text-primary)]"><button type="button" role="switch" aria-checked={showImages} onClick={() => setShowImages((value) => !value)} className={cn('inline-flex h-5 w-9 items-center rounded-full', showImages ? 'bg-[var(--accent)]' : 'bg-[var(--border)]')}><span className={cn('h-4 w-4 rounded-full bg-white shadow transition-transform', showImages ? 'translate-x-4' : 'translate-x-0.5')} /></button>Show Images</label><span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]"><Bug className="h-4 w-4" /> Create bug</span><span className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 font-medium text-[var(--text-primary)]">{run.status || active.outcome}</span></div></div>
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-[var(--border)] bg-[var(--bg-card)] px-5 py-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-[var(--text-primary)]">{active.caseTitle || active.caseId}</div><div className="mt-0.5 font-mono text-[10px] text-[var(--text-muted)]">{active.caseId}</div></div><span className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-300"><Code2 className="h-4 w-4" /> Automated</span><div className="ml-auto flex items-center gap-4 text-sm text-[var(--text-muted)]"><span>Start Time <span className="text-[var(--text-primary)]">{run.startedAt ? <Timestamp value={run.startedAt} /> : '—'}</span></span><span>Duration {run.executionTime || '—'}</span><label className="flex items-center gap-2 text-[var(--text-primary)]"><button type="button" role="switch" aria-checked={showImages} onClick={() => setShowImages((value) => !value)} className={cn('inline-flex h-5 w-9 items-center rounded-full', showImages ? 'bg-[var(--accent)]' : 'bg-[var(--border)]')}><span className={cn('h-4 w-4 rounded-full bg-white shadow transition-transform', showImages ? 'translate-x-4' : 'translate-x-0.5')} /></button>Show Images</label><span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]"><Bug className="h-4 w-4" /> Create bug</span><span className={cn('inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 font-medium', outcomeStyle(active.outcome).text)}><OutcomeDot outcome={active.outcome} />{active.outcome}</span></div></div>
         <div className="px-5 pb-6"><h3 className="mb-2 text-sm font-semibold">Steps</h3><div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"><ManualStepRunner steps={active.stepResults} showImages={showImages} disabled authoringDisabled onStepChange={() => {}} onUploadScreenshot={() => {}} onOpenImage={() => {}} /></div></div>
       </>}
     </section>

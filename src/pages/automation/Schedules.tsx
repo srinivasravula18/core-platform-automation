@@ -563,6 +563,7 @@ function EditScheduleModal({ schedule, onClose, onSaved }: { schedule: Schedule;
 type Runnable = { kind: 'script' | 'recording'; scriptId?: string; recordingId?: string; caseId?: string; caseName?: string; name?: string; folderId?: string | null; tags?: string[] };
 type RepositoryCase = { id: string; title?: string; tags?: string[]; steps?: unknown[]; testPlanId?: string; testPlanIds?: string[]; testSuiteId?: string; testSuiteIds?: string[] };
 type RepositoryGroup = { id: string; name?: string; title?: string };
+type RepositoryRun = { id: string; name?: string; title?: string; caseIds?: string[]; status?: string };
 const runnableKey = (runnable: Runnable) => `${runnable.kind}:${runnable.kind === 'recording' ? runnable.recordingId : runnable.scriptId}`;
 const matchesSearch = (values: unknown[], tags: string[] = [], search: string) => {
   const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -577,6 +578,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedPlanIds, setSelectedPlanIds] = useState<Set<string>>(new Set());
   const [selectedSuiteIds, setSelectedSuiteIds] = useState<Set<string>>(new Set());
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [title, setTitle] = useState('');
   const [tab, setTab] = useState<ScheduleTab>('daily');
   const [time, setTime] = useState('02:00');
@@ -594,7 +596,8 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
   const [cases, setCases] = useState<RepositoryCase[]>([]);
   const [plans, setPlans] = useState<RepositoryGroup[]>([]);
   const [suites, setSuites] = useState<RepositoryGroup[]>([]);
-  const [selectionSource, setSelectionSource] = useState<'individual' | 'plan' | 'suite'>('individual');
+  const [runs, setRuns] = useState<RepositoryRun[]>([]);
+  const [selectionSource, setSelectionSource] = useState<'individual' | 'plan' | 'suite' | 'run'>('individual');
   const [search, setSearch] = useState('');
   const [executionMode, setExecutionMode] = useState<'sequential' | 'parallel'>('parallel');
   const [failurePolicy, setFailurePolicy] = useState<'stop' | 'continue'>('continue');
@@ -607,6 +610,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     setSelected(new Set());
     setSelectedPlanIds(new Set());
     setSelectedSuiteIds(new Set());
+    setSelectedRunIds(new Set());
     setTitle(schedule?.title || '');
     setTab(schedule?.kind === 'once' ? 'once' : schedule ? 'cron' : 'daily');
     setTimezone(initialTimezone);
@@ -617,14 +621,15 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     setMaxConcurrency(schedule?.maxConcurrency || 3);
     setSearch('');
     setSelectionSource('individual');
-    Promise.all([fetch('/api/automation/runnables').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/plans').then((r) => r.json()), fetch('/api/suites').then((r) => r.json())])
-      .then(([runnableData, caseData, planData, suiteData]) => {
+    Promise.all([fetch('/api/automation/runnables').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/plans').then((r) => r.json()), fetch('/api/suites').then((r) => r.json()), fetch('/api/runs').then((r) => r.json())])
+      .then(([runnableData, caseData, planData, suiteData, runData]) => {
         const available = (Array.isArray(runnableData?.runnables) ? runnableData.runnables : [])
           .map((runnable: Runnable) => ({ ...runnable, folderId: runnable.folderId == null ? null : String(runnable.folderId) }));
         setRunnables(available);
         setCases(Array.isArray(caseData) ? caseData : []);
         setPlans(Array.isArray(planData) ? planData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
+        setRuns(Array.isArray(runData) ? runData : []);
         const initial = schedule?.items?.length
           ? schedule.items.map((item) => `${item.runnableType}:${item.runnableId}`)
           : schedule ? [runnableKey(available.find((runnable) => runnable.recordingId === schedule.recordingId) || { kind: 'recording', recordingId: schedule.recordingId } as Runnable)] : [];
@@ -666,27 +671,32 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     const caseIds = new Set(casesInGroup(groupId, kind).map((testCase) => String(testCase.id)));
     return runnables.filter((runnable) => caseIds.has(String(runnable.caseId || ''))).map(runnableKey);
   }, [casesInGroup, runnables]);
+  const runnableIdsForRun = useCallback((runId: string) => {
+    const caseIds = new Set((runs.find((run) => run.id === runId)?.caseIds || []).map(String));
+    return runnables.filter((runnable) => caseIds.has(String(runnable.caseId || ''))).map(runnableKey);
+  }, [runs, runnables]);
   const plansWithRunnableCounts = useMemo(() => plans.map((plan) => ({ ...plan, caseCount: casesInGroup(plan.id, 'plan').length, runnableCount: runnableIdsForGroup(plan.id, 'plan').length })), [plans, casesInGroup, runnableIdsForGroup]);
   const suitesWithRunnableCounts = useMemo(() => suites.map((suite) => ({ ...suite, caseCount: casesInGroup(suite.id, 'suite').length, runnableCount: runnableIdsForGroup(suite.id, 'suite').length })), [suites, casesInGroup, runnableIdsForGroup]);
   const selectedIds = useMemo(() => {
     const ids = new Set(selected);
     selectedPlanIds.forEach((id) => runnableIdsForGroup(id, 'plan').forEach((key) => ids.add(key)));
     selectedSuiteIds.forEach((id) => runnableIdsForGroup(id, 'suite').forEach((key) => ids.add(key)));
+    selectedRunIds.forEach((id) => runnableIdsForRun(id).forEach((key) => ids.add(key)));
     return ids;
-  }, [selected, selectedPlanIds, selectedSuiteIds, runnableIdsForGroup]);
+  }, [selected, selectedPlanIds, selectedSuiteIds, selectedRunIds, runnableIdsForGroup, runnableIdsForRun]);
   const selectedRunnables = useMemo(() => [...selectedIds].map((id) => runnables.find((runnable) => runnableKey(runnable) === id)).filter(Boolean) as Runnable[], [selectedIds, runnables]);
   const visibleGroups = useMemo(() => {
-    const groups = selectionSource === 'plan' ? plansWithRunnableCounts : suitesWithRunnableCounts;
+    const groups = selectionSource === 'plan' ? plansWithRunnableCounts : selectionSource === 'suite' ? suitesWithRunnableCounts : runs.map((run) => ({ ...run, caseCount: (run.caseIds || []).length, runnableCount: runnableIdsForRun(run.id).length }));
     const query = search.trim().toLowerCase();
     return query ? groups.filter((group) => String(group.name || group.title || group.id).toLowerCase().includes(query)) : groups;
-  }, [selectionSource, plansWithRunnableCounts, suitesWithRunnableCounts, search]);
+  }, [selectionSource, plansWithRunnableCounts, suitesWithRunnableCounts, runs, runnableIdsForRun, search]);
   const toggle = (id: string) => setSelected((prev) => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
-  const toggleGroup = (id: string, kind: 'plan' | 'suite') => {
-    const setter = kind === 'plan' ? setSelectedPlanIds : setSelectedSuiteIds;
+  const toggleGroup = (id: string, kind: 'plan' | 'suite' | 'run') => {
+    const setter = kind === 'plan' ? setSelectedPlanIds : kind === 'suite' ? setSelectedSuiteIds : setSelectedRunIds;
     setter((previous) => {
       const next = new Set(previous);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -734,6 +744,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
       setSelected(new Set());
       setSelectedPlanIds(new Set());
       setSelectedSuiteIds(new Set());
+      setSelectedRunIds(new Set());
       onCreated();
       onClose();
     } catch (error: any) { showToast(error?.message || 'Could not create the schedule.', { tone: 'error' }); }
@@ -751,7 +762,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-[var(--text-primary)]">Select schedule scope<RequiredMark /></div>
-          <div className="mt-0.5 text-xs text-[var(--text-muted)]">Choose any number of plans, suites, or runnable test cases.</div>
+          <div className="mt-0.5 text-xs text-[var(--text-muted)]">Choose test runs, plans, suites, or runnable test cases.</div>
         </div>
         <label className="relative block w-full max-w-lg">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
@@ -760,7 +771,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
         </label>
       </div>
       <div className="mb-3 flex gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/50 p-1" aria-label="Select tests from">
-        {([['individual', 'Test cases', selected.size], ['plan', 'Test plans', selectedPlanIds.size], ['suite', 'Test suites', selectedSuiteIds.size]] as const).map(([id, label, count]) => <button key={id} type="button" onClick={() => { setSelectionSource(id); setSearch(''); }} aria-pressed={selectionSource === id} className={`flex flex-1 items-center justify-center gap-2 rounded px-3 py-2 text-sm font-medium ${selectionSource === id ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'}`}>{label}{count > 0 && <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] tabular-nums">{count}</span>}</button>)}
+        {([['individual', 'Test cases', selected.size], ['plan', 'Test plans', selectedPlanIds.size], ['suite', 'Test suites', selectedSuiteIds.size], ['run', 'Test runs', selectedRunIds.size]] as const).map(([id, label, count]) => <button key={id} type="button" onClick={() => { setSelectionSource(id); setSearch(''); }} aria-pressed={selectionSource === id} className={`flex flex-1 items-center justify-center gap-2 rounded px-3 py-2 text-sm font-medium ${selectionSource === id ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'}`}>{label}{count > 0 && <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] tabular-nums">{count}</span>}</button>)}
       </div>
       {selectionSource === 'individual' ? <div className="min-h-64 max-h-72 overflow-auto rounded-md border border-[var(--border)]">
           {loading ? <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Loading scripts…</div>
@@ -784,7 +795,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
       </div> : <div className="max-h-72 min-h-64 overflow-auto rounded-md border border-[var(--border)]">
         <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]/40 px-4 py-2 text-xs text-[var(--text-muted)]">Select any number of test {selectionSource}s. Overlapping cases are included only once.</div>
         {visibleGroups.length ? visibleGroups.map((group) => <label key={group.id} className={`flex items-center gap-3 border-b border-[var(--border)] px-4 py-3 text-left text-sm last:border-0 ${group.runnableCount ? 'cursor-pointer hover:bg-[var(--bg-secondary)]' : 'cursor-not-allowed opacity-60'}`}>
-          <input type="checkbox" disabled={!group.runnableCount} checked={(selectionSource === 'plan' ? selectedPlanIds : selectedSuiteIds).has(group.id)} onChange={() => toggleGroup(group.id, selectionSource)} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
+          <input type="checkbox" disabled={!group.runnableCount} checked={(selectionSource === 'plan' ? selectedPlanIds : selectionSource === 'suite' ? selectedSuiteIds : selectedRunIds).has(group.id)} onChange={() => toggleGroup(group.id, selectionSource)} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
           <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{group.name || group.title || group.id}</span>
           <span className="shrink-0 text-xs text-[var(--text-muted)]">{group.caseCount} case{group.caseCount === 1 ? '' : 's'}</span>
           <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${group.runnableCount ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'bg-[var(--border)] text-[var(--text-muted)]'}`}>{group.runnableCount} script{group.runnableCount === 1 ? '' : 's'}</span>

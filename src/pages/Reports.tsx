@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -283,6 +284,9 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
 };
 
 export default function Reports() {
+  const location = useLocation();
+  const requestedRunId = new URLSearchParams(location.search).get('runId');
+  const requestedReportId = new URLSearchParams(location.search).get('reportId');
   const [reports, setReports] = useState<Report[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
@@ -331,7 +335,7 @@ export default function Reports() {
   };
 
   const stepCounts = (rep: Report) => {
-    const steps = rep.steps || [];
+    const steps = (rep.steps || []).filter((step) => !/^(not run|untested|paused)$/i.test(String(step.outcome || '')));
     return {
       passed: steps.filter((s) => /pass/i.test(String(s.outcome || ''))).length,
       failed: steps.filter((s) => /fail/i.test(String(s.outcome || ''))).length,
@@ -370,9 +374,10 @@ export default function Reports() {
         setSelectedReport((current) => current
           ? nextReports.find((report) => report.id === current.id) || null
           : nextReports[0] || null);
-        setDetailReport((current) => current
-          ? nextReports.find((report) => report.id === current.id) || null
-          : null);
+        setDetailReport((current) => {
+          const requested = nextReports.find((report) => report.id === requestedReportId || report.runId === requestedRunId);
+          return requested || (current ? nextReports.find((report) => report.id === current.id) || null : null);
+        });
         setLoading(false);
       })
       .catch(err => {
@@ -714,6 +719,7 @@ export default function Reports() {
                     { key: 'step', label: '#' },
                     { key: 'action', label: 'Test Step' },
                     { key: 'expected', label: 'Expected Result' },
+                    { key: 'actual', label: 'Actual Result' },
                     { key: 'outcome', label: 'Outcome' },
                     { key: 'reason', label: 'Reason' },
                     { key: 'evidence', label: 'Evidence', kind: 'image' },
@@ -747,16 +753,17 @@ export default function Reports() {
                 <div className="whitespace-pre-wrap rounded-md border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">{detailReport.failureReason}</div>
               )}
               <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-                <table className="w-full min-w-[640px] text-left text-sm">
+                <table className="w-full min-w-[900px] text-left text-sm">
                   <thead className="bg-[var(--bg-secondary)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                    <tr><th className="w-10 px-3 py-2">#</th><th className="px-3 py-2">Test Step</th><th className="px-3 py-2">Expected Result</th><th className="w-24 px-3 py-2">Outcome</th><th className="w-24 px-3 py-2">Evidence</th></tr>
+                    <tr><th className="w-10 px-3 py-2">#</th><th className="px-3 py-2">Test Case / Step</th><th className="px-3 py-2">Expected Result</th><th className="px-3 py-2">Actual Result / Failure</th><th className="w-24 px-3 py-2">Outcome</th><th className="w-24 px-3 py-2">Evidence</th></tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--border)]">
                     {(detailReport.steps || []).map((s, i) => (
                       <tr key={i} className="align-top">
                         <td className="px-3 py-2 font-mono text-xs text-[var(--text-muted)]">{i + 1}</td>
-                        <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
+                        <td className="px-3 py-2 text-[var(--text-primary)]">{s.testCaseTitle && <div className="mb-1 text-xs font-semibold text-[var(--accent)]">{s.testCaseTitle}</div>}{s.action}</td>
                         <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
+                        <td className="px-3 py-2 text-[var(--text-muted)]">{s.actual || s.reason || '—'}</td>
                         <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
                         <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => selectScreenshot(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not Captured</span>}</td>
                       </tr>
