@@ -5,7 +5,7 @@ import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
-import { downloadFile, reportMetrics, reportTypeLabel, toReportHTML } from '../lib/exportData';
+import { downloadFile, printReportPDF, reportMetrics, reportTypeLabel, toReportHTML, toReportMarkdown, type ReportContext } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -17,6 +17,7 @@ import { withBasePath } from '@/src/lib/base-path';
 import { showConfirm } from '@/src/lib/dialog';
 import { useUrlState } from '@/src/lib/useUrlState';
 import { TESTING_TYPES } from '@/core/shared/testCaseTypes';
+import { DetailedReportView } from '@/src/components/reports/DetailedReportView';
 
 interface Step {
   step: string;
@@ -320,6 +321,7 @@ export default function Reports() {
   // Evidence screenshot lightbox State
   const [lightboxKey, setLightboxKey] = useState<string | null>(null);
   const [lightboxTab, setLightboxTab] = useState<'current' | 'all'>('current');
+  const [detailStatusFilter, setDetailStatusFilter] = useState<'all' | 'passed' | 'failed' | 'skipped'>('all');
   const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
   
   // Active step & screenshot for inline expanded browser mockup
@@ -344,12 +346,14 @@ export default function Reports() {
   };
 
   const handleShareReport = async (reportId: string) => {
-    const url = `${window.location.origin}${window.location.pathname}#report-${reportId}`;
-    try { await navigator.clipboard?.writeText(url); await showConfirm('Report link copied to clipboard.'); }
+    const url = new URL(window.location.href);
+    url.searchParams.set('reportId', reportId);
+    url.hash = '';
+    try { await navigator.clipboard?.writeText(url.toString()); await showConfirm('Report link copied to clipboard.'); }
     catch { /* clipboard unavailable */ }
   };
 
-  const handleHtmlReportExport = async (report: Report) => {
+  const reportExportContext = async (report: Report): Promise<ReportContext> => {
     let run: any;
     let results: any[] = [];
     if (report.runId) {
@@ -361,7 +365,14 @@ export default function Reports() {
       }
     }
     const plan = plans.find((item: any) => String(item.id) === String(report.planId || run?.testPlanId));
-    downloadFile(toReportHTML(report, { run, results, plan, cases, suites }), `report-${report.id}.html`, 'text/html;charset=utf-8');
+    return { run, results, plan, cases, suites };
+  };
+
+  const handleDetailedReportExport = async (report: Report, format: 'html' | 'md' | 'pdf') => {
+    const context = await reportExportContext(report);
+    if (format === 'html') return downloadFile(toReportHTML(report, context), `report-${report.id}.html`, 'text/html;charset=utf-8');
+    if (format === 'md') return downloadFile(toReportMarkdown(report, context), `report-${report.id}.md`, 'text/markdown;charset=utf-8');
+    printReportPDF(report, context);
   };
 
   const fetchReports = (showLoading = true) => {
@@ -645,7 +656,7 @@ export default function Reports() {
 
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
-          <table className="w-full min-w-[940px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[1040px] table-fixed border-collapse text-left text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
@@ -653,7 +664,7 @@ export default function Reports() {
                 </th>
                 <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-24 px-4 py-3" />
                 <SortableHeader label="Run ID" column="runId" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
-                <SortableHeader label="Test Scenario" column="scenario" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-3" />
+                <SortableHeader label="Test Scenario" column="scenario" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-72 px-4 py-3" />
                 <SortableHeader label="Type" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
                 <SortableHeader label="Pass / Fail" column="result" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3" />
                 <SortableHeader label="Duration" column="duration" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3" />
@@ -675,8 +686,8 @@ export default function Reports() {
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.id}</td>
                     <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.runId || '—'}</td>
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-[var(--text-primary)]">{r.name}</div>
+                    <td className="min-w-0 px-4 py-3 [overflow-wrap:anywhere]">
+                      <div className="whitespace-normal break-words font-semibold leading-5 text-[var(--text-primary)]">{r.name}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><FolderBadge folders={folders} folderId={r.folderId} />{r.planName ? <span>· {r.planName}</span> : null}<span>· {r.date}</span></div>
                     </td>
                     <td className="px-4 py-3"><span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--text-muted)]">{type}</span></td>
@@ -697,7 +708,7 @@ export default function Reports() {
       </div>
 
       {/* Report detail — full step-by-step + evidence + Download/Share (the list is a summary now). */}
-      <Modal isOpen={!!detailReport} onClose={() => setDetailReport(null)} title={detailReport?.name || 'Report'} size="xl"
+      <Modal isOpen={!!detailReport} onClose={() => setDetailReport(null)} title={detailReport?.name || 'Report'} size="report"
         footer={
           <div className="flex w-full items-center justify-between gap-3">
             <div className="text-xs text-[var(--text-muted)]">Requested By {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
@@ -709,8 +720,12 @@ export default function Reports() {
                   dropUp
                   filename={`report-${detailReport.id}`}
                   title={detailReport.name}
-                  formats={['pdf', 'csv', 'md', 'json']}
-                  extraItems={[{ label: 'HTML Report (.html)', onClick: () => void handleHtmlReportExport(detailReport) }]}
+                  formats={['csv', 'json']}
+                  extraItems={[
+                    { label: 'HTML Report (.html)', onClick: () => void handleDetailedReportExport(detailReport, 'html') },
+                    { label: 'Markdown Report (.md)', onClick: () => void handleDetailedReportExport(detailReport, 'md') },
+                    { label: 'PDF (.pdf)', onClick: () => void handleDetailedReportExport(detailReport, 'pdf') },
+                  ]}
                   rows={(detailReport.steps || []).map((step, index) => ({
                     ...step,
                     evidence: stepEvidence(detailReport, step, index) ? evidenceImageSource(stepEvidence(detailReport, step, index)) : '',
@@ -730,7 +745,21 @@ export default function Reports() {
           </div>
         }>
         {detailReport && (() => {
+          return <DetailedReportView
+            report={detailReport}
+            jobId={String(runs.find((run: any) => String(run.id) === String(detailReport.runId))?.triggerMeta?.automationJobId || '')}
+            evidenceFor={(step, index) => stepEvidence(detailReport, step as Step, index)}
+            onViewEvidence={selectScreenshot}
+          />;
           const c = stepCounts(detailReport);
+          const steps = detailReport.steps || [];
+          const kind = (step: Step) => /pass/i.test(step.outcome) ? 'passed' : /fail/i.test(step.outcome) ? 'failed' : 'skipped';
+          const counts = { all: steps.length, passed: steps.filter((s) => kind(s) === 'passed').length, failed: steps.filter((s) => kind(s) === 'failed').length, skipped: steps.filter((s) => kind(s) === 'skipped').length };
+          const visibleSteps = detailStatusFilter === 'all' ? steps : steps.filter((step) => kind(step) === detailStatusFilter);
+          return <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[180px_minmax(0,1fr)]">
+            <aside className="lg:sticky lg:top-4 lg:self-start"><div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-1">{(['all', 'passed', 'failed', 'skipped'] as const).map((value) => <button key={value} type="button" onClick={() => setDetailStatusFilter(value)} className={cn('rounded-lg border p-3 text-left', detailStatusFilter === value ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--bg-secondary)]')}><div className={cn('text-xl font-bold', value === 'passed' ? 'text-emerald-500' : value === 'failed' ? 'text-red-500' : value === 'skipped' ? 'text-amber-500' : 'text-[var(--text-primary)]')}>{counts[value]}</div><div className="mt-1 text-xs capitalize text-[var(--text-muted)]">{value === 'all' ? 'All checks' : value}</div></button>)}</div></aside>
+            <main className="min-w-0 space-y-6"><header className="border-b border-[var(--border)] pb-5"><h2 className="text-xl font-bold text-[var(--text-primary)]">QA Automation Report</h2><p className="mt-1 text-sm text-[var(--text-muted)]">{detailReport.name}{detailReport.suiteName ? ` · ${detailReport.suiteName}` : ''}</p></header><div className="overflow-hidden rounded-lg border border-[var(--border)]"><dl className="grid text-sm sm:grid-cols-[170px_1fr] [&>dt]:border-b [&>dt]:border-[var(--border)] [&>dt]:bg-[var(--bg-secondary)] [&>dt]:px-4 [&>dt]:py-3 [&>dt]:font-semibold [&>dd]:border-b [&>dd]:border-[var(--border)] [&>dd]:px-4 [&>dd]:py-3 [&>dd]:text-[var(--text-muted)]"><dt>Run date</dt><dd><Timestamp value={detailReport.date} /></dd><dt>Total execution time</dt><dd>{detailReport.executionTime || '—'}</dd><dt>Requested by</dt><dd>{detailReport.requestedBy || '—'}</dd>{detailReport.planName && <><dt>Test plan</dt><dd>{detailReport.planName}</dd></>}{detailReport.targetUrl && <><dt>App URL</dt><dd><a className="text-[var(--accent)] hover:underline" href={detailReport.targetUrl} target="_blank" rel="noreferrer">{detailReport.targetUrl}</a></dd></>}</dl></div><div className="flex h-2 overflow-hidden rounded-full bg-[var(--bg-secondary)]"><span className="bg-emerald-500" style={{ width: `${counts.all ? counts.passed / counts.all * 100 : 0}%` }} /><span className="bg-red-500" style={{ width: `${counts.all ? counts.failed / counts.all * 100 : 0}%` }} /><span className="bg-amber-500" style={{ width: `${counts.all ? counts.skipped / counts.all * 100 : 0}%` }} /></div><section><h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-[var(--text-muted)]">Overview</h3><div className="rounded-lg border border-[var(--accent)]/25 bg-[var(--accent)]/10 p-4 text-sm text-[var(--text-primary)]">Out of <b>{counts.all} checks</b>, <b>{counts.passed} passed</b>{counts.failed ? ` and ${counts.failed} failed` : ''}{counts.skipped ? `; ${counts.skipped} skipped` : ''}.</div></section><section><h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-[var(--text-muted)]">Test Results</h3><div className="space-y-2">{visibleSteps.map((step, index) => { const status = kind(step); const evidence = stepEvidence(detailReport, step, index); return <details key={index} className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]"><summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 hover:bg-[var(--bg-primary)]"><span className={cn('h-2.5 w-2.5 rounded-full', status === 'passed' ? 'bg-emerald-500' : status === 'failed' ? 'bg-red-500' : 'bg-amber-500')} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-[var(--text-primary)]">{step.testCaseTitle || step.action || `Step ${index + 1}`}</div>{step.testCaseTitle && <div className="truncate text-xs text-[var(--text-muted)]">{step.action}</div>}</div><span className={cn('rounded px-2 py-0.5 text-[10px] font-bold uppercase', status === 'passed' ? 'bg-emerald-500/10 text-emerald-500' : status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500')}>{step.outcome}</span></summary><div className="border-t border-[var(--border)] p-4 text-sm"><b>Expected:</b> <span className="text-[var(--text-muted)]">{step.expected || '—'}</span>{(step.actual || step.reason) && <div className="mt-3 rounded bg-red-500/10 p-3 text-red-400"><b>Actual:</b> {step.actual || step.reason}</div>}{evidence && <button onClick={() => selectScreenshot(evidence)} className="mt-3 rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--accent)]">View evidence</button>}</div></details>; })}{!visibleSteps.length && <div className="rounded-lg border border-dashed border-[var(--border)] p-6 text-center text-sm text-[var(--text-muted)]">No checks match this filter.</div>}</div></section></main>
+          </div>;
           return (
             <div id={`row-container-${detailReport.id}`} className="space-y-4">
               <div className="flex flex-wrap items-center gap-2 text-sm">

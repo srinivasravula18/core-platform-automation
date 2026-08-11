@@ -78,4 +78,11 @@ assert.equal(applyExecutionProgress(
   [{ id: 'step:0', title: 'Fill username', status: 'Failed', startedAt: 100, durationMs: 200, error: 'timeout' }],
 )[0].outcome, 'Failed');
 
+// The failure reason rides along with the outcome (Reports/exports read it as Actual Result / Failure).
+assert.equal(applyExecutionProgress(
+  [{ id: 'case:0', action: 'Click Save', outcome: 'Not Run', error: '' }],
+  [],
+  [{ id: 'case:0', title: 'CLICK Save', status: 'Failed', startedAt: 100, durationMs: 200, error: 'Element not found' }],
+)[0].error, 'Element not found');
+
 console.log('automation progress checks passed');

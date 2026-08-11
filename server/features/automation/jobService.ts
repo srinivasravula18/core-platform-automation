@@ -9,12 +9,13 @@
  * LangGraph runtime uses for agent runs.
  */
 
-import { Agents, AutomationExecutionBatches, AutomationJobPauses, AutomationJobs, Recordings, Runs } from '../../db/repository';
+import { Agents, AutomationExecutionBatches, AutomationJobPauses, AutomationJobs, Cases, Recordings, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
-import { automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { applyExecutionProgress, automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { normalizeCaseSteps } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
@@ -377,17 +378,22 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const cancelled = status === 'cancelled';
   const runStatus = cancelled ? 'Cancelled' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
   const onlyCaseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
-  // A compiler-generated script reports per-authored-step outcomes on summary.caseSteps throughout the
-  // run (see core/shared/automationProgress.ts); AutomatedRunWorkspace already renders those against the
-  // case's own authored step text via applyExecutionProgress. Writing a collapsed one-row-per-test()
-  // summary here would take priority over that and erase the per-step detail — only fall back to the
-  // coarse summary.tests mapping when a script has no caseSteps at all (hand-edited/recorded scripts,
-  // which never pass through the compiler and so never report case-step ids).
-  const hasCaseSteps = Array.isArray(summary.caseSteps) && summary.caseSteps.length > 0;
-  const steps = hasCaseSteps
-    ? (run.steps || [])
+  // Persist the run's own QA-grade step record (Reports, exports, CSV all read run.steps directly, not
+  // the live job summary) — the case's real authored action/expected text with the real per-step outcome,
+  // not a collapsed one-row-per-Playwright-test() summary. Mirrors AutomatedRunWorkspace's live rendering
+  // (applyExecutionProgress against summary.caseSteps/executionSteps) so both views agree.
+  const caseForRun = onlyCaseId ? await Cases.get(onlyCaseId) : null;
+  const authoredCaseSteps = caseForRun ? normalizeCaseSteps(caseForRun.steps) : [];
+  const steps = authoredCaseSteps.length
+    ? applyExecutionProgress(authoredCaseSteps, summary.executionSteps || [], summary.caseSteps || [])
+      .map((step: any, index: number) => ({
+        step: String(index + 1), action: step.action, expected: step.expected,
+        testCaseId: onlyCaseId, testCaseTitle: caseForRun?.title || '',
+        outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
+        reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
+      }))
     : Array.isArray(summary.tests) ? summary.tests.map((test: any, index: number) => ({
-      step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: test.title || '',
+      step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: caseForRun?.title || test.title || '',
       expected: 'Playwright script completes successfully.', outcome: /pass/i.test(String(test.status)) ? 'Passed' : /skip/i.test(String(test.status)) ? 'Skipped' : 'Failed',
       reason: test.error || '', actual: test.error || '', durationMs: Number(test.durationMs) || 0,
     })) : run.steps || [];

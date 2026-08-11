@@ -37,12 +37,16 @@ export interface CaseStepProgress {
  */
 /** Combines every matched raw step a humanized authored step groups (humanizeSteps.ts sourceStepIds)
  *  into one outcome: any failure wins, else any still-running, else passed only once all are done. */
-function aggregateCaseSteps(matched: CaseStepProgress[]): { status: CaseStepProgress['status']; durationMs: number } {
+function aggregateCaseSteps(matched: CaseStepProgress[]): { status: CaseStepProgress['status']; durationMs: number; error: string } {
   const status = matched.some((m) => m.status === 'Failed') ? 'Failed'
     : matched.some((m) => m.status === 'Running') ? 'Running'
     : matched.every((m) => m.status === 'Passed') ? 'Passed'
     : 'Skipped';
-  return { status, durationMs: matched.reduce((sum, m) => sum + (m.durationMs || 0), 0) };
+  return {
+    status,
+    durationMs: matched.reduce((sum, m) => sum + (m.durationMs || 0), 0),
+    error: matched.find((m) => m.status === 'Failed')?.error || '',
+  };
 }
 
 export function applyExecutionProgress<T extends Record<string, any>>(
@@ -58,10 +62,10 @@ export function applyExecutionProgress<T extends Record<string, any>>(
         const matched = sourceIds.map((id) => byId.get(id)).filter((m): m is CaseStepProgress => !!m);
         if (!matched.length) return step;
         const agg = aggregateCaseSteps(matched);
-        return { ...step, outcome: agg.status, durationMs: agg.durationMs };
+        return { ...step, outcome: agg.status, durationMs: agg.durationMs, ...(agg.error ? { error: agg.error } : {}) };
       }
       const matched = byId.get(String((step as any).id || '')) ?? byId.get(`case:${index}`) ?? byId.get(`step:${index}`);
-      return matched ? { ...step, outcome: matched.status, durationMs: matched.durationMs } : step;
+      return matched ? { ...step, outcome: matched.status, durationMs: matched.durationMs, ...(matched.error ? { error: matched.error } : {}) } : step;
     });
   }
   const executedByIndex = new Map(executionSteps.map((step) => [step.index - 1, step]));

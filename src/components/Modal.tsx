@@ -6,7 +6,7 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   children: ReactNode;
-  size?: 'md' | 'xl';
+  size?: 'md' | 'xl' | 'report';
   /**
    * Optional action bar pinned to the bottom of the modal. When provided it is
    * rendered in a fixed footer that stays visible while the body scrolls.
@@ -17,7 +17,7 @@ interface ModalProps {
 export function Modal({ isOpen, onClose, title, children, size = 'xl', footer }: ModalProps) {
   if (!isOpen) return null;
 
-  const widthClass = size === 'xl' ? 'sm:max-w-5xl' : 'sm:max-w-md';
+  const widthClass = size === 'report' ? 'sm:max-w-[1280px]' : size === 'xl' ? 'sm:max-w-5xl' : 'sm:max-w-md';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">

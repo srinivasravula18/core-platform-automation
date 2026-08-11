@@ -59,8 +59,10 @@ import {
   Activity,
   AgentRuns,
   Agents,
+  AutomationJobs,
   isPgEnabled,
 } from '../../db/repository';
+import { applyExecutionProgress } from '../../../core/shared/automationProgress';
 
 // Record activity stamped with the acting user, so the dashboard history feed stays under
 // strict per-user isolation (each user sees only their own events + unowned system events).
@@ -259,6 +261,28 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
+// Automated run's real per-case, per-authored-step detail, computed fresh from the case's own step
+// text + the linked job's reported outcomes (same correlation AutomatedRunWorkspace renders live) —
+// not the run's persisted `steps` snapshot, which can predate this correlation or never have had it
+// (a run synced before this fix, or one whose script reported no case-step ids). Computing it here,
+// at report-view time, fixes the Report for every existing run retroactively, not just future ones.
+async function automatedJobSteps(run: any): Promise<any[] | null> {
+  const jobId = String(run.triggerMeta?.automationJobId || '');
+  const caseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
+  if (!jobId || !caseId) return null;
+  const [job, testCase] = await Promise.all([AutomationJobs.get(jobId), Cases.get(caseId)]);
+  const summary = job?.summary || {};
+  const authored = testCase ? normalizeCaseSteps(testCase.steps) : [];
+  if (!authored.length) return null;
+  return applyExecutionProgress(authored, summary.executionSteps || [], summary.caseSteps || [])
+    .map((step: any, index: number) => ({
+      step: String(index + 1), action: step.action, expected: step.expected,
+      testCaseId: caseId, testCaseTitle: testCase?.title || '',
+      outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
+      reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
+    }));
+}
+
 async function createReportForRun(run: any, scope: any) {
   const results = await RunCaseResults.listForRun(run.id);
   const manualSteps = results.flatMap((result: any) => (Array.isArray(result.stepResults) ? result.stepResults : []).map((step: any, index: number) => ({
@@ -267,7 +291,7 @@ async function createReportForRun(run: any, scope: any) {
     testCaseId: result.caseId === run.id ? '' : result.caseId, testCaseTitle: result.caseTitle || '',
     screenshot: Array.isArray(step.screenshots) ? step.screenshots[0] || '' : '', screenshots: step.screenshots || [],
   })));
-  const steps = manualSteps.length ? manualSteps : (Array.isArray(run.steps) ? run.steps : []);
+  const steps = manualSteps.length ? manualSteps : (await automatedJobSteps(run)) || (Array.isArray(run.steps) ? run.steps : []);
   const passed = results.length ? results.filter((r: any) => r.outcome === 'Passed').length : Number(run.passed) || 0;
   const failed = results.length ? results.filter((r: any) => /fail/i.test(String(r.outcome))).length : Number(run.failed) || 0;
   await createReportFromRun(run, scope, { passed, failed, steps, targetUrl: run.targetUrl || '', suiteName: run.suiteName, evidence: run.evidence || [] });
