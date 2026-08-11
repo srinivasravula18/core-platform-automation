@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, Loader2, Radio, RefreshCcw, Square, Video } from 'lucide-react';
+import { Download, Loader2, Radio, RefreshCcw, Save, Square, Video } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
@@ -17,6 +17,8 @@ export default function RecordPlay() {
   const [status, setStatus] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [websites, setWebsites] = useState<any[]>([]);
+  const [selectedWebsiteId, setSelectedWebsiteId] = useState('');
+  const [isSavingUrl, setIsSavingUrl] = useState(false);
   const [isProduction, setIsProduction] = useState(false);
   const isRemoteHost = typeof window !== 'undefined' && !/^(localhost|127\.0\.0\.1|::1)$/i.test(window.location.hostname);
   const codegenUnavailable = isProduction || isRemoteHost;
@@ -139,6 +141,28 @@ export default function RecordPlay() {
     URL.revokeObjectURL(url);
   };
 
+  const saveSelectedUrl = async () => {
+    const site = websites.find((item) => item.id === selectedWebsiteId);
+    const baseUrl = targetUrl.trim();
+    if (!site || !baseUrl || isSavingUrl) return;
+    try { new URL(baseUrl); } catch { void showAlert('Enter a valid URL.'); return; }
+    setIsSavingUrl(true);
+    try {
+      const res = await fetch(`/api/credentials/websites/${encodeURIComponent(site.id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not update the saved URL.');
+      setWebsites((items) => items.map((item) => item.id === site.id ? data.website : item));
+      setTargetUrl(data.website?.baseUrl || baseUrl);
+      setStatus(`Saved URL updated for ${site.name || baseUrl}.`);
+    } catch (err: any) {
+      void showAlert(err.message || 'Could not update the saved URL.');
+    } finally {
+      setIsSavingUrl(false);
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -171,20 +195,32 @@ export default function RecordPlay() {
               <label className="block text-xs font-medium text-[var(--text-muted)]">
                 Saved URL
                 <select
-                  value={targetUrl}
+                  value={selectedWebsiteId}
                   onChange={(e) => {
-                    const site = websites.find((item) => item.baseUrl === e.target.value);
-                    setTargetUrl(e.target.value);
+                    const site = websites.find((item) => item.id === e.target.value);
+                    setSelectedWebsiteId(e.target.value);
+                    setTargetUrl(site?.baseUrl || '');
                     if (site && !scriptName.trim()) setScriptName(String(site.name || 'recorded-flow').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''));
                   }}
                   className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                 >
                   <option value="">Select Saved URL</option>
                   {websites.map((site) => (
-                    <option key={site.id} value={site.baseUrl}>{site.name} - {site.baseUrl}</option>
+                    <option key={site.id} value={site.id}>{site.name} - {site.baseUrl}</option>
                   ))}
                 </select>
               </label>
+            )}
+
+            {selectedWebsiteId && (
+              <button
+                onClick={saveSelectedUrl}
+                disabled={isSavingUrl || !targetUrl.trim()}
+                className="inline-flex w-fit items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                {isSavingUrl ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Save URL
+              </button>
             )}
 
             <label className="block text-xs font-medium text-[var(--text-muted)]">
