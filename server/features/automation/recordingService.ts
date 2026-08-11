@@ -16,6 +16,7 @@ import { scopeFilter, scopeStamp } from '../../shared/scope';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
+import { createJob, setJobStatus } from './jobService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { hardenRecordedScript } from './scriptHardening';
 import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps, parseRecordingSteps } from './stepGrouping';
@@ -81,11 +82,16 @@ export async function startRecording(recordingId: string, agentId: string) {
   const rec = await Recordings.get(recordingId);
   if (!rec) return { error: 'Recording not found.', status: 404 };
   if (!isAgentConnected(agentId)) return { error: 'Target agent is not connected.', status: 409 };
-  await Recordings.upsert({ ...rec, agentId, status: 'recording', startedAt: new Date().toISOString() });
+  // Codegen's own browser has no video output (see finalizeRecording's video note below), so a job
+  // row is opened now purely as an artifact target: the agent records video alongside the live
+  // codegen session and uploads it here directly — no separate replay is needed to get a preview.
+  const scope: Scope = { projectId: rec.projectId || '', appId: rec.appId || null, userId: rec.ownerId || '' };
+  const videoJob = await createJob({ recordingId, agentId, trigger: 'live-recording', dispatch: false }, scope);
+  await Recordings.upsert({ ...rec, agentId, status: 'recording', startedAt: new Date().toISOString(), metadata: { ...rec.metadata, videoJobId: videoJob.id } });
   persist('recording started');
-  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser, browserPermissions: normalizeBrowserPermissionSettings(rec.metadata?.browserPermissions) } });
+  dispatchToAgent(agentId, { type: 'record.start', payload: { recordingId, url: rec.appUrl, browser: rec.browser, videoJobId: videoJob.id, browserPermissions: normalizeBrowserPermissionSettings(rec.metadata?.browserPermissions) } });
   await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.started', ownerId: rec.ownerId, data: {} });
-  return { ok: true };
+  return { ok: true, videoJobId: videoJob.id };
 }
 
 // Pending server-side stop fallbacks by recordingId — cleared the moment the agent's record.done lands.
@@ -128,18 +134,25 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   const empty = !recordingHasInteractions(finalScript);
   let caseId = '';
   let caseError = '';
+  let renamedTitle = '';
   if (!empty) {
     // Never swallow this silently: a failure here leaves a saved recording with no case or script,
     // which looks to the user like the recording captured nothing.
     try {
-      caseId = await reflectRecordingAsCase(saved, finalScript);
+      const result = await reflectRecordingAsCase(saved, finalScript);
+      caseId = result.caseId;
+      renamedTitle = result.renamedTitle || '';
     } catch (error: any) {
       caseError = error?.message || 'Could not create the test case for this recording.';
       console.error('[recording] case creation failed', { recordingId, error: caseError });
     }
   }
   persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty, caseError } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty, caseError, renamedTitle } });
+  // The agent uploads the live-captured video (if any) before sending record.done, so the artifact
+  // is already in place; marking the job done here just stops the preview panel's polling.
+  const videoJobId = saved.metadata?.videoJobId;
+  if (videoJobId) await setJobStatus(videoJobId, 'done', { finishedAt: new Date().toISOString() });
 }
 
 /** True when the script contains at least one recorded interaction (navigation, click, input, assertion). */
@@ -189,7 +202,7 @@ async function availableTitle(rows: any[], column: 'title' | 'name', base: strin
   return `${base} (${selfId.slice(-6)})`;
 }
 
-async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<string> {
+async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<{ caseId: string; renamedTitle?: string }> {
   const meta: RecordingCaseMeta = rec.metadata?.caseMeta || {};
   const existingCaseId: string = rec.metadata?.caseId || '';
   const title = rec.name || 'Recorded test';
@@ -199,6 +212,9 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     sourceText: title,
   });
   const caseTitle = await availableTitle((await Cases.list()) as any[], 'title', title, caseId, rec);
+  // Silently renaming a duplicate avoids losing the recording (see the comment above), but the user
+  // still needs to know their chosen title didn't stick — surfaced via the recording.done event.
+  const renamedTitle = !existingCaseId && caseTitle !== title ? caseTitle : undefined;
   const caseRow = {
     id: caseId,
     title: caseTitle,
@@ -249,11 +265,12 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     appId: rec.appId || '',
     ownerId: rec.ownerId || '',
   });
-  // Persist the case/script ids back onto the recording so a second finalize updates instead of duplicating.
+  // Persist the case/script ids (and any title-collision rename) back onto the recording, so a
+  // client that missed the recording.done SSE event still sees it via the polling fallback.
   if (!existingCaseId || !rec.metadata?.scriptId) {
-    await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, caseId, scriptId } });
+    await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, caseId, scriptId, ...(renamedTitle ? { renamedTitle } : {}) } });
   }
-  return caseId;
+  return { caseId, renamedTitle };
 }
 
 /** Resolve a repository script to the recording-shaped artifact used by the existing runner. */

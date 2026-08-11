@@ -204,7 +204,7 @@ export type RecordingPhase = 'setup' | 'recording' | 'finalizing' | 'summary';
  */
 export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   phase: RecordingPhase; recordingId: string; script: string; stats: Record<string, number>;
-  elapsed: number; mmss: string; busy: boolean; caseId: string; empty: boolean;
+  elapsed: number; mmss: string; busy: boolean; caseId: string; empty: boolean; videoJobId: string; renamedTitle: string;
   start: (input: StartRecordingInput) => Promise<string>; stop: () => Promise<void>;
   discard: () => Promise<void>; reset: () => void;
 } {
@@ -215,6 +215,12 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false);
   const [caseId, setCaseId] = useState('');
+  // The agent records video alongside the live codegen session and uploads it to this job as its
+  // own artifact — no replay is needed to show a preview once recording finishes.
+  const [videoJobId, setVideoJobId] = useState('');
+  // Set when a title collision forced the case to save as "<title> (n)" — surfaced so the caller can
+  // warn the user instead of it changing silently (see recordingService.ts availableTitle).
+  const [renamedTitle, setRenamedTitle] = useState('');
   // True when the finished recording captured no interactions, so no test case was created.
   const [empty, setEmpty] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -232,6 +238,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
       if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
       if (typeof evt.data.caseId === 'string') setCaseId(evt.data.caseId);
       setEmpty(evt.data.empty === true);
+      setRenamedTitle(typeof evt.data.renamedTitle === 'string' ? evt.data.renamedTitle : '');
       stopTimer();
       setPhase('summary');
     }
@@ -247,6 +254,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
         setScript(recording.script || '');
         setStats(recording.stats || {});
         setCaseId(String(recording.metadata.caseId || ''));
+        setRenamedTitle(String(recording.metadata.renamedTitle || ''));
         setPhase('summary');
       } catch { /* SSE can still complete the session. */ }
     };
@@ -267,8 +275,9 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
       const started = await fetch(`/api/automation/recordings/${id}/start`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: input.agentId }),
       });
-      if (!started.ok) throw new Error((await started.json())?.error || 'start failed');
-      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setPhase('recording'); startTimer();
+      const startedBody = await started.json().catch(() => ({}));
+      if (!started.ok) throw new Error(startedBody?.error || 'start failed');
+      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setRenamedTitle(''); setVideoJobId(String(startedBody?.videoJobId || '')); setPhase('recording'); startTimer();
       return id;
     } finally { setBusy(false); }
   };
@@ -286,11 +295,11 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   const discard = async (): Promise<void> => {
     stopTimer();
     if (recordingId) await fetch(`/api/automation/recordings/${recordingId}`, { method: 'DELETE' }).catch(() => {});
-    setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setPhase('setup');
+    setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setVideoJobId(''); setRenamedTitle(''); setPhase('setup');
   };
 
-  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); };
+  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setVideoJobId(''); setRenamedTitle(''); };
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
-  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, start, stop, discard, reset };
+  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, videoJobId, renamedTitle, start, stop, discard, reset };
 }

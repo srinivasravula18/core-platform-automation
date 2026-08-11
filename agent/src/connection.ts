@@ -30,7 +30,7 @@ export class ConnectionManager {
 
   constructor(private log: Logger, private baseDir: string, private workDir: string, private config: AgentConfig) {
     const send = (type: string, payload: Record<string, unknown>) => this.send(type, payload);
-    this.recorder = new Recorder(log, workDir, send);
+    this.recorder = new Recorder(log, workDir, send, config);
     this.runner = new Runner(log, workDir, config, send);
   }
 
@@ -130,7 +130,7 @@ export class ConnectionManager {
     if (!frame?.type) return;
     switch (frame.type) {
       case 'record.start':
-        this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions);
+        this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions, frame.payload.videoJobId);
         break;
       case 'record.stop':
         this.recorder.stop(frame.payload.recordingId);

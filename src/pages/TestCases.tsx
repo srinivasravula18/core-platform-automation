@@ -683,9 +683,11 @@ export default function TestCases() {
     return candidates.find((script) => normalizeTitle(script.title) === title || normalizeTitle(script.test_case_title) === title)
       || (runId && candidates.length === 1 ? candidates[0] : null);
   };
+  // videoJobId is the live-captured-during-recording preview (current path); videoPreviewJobId is the
+  // older re-executed preview, kept as a fallback for recordings made before the live-capture change.
   const previewJobByCase = useMemo(() => new Map(recordings
-    .filter((recording) => recording.metadata?.caseId && recording.metadata?.videoPreviewJobId)
-    .map((recording) => [String(recording.metadata!.caseId), String(recording.metadata!.videoPreviewJobId)])), [recordings]);
+    .filter((recording) => recording.metadata?.caseId && (recording.metadata?.videoJobId || recording.metadata?.videoPreviewJobId))
+    .map((recording) => [String(recording.metadata!.caseId), String(recording.metadata!.videoJobId || recording.metadata!.videoPreviewJobId)])), [recordings]);
   const uploadedVideo = (testCase: any) => (Array.isArray(testCase.attachments) ? testCase.attachments : [])
     .find((attachment: CaseAttachment) => String(attachment.mimeType || '').startsWith('video/') || /\.(mp4|webm|mov)$/i.test(String(attachment.name || '')));
   const pendingRunHasAutomation = pendingRunCaseIds.some((id) => {
@@ -1006,6 +1008,12 @@ export default function TestCases() {
                 }),
               }]}
             />
+          )}
+          {selectedCaseId && previewJobByCase.get(String(selectedCaseId)) && (
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Recording preview</label>
+              <AutomationRunArtifacts jobId={previewJobByCase.get(String(selectedCaseId))!} videoOnly />
+            </div>
           )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
@@ -1600,8 +1608,9 @@ export default function TestCases() {
                     <td className="py-3 px-4">
                       {(() => {
                         const uploaded = uploadedVideo(tc);
-                        const previewJobId = previewJobByCase.get(String(tc.id));
-                        return <div className="flex items-center gap-1"><InlineCaseSelect value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })} title="Update evidence capture"><option value="on">Snapshot On</option><option value="off">Snapshot Off</option></InlineCaseSelect>{uploaded && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — ${uploaded.name}`, url: uploaded.url }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Video</button>}{previewJobId && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — Recorded preview`, jobId: previewJobId }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Preview</button>}</div>;
+                        // The recorded-run preview lives in the case's Edit modal now (Recording
+                        // preview section) — a table cell was too narrow to show it aligned.
+                        return <div className="flex items-center gap-1"><InlineCaseSelect value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })} title="Update evidence capture"><option value="on">Snapshot On</option><option value="off">Snapshot Off</option></InlineCaseSelect>{uploaded && <button onClick={(event) => { event.stopPropagation(); setVideoViewer({ title: `${tc.title} — ${uploaded.name}`, url: uploaded.url }); }} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"><Video className="h-3.5 w-3.5" /> Video</button>}</div>;
                       })()}
                     </td>
                     <td className="py-3 px-4">
