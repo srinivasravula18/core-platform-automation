@@ -53,9 +53,10 @@ export function configTemplate(engine, headed, hasPauses = false, settings = { p
     const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
     // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
     const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
-    const fakeMediaArgs = browserName === 'chromium' && settings.fakeMedia
-        ? `, launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }`
-        : '';
+    const chromiumArgs = browserName === 'chromium'
+        ? [...(headed ? ['--start-maximized'] : []), ...(settings.fakeMedia ? ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] : [])]
+        : [];
+    const launchOptions = chromiumArgs.length ? `, launchOptions: { args: ${JSON.stringify(chromiumArgs)} }` : '';
     const geolocation = settings.geolocation ? `, geolocation: ${JSON.stringify(settings.geolocation)}` : '';
     return `import { defineConfig } from 'playwright/test';
 export default defineConfig({
