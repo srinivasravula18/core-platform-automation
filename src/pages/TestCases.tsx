@@ -999,7 +999,7 @@ export default function TestCases() {
                 selectedEnvironment={automationEnvironment}
                 onEnvironmentChange={setAutomationEnvironment}
                 caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds, description: formData.description, preconditions: formData.preconditions, defectIds: formData.defectIds.split(/[\s,]+/).filter(Boolean) }}
-                onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
+                onDone={() => { setIsCaseModalOpen(false); fetchCases(); fetchScripts(); }}
                 footerTarget={automationFooterTarget}
               />}
             </div>

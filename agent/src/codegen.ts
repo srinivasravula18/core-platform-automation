@@ -20,11 +20,10 @@ const geolocation = coordinates.length === 2 && coordinates.every(Number.isFinit
 const launchOptions = {
   headless: false,
   ...(browserName === 'chromium' && value('--channel') ? { channel: value('--channel') } : {}),
-  ...(browserName === 'chromium' && args.includes('--fake-media')
-    ? { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }
-    : {}),
+  ...(browserName === 'chromium' ? { args: ['--start-maximized', ...(args.includes('--fake-media') ? ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] : [])] } : {}),
 };
 const contextOptions: BrowserContextOptions = {
+  viewport: null,
   ...(permissions.length ? { permissions } : {}),
   ...(geolocation ? { geolocation } : {}),
 };

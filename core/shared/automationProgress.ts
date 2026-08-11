@@ -18,7 +18,52 @@ export interface ExecutionStepProgress {
   error?: string;
 }
 
-export function applyExecutionProgress<T extends Record<string, any>>(authoredSteps: T[], executionSteps: ExecutionStepProgress[]): T[] {
+/** A compiler-emitted test.step() boundary — `id` is the real authored-step id (case:N / step:N), not
+ * a synthetic per-event id like ExecutionStepProgress.id, so it can be matched directly, not positionally. */
+export interface CaseStepProgress {
+  id: string;
+  title: string;
+  status: 'Running' | 'Passed' | 'Failed' | 'Skipped';
+  startedAt: number;
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Matches authored steps to real execution outcomes by id when available (case:N from the deterministic
+ * planner, or step:N from the universal compiler fallback — see testPlan.ts stampStepIds), falling back
+ * to positional matching against the raw action stream only when no `caseSteps` data exists at all (a
+ * hand-edited/recorded script never passes through the compiler, so it has no test.step() ids to report).
+ */
+/** Combines every matched raw step a humanized authored step groups (humanizeSteps.ts sourceStepIds)
+ *  into one outcome: any failure wins, else any still-running, else passed only once all are done. */
+function aggregateCaseSteps(matched: CaseStepProgress[]): { status: CaseStepProgress['status']; durationMs: number } {
+  const status = matched.some((m) => m.status === 'Failed') ? 'Failed'
+    : matched.some((m) => m.status === 'Running') ? 'Running'
+    : matched.every((m) => m.status === 'Passed') ? 'Passed'
+    : 'Skipped';
+  return { status, durationMs: matched.reduce((sum, m) => sum + (m.durationMs || 0), 0) };
+}
+
+export function applyExecutionProgress<T extends Record<string, any>>(
+  authoredSteps: T[],
+  executionSteps: ExecutionStepProgress[],
+  caseSteps: CaseStepProgress[] = [],
+): T[] {
+  if (caseSteps.length) {
+    const byId = new Map(caseSteps.map((step) => [step.id, step]));
+    return authoredSteps.map((step, index) => {
+      const sourceIds: string[] | undefined = (step as any).sourceStepIds;
+      if (sourceIds?.length) {
+        const matched = sourceIds.map((id) => byId.get(id)).filter((m): m is CaseStepProgress => !!m);
+        if (!matched.length) return step;
+        const agg = aggregateCaseSteps(matched);
+        return { ...step, outcome: agg.status, durationMs: agg.durationMs };
+      }
+      const matched = byId.get(String((step as any).id || '')) ?? byId.get(`case:${index}`) ?? byId.get(`step:${index}`);
+      return matched ? { ...step, outcome: matched.status, durationMs: matched.durationMs } : step;
+    });
+  }
   const executedByIndex = new Map(executionSteps.map((step) => [step.index - 1, step]));
   return authoredSteps.map((step, index) => {
     const executed = executedByIndex.get(index);
@@ -26,7 +71,29 @@ export function applyExecutionProgress<T extends Record<string, any>>(authoredSt
   });
 }
 
+function mergeCaseStepProgress(prior: Record<string, any>, detail: Record<string, any>): Record<string, any> {
+  const next = { ...prior, ...detail };
+  const id = String(detail.caseStepId || '');
+  if (!id) return next;
+  const steps: CaseStepProgress[] = Array.isArray(prior.caseSteps) ? prior.caseSteps.map((step: any) => ({ ...step })) : [];
+  const existing = steps.findIndex((step) => step.id === id);
+  const failed = Boolean(detail.caseStepError);
+  const step: CaseStepProgress = {
+    ...(existing >= 0 ? steps[existing] : {} as CaseStepProgress),
+    id,
+    title: String(detail.caseStepTitle || (existing >= 0 ? steps[existing].title : '') || id),
+    status: detail.event === 'case_step_started' ? 'Running' : failed ? 'Failed' : 'Passed',
+    startedAt: Number(detail.caseStepStartedAt) || (existing >= 0 ? steps[existing].startedAt : Date.now()),
+    durationMs: detail.event === 'case_step_finished' ? Math.max(0, Number(detail.caseStepDurationMs) || 0) : 0,
+    ...(failed ? { error: String(detail.caseStepError) } : {}),
+  };
+  if (existing >= 0) steps[existing] = step; else steps.push(step);
+  next.caseSteps = steps;
+  return next;
+}
+
 export function mergeExecutionProgress(prior: Record<string, any>, detail: Record<string, any>): Record<string, any> {
+  if (detail.event === 'case_step_started' || detail.event === 'case_step_finished') return mergeCaseStepProgress(prior, detail);
   const next = { ...prior, ...detail };
   if (detail.event !== 'step_started' && detail.event !== 'step_finished') return next;
   const id = String(detail.stepId || `step-${detail.stepIndex || 0}`);
@@ -54,15 +121,19 @@ export function finalizeExecutionProgress(
   error = '',
   finishedAt = Date.now(),
 ): Record<string, any> {
-  if (!Array.isArray(prior.executionSteps) || !prior.executionSteps.some((step: any) => step.status === 'Running')) return prior;
+  const hasRunningSteps = Array.isArray(prior.executionSteps) && prior.executionSteps.some((step: any) => step.status === 'Running');
+  const hasRunningCaseSteps = Array.isArray(prior.caseSteps) && prior.caseSteps.some((step: any) => step.status === 'Running');
+  if (!hasRunningSteps && !hasRunningCaseSteps) return prior;
   const status: ExecutionStepProgress['status'] = phase === 'done' ? 'Passed' : phase === 'failed' ? 'Failed' : 'Skipped';
+  const closeOut = (step: { status: string; durationMs: number; startedAt: number; error?: string }) => step.status !== 'Running' ? step : {
+    ...step,
+    status,
+    durationMs: Math.max(Number(step.durationMs) || 0, finishedAt - Number(step.startedAt || finishedAt)),
+    ...(status === 'Failed' && error && !step.error ? { error } : {}),
+  };
   return {
     ...prior,
-    executionSteps: prior.executionSteps.map((step: ExecutionStepProgress) => step.status !== 'Running' ? step : {
-      ...step,
-      status,
-      durationMs: Math.max(Number(step.durationMs) || 0, finishedAt - Number(step.startedAt || finishedAt)),
-      ...(status === 'Failed' && error && !step.error ? { error } : {}),
-    }),
+    ...(hasRunningSteps ? { executionSteps: prior.executionSteps.map(closeOut) } : {}),
+    ...(hasRunningCaseSteps ? { caseSteps: prior.caseSteps.map(closeOut) } : {}),
   };
 }

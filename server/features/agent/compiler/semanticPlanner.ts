@@ -115,7 +115,10 @@ function actionSteps(text: string, graph: EvidenceGraph, mission: MissionContext
 
 /** Convert straightforward reviewed case language into closed TestPlan IR without another model call. */
 export function semanticPlanFromCase(testCase: any, graph: EvidenceGraph, mission: MissionContext): TestPlan | null {
+  // Parallel to `steps` — which authored case-step index produced each entry, so a stable,
+  // source-attributed id (not just a compiled-position id) can be stamped after dedup.
   const steps: PlanStep[] = [];
+  const stepSourceIndexes: number[] = [];
   const sources = Array.isArray(testCase?.steps) ? testCase.steps : [];
   const mappedSourceSteps: number[] = [];
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
@@ -126,19 +129,22 @@ export function semanticPlanFromCase(testCase: any, graph: EvidenceGraph, missio
     const inferredActions = actionSteps(action, graph, mission);
     const actionAssertions = assertions(action, graph);
     const expectedAssertions = assertions(expected, graph);
-    steps.push(...inferredActions);
-    if (!inferredActions.length) steps.push(...actionAssertions);
+    const push = (list: PlanStep[]) => { steps.push(...list); for (let n = 0; n < list.length; n += 1) stepSourceIndexes.push(sourceIndex); };
+    push(inferredActions);
+    if (!inferredActions.length) push(actionAssertions);
     // A broad navigation expectation often names both current-page columns and controls that only
     // exist after a later transition. Without state-tagged evidence, asserting all of them here is
     // unsafe. Keep only small, specific post-action expectations; explicit VERIFY steps remain exact.
-    if (inferredActions.length && expectedAssertions.length <= 2) steps.push(...expectedAssertions);
-    else if (!inferredActions.length && !actionAssertions.length) steps.push(...expectedAssertions);
+    if (inferredActions.length && expectedAssertions.length <= 2) push(expectedAssertions);
+    else if (!inferredActions.length && !actionAssertions.length) push(expectedAssertions);
     if (steps.length > before) mappedSourceSteps.push(sourceIndex);
   }
-  const deduped = steps.filter((step, index, all) => {
-    const key = JSON.stringify(step);
-    return all.findIndex((candidate) => JSON.stringify(candidate) === key) === index;
-  });
+  // Dedup by content only (id isn't stamped yet) — same behavior as before this field existed.
+  const keepIndexes = steps
+    .map((step, index) => ({ step, index, key: JSON.stringify(step) }))
+    .filter(({ key }, index, all) => all.findIndex((candidate) => candidate.key === key) === index)
+    .map(({ index }) => index);
+  const deduped = keepIndexes.map((index) => ({ ...steps[index], id: `case:${stepSourceIndexes[index]}` }));
   if (!deduped.length) return null;
   return {
     mission: mission.executionScope,

@@ -20,7 +20,7 @@ import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } fro
 import { cancelServerJob } from './serverRunner';
 import { runTeardown } from './teardownService';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
-import { parseAtomicSteps } from './stepGrouping';
+import { parseAtomicSteps, wrapRecordedScriptSteps } from './stepGrouping';
 import { closeOpenPausesForJob, recordPause } from './pauseService';
 import { isPauseResumeEnabled } from './flag';
 import { injectAuthChallengePauses } from './pauseDetection';
@@ -104,7 +104,9 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
   const authored = (job as any).script || rec?.script || '';
   // Gate OTP/MFA fills on the dispatched copy only. Catches hand-edited and agent-authored scripts
   // that never went through recording-step detection; the stored script is left untouched.
-  const script = isPauseResumeEnabled() ? injectAuthChallengePauses(authored) : authored;
+  // Dispatched copy only, same as the pause-injection above — labels each recorded step for live
+  // per-step correlation on the agent side without touching the stored/editable script.
+  const script = wrapRecordedScriptSteps(isPauseResumeEnabled() ? injectAuthChallengePauses(authored) : authored);
   if (isPauseResumeEnabled() && /\btf\.pause\s*\(/.test(script)) {
     const agent = await Agents.get(job.agentId);
     if (!agentSupportsPauseResume(String(agent?.version || ''))) {
@@ -315,9 +317,12 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   if (current?.status === 'cancelled') return; // late process-exit frame must not turn a user stop into a failure
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
   const finalSummary = { ...(current?.summary || {}), ...(summary || {}) };
-  await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
+  // setStatus finalizes (closes out any still-"Running" step) and persists the real summary — use ITS
+  // return value, not the raw agent-reported `summary`, which has no accumulated executionSteps/caseSteps
+  // at all (those only ever lived in the backend's merged job summary, built up over job.progress frames).
+  const saved = await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
   await closeOpenPausesForJob(jobId);
-  await syncLinkedRun(jobId, status, summary || {});
+  await syncLinkedRun(jobId, status, saved?.summary || finalSummary);
   const job = await AutomationJobs.get(jobId);
   // Result gate: on a failed row in a stop-on-failure batch, cancel the rest so no more bad data is written.
   if (status === 'failed' && job?.batchId) await enforceStopOnFailure(job.batchId);
@@ -372,11 +377,20 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const cancelled = status === 'cancelled';
   const runStatus = cancelled ? 'Cancelled' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
   const onlyCaseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
-  const steps = Array.isArray(summary.tests) ? summary.tests.map((test: any, index: number) => ({
-    step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: test.title || '',
-    expected: 'Playwright script completes successfully.', outcome: /pass/i.test(String(test.status)) ? 'Passed' : /skip/i.test(String(test.status)) ? 'Skipped' : 'Failed',
-    reason: test.error || '', actual: test.error || '', durationMs: Number(test.durationMs) || 0,
-  })) : run.steps || [];
+  // A compiler-generated script reports per-authored-step outcomes on summary.caseSteps throughout the
+  // run (see core/shared/automationProgress.ts); AutomatedRunWorkspace already renders those against the
+  // case's own authored step text via applyExecutionProgress. Writing a collapsed one-row-per-test()
+  // summary here would take priority over that and erase the per-step detail — only fall back to the
+  // coarse summary.tests mapping when a script has no caseSteps at all (hand-edited/recorded scripts,
+  // which never pass through the compiler and so never report case-step ids).
+  const hasCaseSteps = Array.isArray(summary.caseSteps) && summary.caseSteps.length > 0;
+  const steps = hasCaseSteps
+    ? (run.steps || [])
+    : Array.isArray(summary.tests) ? summary.tests.map((test: any, index: number) => ({
+      step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: test.title || '',
+      expected: 'Playwright script completes successfully.', outcome: /pass/i.test(String(test.status)) ? 'Passed' : /skip/i.test(String(test.status)) ? 'Skipped' : 'Failed',
+      reason: test.error || '', actual: test.error || '', durationMs: Number(test.durationMs) || 0,
+    })) : run.steps || [];
   await Runs.upsert({
     ...run,
     status: runStatus,

@@ -30,11 +30,32 @@ class TestFlowProgressReporter {
   emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
   tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
   title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
+  // Compiler-emitted steps are wrapped in test.step('[id] label', ...) so the id round-trips through
+  // Playwright's step title (its reporter API has no field for arbitrary step metadata) — parsed back
+  // out here and reported on its own event stream, separate from the raw per-action one above, so it
+  // can correlate to the authored case step without touching the already-working raw step display.
+  caseStep(step) {
+    if (step.category !== 'test.step') return null;
+    const m = /^\\[([^\\]]+)\\]\\s*(.*)$/.exec(String(step.title || ''));
+    return m ? { id: m[1], label: m[2] } : null;
+  }
   onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
   onTestBegin(test) { this.emit('test_started', test); }
   onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
-  onStepBegin(_test, _result, step) { if (!this.tracked(step)) return; const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() })); }
-  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
+  onStepBegin(_test, _result, step) {
+    const cs = this.caseStep(step);
+    if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_started', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() })); return; }
+    if (!this.tracked(step)) return;
+    const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index);
+    console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() }));
+  }
+  onStepEnd(_test, _result, step) {
+    const cs = this.caseStep(step);
+    if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_finished', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() - Number(step.duration || 0), caseStepDurationMs: Number(step.duration || 0), caseStepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); return; }
+    if (!this.tracked(step)) return;
+    this.stepCompleted += 1;
+    console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' }));
+  }
 }
 module.exports = TestFlowProgressReporter;
 `;
@@ -68,7 +89,7 @@ export default defineConfig({
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'}, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${fakeMediaArgs} },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'},${headed ? ' viewport: null,' : ''} trace: 'on', video: 'on', screenshot: 'on'${geolocation}${launchOptions} },
 });
 `;
 }

@@ -46,6 +46,9 @@ export default defineConfig(({ mode }) => {
           '**/.testflow-settings.json',
           '**/.playwright-mcp/**',
           '**/.aiqa-live/**',
+          // Per-run screenshots/video/trace/report (artifactService.ts ARTIFACT_ROOT) — same reload
+          // problem as .testflow-pw above, different directory.
+          '**/automation-artifacts/**',
         ],
       },
     },

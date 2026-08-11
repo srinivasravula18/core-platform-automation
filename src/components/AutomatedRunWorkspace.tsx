@@ -5,7 +5,7 @@ import { Timestamp } from '@/src/components/Timestamp';
 import { ManualStepRunner, type StepResult } from './manualRunner/ManualStepRunner';
 import { OutcomeDot, outcomeStyle } from './manualRunner/OutcomeSelect';
 import { RunSummaryPanel } from './manualRunner/RunSummaryPanel';
-import { applyExecutionProgress, type ExecutionStepProgress } from '@/core/shared/automationProgress';
+import { applyExecutionProgress, type ExecutionStepProgress, type CaseStepProgress } from '@/core/shared/automationProgress';
 import { useAgentEvents } from '@/src/lib/useAutomation';
 import { runExecutionState } from '@/src/lib/manualTestRun';
 
@@ -18,7 +18,7 @@ function outcomeFor(steps: any[]) {
   return 'Not Run';
 }
 
-function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProgress[]): StepResult[] {
+function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProgress[], caseSteps: CaseStepProgress[]): StepResult[] {
   const all = Array.isArray(run.steps) ? run.steps : [];
   const matched = all.filter((step: any) => String(step.testCaseId || '') === String(testCase.id)
     || String(step.testCaseTitle || '') === String(testCase.title || ''));
@@ -29,8 +29,9 @@ function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProg
     outcome: step.outcome || step.status || 'Not Run',
     durationMs: Number(step.durationMs) || undefined,
     screenshots: Array.isArray(step.screenshots) ? step.screenshots : [],
+    sourceStepIds: Array.isArray(step.sourceStepIds) ? step.sourceStepIds : undefined,
   }));
-  const progressed = applyExecutionProgress<StepResult>(authored, executionSteps);
+  const progressed = applyExecutionProgress<StepResult>(authored, executionSteps, caseSteps);
   const isOnlyCase = Array.isArray(run.caseIds) && run.caseIds.length === 1 && String(run.caseIds[0]) === String(testCase.id);
   const savedOutcome = outcomeFor(matched.length ? matched : (isOnlyCase ? all : []));
   return savedOutcome === 'Not Run' || progressed.some((step) => step.outcome !== 'Not Run')
@@ -45,30 +46,47 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites, onChanged }: 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'failed' | 'passed' | 'not-run'>('all');
   const [executionSteps, setExecutionSteps] = useState<ExecutionStepProgress[]>([]);
+  const [caseSteps, setCaseSteps] = useState<CaseStepProgress[]>([]);
   const jobId = String(run.triggerMeta?.automationJobId || '');
   const executionStepsInFlight = useRef(false);
+  const loadedRef = useRef(false);
   const loadExecutionSteps = useCallback(async () => {
-    if (!jobId) return setExecutionSteps([]);
+    if (!jobId) { setExecutionSteps([]); setCaseSteps([]); return; }
     if (executionStepsInFlight.current) return;
     executionStepsInFlight.current = true;
     try {
-      const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}`).then((response) => response.json());
+      // Bounded so a stalled/dropped request can't wedge this in-flight guard forever — without a
+      // timeout, one failed request permanently blocks every future retry (including the poll below).
+      const data = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}`, { signal: AbortSignal.timeout(20000) }).then((response) => response.json());
       setExecutionSteps(Array.isArray(data?.job?.summary?.executionSteps) ? data.job.summary.executionSteps : []);
-    } catch { /* keep the last durable result */ }
+      setCaseSteps(Array.isArray(data?.job?.summary?.caseSteps) ? data.job.summary.caseSteps : []);
+      loadedRef.current = true;
+    } catch { /* keep the last durable result; retried below */ }
     finally { executionStepsInFlight.current = false; }
   }, [jobId]);
   // The parent polls the linked run while execution is active. Reload the job summary when that
   // run becomes terminal too; otherwise this workspace keeps the initial queued step list and
   // renders Not Run even though the server already recorded the final result.
-  useEffect(() => { setExecutionSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps, run.status, run.completedAt]);
+  useEffect(() => { loadedRef.current = false; setExecutionSteps([]); setCaseSteps([]); void loadExecutionSteps(); }, [loadExecutionSteps, run.status, run.completedAt]);
   useAgentEvents((event) => { if (event.scopeType === 'job' && event.scopeId === jobId) void loadExecutionSteps(); });
 
   // SSE is the primary channel here; poll as a fallback and resync on visibility/focus regain,
   // matching AutomationRunArtifacts/TestRuns so this panel can't fall behind them.
   const running = runExecutionState(run).running;
   useEffect(() => {
-    if (!running || !jobId) return;
-    const timer = window.setInterval(() => { void loadExecutionSteps(); }, 2000);
+    if (!jobId) return;
+    // A finished run only gets the one mount-time fetch above — if that single attempt is ever slow,
+    // dropped, or lost to connection-limit queueing, there was previously no retry at all and the
+    // panel stayed stuck on "Not Run" forever. Keep polling (bounded) until real data lands even when
+    // the run isn't actively running, not just while it is.
+    if (!running && loadedRef.current) return;
+    const maxAttempts = running ? Infinity : 6;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      if (!running && (loadedRef.current || attempts >= maxAttempts)) { window.clearInterval(timer); return; }
+      attempts += 1;
+      void loadExecutionSteps();
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [running, jobId, loadExecutionSteps]);
   useEffect(() => {
@@ -79,10 +97,10 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites, onChanged }: 
     return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
   }, [running, jobId, loadExecutionSteps]);
   const results = useMemo(() => cases.map((testCase) => {
-    const stepResults = stepsForCase(run, testCase, executionSteps);
+    const stepResults = stepsForCase(run, testCase, executionSteps, caseSteps);
     const summary = run.definition?.caseSummary?.[testCase.id] || {};
     return { caseId: testCase.id, caseTitle: testCase.title, priority: summary.priority || testCase.priority, configuration: summary.configuration || '', tags: testCase.tags || [], outcome: outcomeFor(stepResults), stepResults };
-  }), [cases, executionSteps, run]);
+  }), [cases, executionSteps, caseSteps, run]);
   useEffect(() => { if (results.length && !results.some((result) => result.caseId === selectedCaseId)) setSelectedCaseId(results[0].caseId); }, [results, selectedCaseId]);
 
   const active = results.find((result) => result.caseId === selectedCaseId) || null;
@@ -93,12 +111,12 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites, onChanged }: 
   const toggle = (id: string) => setSelected((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const planName = plans.find((plan) => plan.id === run.testPlanId)?.name || '';
   const suiteName = suites.find((suite) => suite.id === run.suiteId)?.name || run.suiteName || '';
-
-  const activeIndex = results.findIndex((result) => result.caseId === selectedCaseId);
   const updateSummary = async (caseId: string, patch: Record<string, string>) => {
     const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/summary/${encodeURIComponent(caseId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
     if (response.ok) onChanged?.();
   };
+
+  const activeIndex = results.findIndex((result) => result.caseId === selectedCaseId);
   return <div className="flex min-h-[30rem] border-b border-[var(--border)] bg-[var(--bg-secondary)]/20">
     <aside className="flex h-[calc(100dvh-10rem)] w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-card)]">
       <div className="border-b border-[var(--border)] p-3">

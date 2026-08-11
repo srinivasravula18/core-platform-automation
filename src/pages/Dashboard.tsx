@@ -8,6 +8,7 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 import { cn } from '@/src/lib/utils';
 import { showAlert } from '@/src/lib/dialog';
 import { relativeTime } from '@/src/lib/time';
+import { absoluteTime } from '@/src/lib/time/absolute';
 
 // Recent Activity: per-type icon + the page each entry deep-links to.
 const ACTIVITY_ICON: Record<string, any> = { case: TestTube2, plan: Target, suite: Layers, run: PlayCircle, defect: ShieldAlert, report: FileText };
@@ -416,7 +417,7 @@ export default function Dashboard() {
           {stats?.nextScheduledRunAt ? (
             <div>
               <div className="text-2xl font-bold text-[var(--text-primary)]">{formatCountdown(stats.nextScheduledRunAt, nowTick)}</div>
-              <div className="mt-1 text-xs text-[var(--text-muted)]">{new Date(stats.nextScheduledRunAt).toLocaleString()}</div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">{absoluteTime(stats.nextScheduledRunAt)}</div>
             </div>
           ) : <EmptyNote>None scheduled.</EmptyNote>}
         </Panel>

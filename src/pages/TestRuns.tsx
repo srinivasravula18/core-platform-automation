@@ -573,9 +573,7 @@ export default function TestRuns() {
   if (selectedRun && !isRunModalOpen) {
     const stats = getRunStats(selectedRun, selectedRunCases.length);
     const selectedExecution = runExecutionState(selectedRun);
-    const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
-    const selectedProgressPercent = Math.min(100, Math.max(5, selectedExecution.percent || 0));
     const selectedCanClose = isPendingReviewTestRun(selectedRun) || /^(stopped|cancelled|canceled)$/i.test(String(selectedRun.status || ''));
     const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
     // Resolved from the run's own cases (not a stored display string) so it reflects real composition.
@@ -759,19 +757,6 @@ export default function TestRuns() {
             runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
             runDuration={formatRunDuration(selectedRun, now)}
           />
-
-          {selectedIsRunning && (
-            <div className="mx-5 mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-semibold text-[var(--text-primary)]">Execution Progress</span>
-                <span className="truncate text-[var(--text-muted)]">{selectedProgress || 'Starting execution'}</span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--bg-secondary)]" role="progressbar" aria-label="Execution progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={selectedProgressPercent}>
-                <div className="h-full rounded-full bg-blue-500 transition-[width] duration-500" style={{ width: `${selectedProgressPercent}%` }} />
-              </div>
-              <div className="mt-1 text-right text-xs font-medium text-[var(--text-muted)]">{selectedProgressPercent}%</div>
-            </div>
-          )}
 
           {selectedRun.triggerMeta?.automationJobId && (
             <div className="border-b border-[var(--border)] p-5 overflow-auto">
