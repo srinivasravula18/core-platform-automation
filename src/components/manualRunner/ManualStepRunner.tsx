@@ -15,6 +15,7 @@ export interface StepResult {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  sourceStepIds?: string[];
 }
 
 function stepDuration(step: StepResult, now: number) {

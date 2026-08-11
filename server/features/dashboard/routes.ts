@@ -121,6 +121,7 @@ export function registerDashboardRoutes(app: Express) {
     const runs = scoped(runsAll);
     const defects = scoped(defectsAll);
     const reports = scoped(reportsAll);
+    const scopedSchedules = scoped(schedules);
     const scopedJobs = scoped(jobs);
     // History feed under strict per-user isolation:
     //  - a TESTER sees ONLY their own activity — never another user's, and not unowned
@@ -168,15 +169,15 @@ export function registerDashboardRoutes(app: Express) {
 
     const now = Date.now();
     // Scheduled automation (#10, #12, #13): upcoming enabled schedules, the next one, and missed ones.
-    const enabledSchedules = schedules.filter((s: any) => s?.enabled && s?.nextRunAt);
+    const enabledSchedules = scopedSchedules.filter((s: any) => s?.enabled && s?.nextRunAt);
     const upcomingSchedules = enabledSchedules
       .filter((s: any) => new Date(s.nextRunAt).getTime() >= now)
       .sort((a: any, b: any) => new Date(a.nextRunAt).getTime() - new Date(b.nextRunAt).getTime())
       .slice(0, 5)
-      .map((s: any) => ({ id: s.id, kind: s.kind, cron: s.cron, timezone: s.timezone, nextRunAt: s.nextRunAt }));
+      .map((s: any) => ({ id: s.id, title: s.title, kind: s.kind, cron: s.cron, timezone: s.timezone, nextRunAt: s.nextRunAt, lastRunAt: s.lastRunAt }));
     const nextScheduledRunAt = upcomingSchedules[0]?.nextRunAt || null;
     const missedSchedules = enabledSchedules.filter((s: any) => new Date(s.nextRunAt).getTime() < now).length;
-    const scheduleHealth = { total: schedules.length, enabled: enabledSchedules.length, missed: missedSchedules };
+    const scheduleHealth = { total: scopedSchedules.length, enabled: enabledSchedules.length, missed: missedSchedules };
 
     // Last automation run (#11): most recently finished agent/server job, with its real outcome.
     const finishedJobs = scopedJobs

@@ -1,7 +1,7 @@
 export function normalizeCaseSteps(steps: any[] = []) {
   return steps
     .map((step) => {
-      const normalized: { action: string; expected: string; group?: string; groupIndex?: number; captureEvidence?: boolean } = {
+      const normalized: { action: string; expected: string; group?: string; groupIndex?: number; captureEvidence?: boolean; sourceStepIds?: string[] } = {
         action: String(step?.action || '').trim(),
         expected: String(step?.expected || '').trim(),
       };
@@ -13,6 +13,11 @@ export function normalizeCaseSteps(steps: any[] = []) {
       const group = String(step?.group || '').trim();
       if (group) normalized.group = group;
       if (Number.isInteger(step?.groupIndex)) normalized.groupIndex = step.groupIndex;
+      // Which raw recorded-script actions this humanized step groups (humanizeSteps.ts) — lets live
+      // execution be attributed back to it instead of showing Not Run forever.
+      if (Array.isArray(step?.sourceStepIds) && step.sourceStepIds.length) {
+        normalized.sourceStepIds = step.sourceStepIds.map((id: unknown) => String(id));
+      }
       return normalized;
     })
     .filter((step) => step.action || step.expected);

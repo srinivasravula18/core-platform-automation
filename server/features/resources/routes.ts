@@ -16,9 +16,10 @@ import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
-import { createJob, tryDispatch } from '../automation/jobService';
+import { createJob, createServerJob, tryDispatch } from '../automation/jobService';
 import { isAgentConnected } from '../automation/agentGateway';
 import { recordingForScript } from '../automation/recordingService';
+import { runJobOnServer } from '../automation/serverRunner';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
@@ -58,8 +59,10 @@ import {
   Activity,
   AgentRuns,
   Agents,
+  AutomationJobs,
   isPgEnabled,
 } from '../../db/repository';
+import { applyExecutionProgress } from '../../../core/shared/automationProgress';
 
 // Record activity stamped with the acting user, so the dashboard history feed stays under
 // strict per-user isolation (each user sees only their own events + unowned system events).
@@ -256,6 +259,42 @@ function executionSteps(tests: any[]): any[] {
     screenshot: test.screenshotUrl || '',
     screenshots: Array.isArray(test.evidenceUrls) ? test.evidenceUrls : [],
   }));
+}
+
+// Automated run's real per-case, per-authored-step detail, computed fresh from the case's own step
+// text + the linked job's reported outcomes (same correlation AutomatedRunWorkspace renders live) —
+// not the run's persisted `steps` snapshot, which can predate this correlation or never have had it
+// (a run synced before this fix, or one whose script reported no case-step ids). Computing it here,
+// at report-view time, fixes the Report for every existing run retroactively, not just future ones.
+async function automatedJobSteps(run: any): Promise<any[] | null> {
+  const jobId = String(run.triggerMeta?.automationJobId || '');
+  const caseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
+  if (!jobId || !caseId) return null;
+  const [job, testCase] = await Promise.all([AutomationJobs.get(jobId), Cases.get(caseId)]);
+  const summary = job?.summary || {};
+  const authored = testCase ? normalizeCaseSteps(testCase.steps) : [];
+  if (!authored.length) return null;
+  return applyExecutionProgress(authored, summary.executionSteps || [], summary.caseSteps || [])
+    .map((step: any, index: number) => ({
+      step: String(index + 1), action: step.action, expected: step.expected,
+      testCaseId: caseId, testCaseTitle: testCase?.title || '',
+      outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
+      reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
+    }));
+}
+
+async function createReportForRun(run: any, scope: any) {
+  const results = await RunCaseResults.listForRun(run.id);
+  const manualSteps = results.flatMap((result: any) => (Array.isArray(result.stepResults) ? result.stepResults : []).map((step: any, index: number) => ({
+    step: String(index + 1), action: String(step.action || ''), expected: String(step.expected || ''),
+    actual: String(step.actual || ''), outcome: String(step.outcome || 'Not Run'), reason: String(step.comment || ''),
+    testCaseId: result.caseId === run.id ? '' : result.caseId, testCaseTitle: result.caseTitle || '',
+    screenshot: Array.isArray(step.screenshots) ? step.screenshots[0] || '' : '', screenshots: step.screenshots || [],
+  })));
+  const steps = manualSteps.length ? manualSteps : (await automatedJobSteps(run)) || (Array.isArray(run.steps) ? run.steps : []);
+  const passed = results.length ? results.filter((r: any) => r.outcome === 'Passed').length : Number(run.passed) || 0;
+  const failed = results.length ? results.filter((r: any) => /fail/i.test(String(r.outcome))).length : Number(run.failed) || 0;
+  await createReportFromRun(run, scope, { passed, failed, steps, targetUrl: run.targetUrl || '', suiteName: run.suiteName, evidence: run.evidence || [] });
 }
 
 const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', 'Stopped', 'Cancelled']);
@@ -651,6 +690,7 @@ export function registerResourceRoutes(app: Express) {
     const updated = await Runs.upsert({
       ...run,
       name,
+      summary: String(req.body?.summary || ''),
       testPlanId: String(req.body?.testPlanId || ''),
       requestedBy: String(req.body?.requestedBy || ''),
       assignedTo: String(req.body?.assignedTo || ''),
@@ -668,10 +708,24 @@ export function registerResourceRoutes(app: Express) {
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
     res.json({ success: true, run: updated });
   });
+  app.patch('/api/runs/:id/summary/:caseId', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!uniqueStrings([...(run.caseIds || []), run.testCaseId]).includes(req.params.caseId)) return res.status(404).json({ error: 'Test case is not part of this run.' });
+    const patch: Record<string, string> = {};
+    for (const field of ['configuration', 'priority']) {
+      if (typeof req.body?.[field] === 'string') patch[field] = req.body[field].slice(0, 200);
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No editable summary fields supplied.' });
+    const caseSummary = { ...(run.definition?.caseSummary || {}), [req.params.caseId]: { ...(run.definition?.caseSummary?.[req.params.caseId] || {}), ...patch } };
+    const updated = await Runs.upsert({ ...run, definition: { ...(run.definition || {}), caseSummary } });
+    if (!isPgEnabled()) persistDataInBackground('updated run case summary');
+    res.json({ success: true, run: updated });
+  });
   app.post('/api/runs/:id/close', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
-    if (!isPendingReviewTestRun(run)) return res.status(409).json({ error: 'Only a run pending review can be closed.' });
+    if (!isPendingReviewTestRun(run) && !/^(stopped|cancelled|canceled)$/i.test(String(run.status || ''))) return res.status(409).json({ error: 'Only a run pending review, stopped, or cancelled can be closed.' });
     const scope = reqScope(req);
     const closed = await Runs.upsert({
       ...run,
@@ -733,6 +787,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/runs/:id/execute', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (isClosedTestRun(run)) return res.status(409).json({ error: 'A closed test run cannot be executed.' });
     if (activeManualRunExecutions.has(run.id) || (isRunningRun(run) && !isStaleManualRun(run))) {
       return res.status(409).json({ error: 'This run is already executing.' });
     }
@@ -812,6 +867,44 @@ export function registerResourceRoutes(app: Express) {
         }
       }
 
+      // A single headless script can use the durable automation job runner too.  That runner is
+      // the source of the live Playwright-step events shown in the Test Run execution flow.
+      const recording = runnableScripts.length === 1
+        ? await recordingForScript(String(runnableScripts[0].id), scope)
+        : null;
+      if (recording) {
+        const job = await createServerJob({
+          recordingId: recording.id,
+          trigger: 'manual',
+          script: String(runnableScripts[0].code || ''),
+        }, scope);
+        const runningRun = {
+          ...run,
+          status: 'Running',
+          state: 'In Progress',
+          progress: 'Running headless on server',
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          evidence: [],
+          steps: [],
+          passed: 0,
+          failed: 0,
+          totalExecutions: 0,
+          executionTime: '',
+          triggerType: 'automation',
+          triggerMeta: {
+            ...withoutAutomationJobMeta(run.triggerMeta),
+            automationJobId: job.id,
+            executionMode: 'headless',
+            automationExecution: { completed: 0, total: 0, percent: 5, phase: 'queued' },
+          },
+        };
+        await Runs.upsert(runningRun);
+        res.status(202).json({ run: runningRun, jobId: job.id, executionMode: 'headless', message: runningRun.progress });
+        setImmediate(() => void runJobOnServer(job.id).catch((error) => console.error('[automation] headless run failed:', error?.message || error)));
+        return;
+      }
+
       const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
       const fallbackReason = runnableScripts.length > 1 ? 'multiple scripts run together' : 'no local agent available';
       const runningRun = withManualExecutionMeta({
@@ -883,8 +976,8 @@ export function registerResourceRoutes(app: Express) {
             const evidence = Array.isArray(result.screenshotUrls) ? result.screenshotUrls : [];
             const updated = withManualExecutionMeta({
               ...latest,
-              status: result.ok ? 'Completed' : 'Failed',
-              state: result.ok ? 'Completed' : 'Blocked',
+              status: result.ok ? 'Passed — Pending Review' : 'Failed — Pending Review',
+              state: 'Pending Review',
               totalExecutions: Number(result.total) || tests.length,
               passed: Number(result.passed) || 0,
               failed: Number(result.failed) || 0,
@@ -931,8 +1024,8 @@ export function registerResourceRoutes(app: Express) {
               // the UI can show it instead of a silent, unexplained zero (see TestRuns.tsx banner).
               await Runs.upsert(withManualExecutionMeta({
                 ...latest,
-                status: 'Failed',
-                state: 'Blocked',
+                status: 'Failed — Pending Review',
+                state: 'Pending Review',
                 progress: error?.message || 'Execution failed before any test ran.',
                 completedAt: new Date().toISOString(),
               }, {
@@ -1863,6 +1956,7 @@ Rules:
       ...scopeStamp(scope),
       id: runId,
       name,
+      summary: String(req.body?.summary || ''),
       mode: runMode,
       executionMode: runMode === 'automated' && req.body?.executionMode === 'headed' ? 'headed' : runMode === 'automated' ? 'headless' : '',
       definition: req.body?.definition || {},
@@ -2013,13 +2107,15 @@ Rules:
   app.post('/api/runs/:id/start', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (isClosedTestRun(run)) return res.status(409).json({ error: 'A closed test run cannot be started.' });
     const now = new Date().toISOString();
     const results = await RunCaseResults.listForRun(run.id);
     for (const r of results) if (!r.startedAt) {
       const stepResults = Array.isArray(r.stepResults) ? r.stepResults.map((step: any, index: number) => index === 0 && !step.startedAt ? { ...step, startedAt: now } : step) : [];
       await RunCaseResults.upsert({ ...r, startedAt: now, stepResults });
     }
-    const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: run.startedAt || now, completedAt: null, progress: 'Run in progress' };
+    const restart = /^(stopped|cancelled|canceled)$/i.test(String(run.status || ''));
+    const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: restart ? now : run.startedAt || now, completedAt: null, progress: 'Run in progress' };
     await Runs.upsert(started);
     if (!isPgEnabled()) persistDataInBackground('manual start');
     logActivity(req, `Started manual run: ${run.name}`, { type: 'run', entityId: run.id });
@@ -2037,9 +2133,22 @@ Rules:
     const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
     const stopped = { ...rolled, state: 'Stopped', status: 'Stopped', completedAt: now, progress: 'Stopped by user' };
     await Runs.upsert(stopped);
+    await createReportForRun(stopped, reqScope(req));
     if (!isPgEnabled()) persistDataInBackground('manual stop');
     logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
     res.json({ success: true, run: stopped });
+  });
+
+  // Materialize the same durable report used by Reports for any completed/stopped run.
+  app.post('/api/runs/:id/report', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!run.completedAt && !/^(completed|failed|stopped|cancelled|canceled)/i.test(String(run.status || ''))) {
+      return res.status(409).json({ error: 'Complete or stop the test run before viewing its report.' });
+    }
+    await createReportForRun(run, reqScope(req));
+    const reportId = `REP-${String(run.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}`;
+    res.json({ success: true, reportId });
   });
 
   // Bulk-set the case outcome across many cases (the "Pass all" / "Mark Blocked" toolbar).
@@ -2201,8 +2310,8 @@ Rules:
         title: String(req.body?.title || `${result.caseTitle || result.caseId} failed`),
         description: String(req.body?.description || result.comment || ''),
         stepsToReproduce: reproduce,
-        expected: (failed[0]?.expected) || '',
-        actual: (failed[0]?.actual) || result.comment || '',
+        expected: (failed[0]?.expected) || steps[0]?.expected || 'The test case should complete as specified.',
+        actual: (failed[0]?.actual) || result.comment || `${result.caseTitle || result.caseId} was marked ${result.outcome || 'Failed'}.`,
         severity: String(req.body?.severity || 'Medium'),
         status: 'New',
         linkedCaseId,

@@ -7,7 +7,7 @@
  */
 import type { Compiler, CompileInput, CompileResult, Diagnostic } from './Compiler';
 import { resolveTarget } from '../graph/groundingEngine';
-import { isActionStep, isAssertStep, CONTEXT_ASSERTS, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
+import { isActionStep, isAssertStep, CONTEXT_ASSERTS, stampStepIds, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
 import { TestDataEngine, type FieldSemantics } from '../testdata';
 import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
 import { isAssertionGroundingEnabled } from './assertionGroundingFlag';
@@ -205,6 +205,28 @@ function emitContextAssert(step: AssertStep): string {
   }
 }
 
+/** Human-readable label for a step's test.step() wrapper — the id prefix is what the runtime actually parses back out. */
+function describeStepForLabel(step: PlanStep): string {
+  return isActionStep(step) ? `${step.action} ${step.target}` : `${(step as AssertStep).assert} ${(step as AssertStep).target}`;
+}
+
+/**
+ * Wraps whatever lines a single plan step just pushed onto `body` (from `start` to the current end) in a
+ * labeled `test.step()`, so the agent's reporter can report exactly which authored step a raw Playwright
+ * action belongs to (core/shared/automationProgress.ts positional matching otherwise has no real identity
+ * to key on). No-ops on an empty emission. The id is embedded in the label text — Playwright's reporter
+ * API exposes no field for arbitrary step metadata, so the label is the only channel to carry it back.
+ */
+function wrapEmittedLines(body: string[], start: number, id: string, label: string): void {
+  const emitted = body.splice(start);
+  if (!emitted.length) return;
+  body.push(
+    `  await test.step(${JSON.stringify(`[${id}] ${label}`)}, async () => {`,
+    ...emitted.map((line) => `  ${line}`),
+    `  });`,
+  );
+}
+
 function actionFitsRole(step: ActionStep, roleValue: unknown): boolean {
   const role = String(roleValue || '').toLowerCase();
   if (step.action === 'SELECT') return ['combobox', 'listbox', 'select'].includes(role);
@@ -249,11 +271,15 @@ export class PlaywrightCompiler implements Compiler {
   readonly name = 'playwright';
 
   compile(input: CompileInput): CompileResult {
-    const { mission, plan, evidenceGraph, run } = input;
+    const { mission, evidenceGraph, run } = input;
+    let { plan } = input;
     const diagnostics: Diagnostic[] = [];
     if (!plan?.steps?.length) {
       return { code: '', diagnostics: [{ kind: 'EMPTY_PLAN', message: 'Plan has no steps.', severity: 'blocking' }], ok: false };
     }
+    // Every step needs an id by the time it's compiled, regardless of which planner authored it — the
+    // deterministic planner stamps its own source-attributed ids; this fills in the rest positionally.
+    plan = stampStepIds(plan);
 
     // Seed from the run-UNIQUE id (falling back to mission scope) so every case in the run shares ONE
     // coherent identity (consistency) while distinct runs get distinct identities — no cross-run duplicate
@@ -362,7 +388,10 @@ export class PlaywrightCompiler implements Compiler {
     // filled at submit) are dropped so the plan author's scattered expectValidation can't fail the script.
     const validationDrops = isBehaviorOracleEnabled() ? invalidValidationSteps(plan, evidenceGraph, run) : new Set<number>();
 
-    plan.steps.forEach((step: PlanStep, i: number) => {
+    // The step body is unchanged below — only extracted into a named function so the forEach wrapper
+    // can measure exactly which lines this one step emitted (for the test.step() wrap), regardless of
+    // which of the many early `return`s below fired.
+    const runStep = (step: PlanStep, i: number): void => {
       // Complete the form's remaining required fields immediately BEFORE the submit click fires.
       if (i === submitIndex) emitRequiredCompletion();
       if (validationDrops.has(i)) {
@@ -492,6 +521,11 @@ export class PlaywrightCompiler implements Compiler {
         }
         body.push(emitAssert(assertStep, spec, value));
       }
+    };
+    plan.steps.forEach((step: PlanStep, i: number) => {
+      const start = body.length;
+      runStep(step, i);
+      wrapEmittedLines(body, start, String((step as any).id || `step:${i}`), describeStepForLabel(step));
     });
 
     // Fallback must stay user-presentable — it becomes the evidence-card header in the console.

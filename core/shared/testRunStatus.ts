@@ -1,4 +1,4 @@
-const CLOSED_RUN_STATUS = /completed|closed|failed|cancelled|stopped/i;
+const CLOSED_RUN_STATUS = /^closed$/i;
 const PENDING_REVIEW_RUN_STATUS = /pending review|review required/i;
 export const MANUAL_RUN_STALE_MS = 15 * 60 * 1000;
 
@@ -6,9 +6,8 @@ export function isPendingReviewTestRun(run: { status?: unknown }): boolean {
   return PENDING_REVIEW_RUN_STATUS.test(String(run?.status || ''));
 }
 
-export function isClosedTestRun(run: { status?: unknown }): boolean {
-  if (isPendingReviewTestRun(run)) return false;
-  return CLOSED_RUN_STATUS.test(String(run?.status || ''));
+export function isClosedTestRun(run: { status?: unknown; state?: unknown }): boolean {
+  return CLOSED_RUN_STATUS.test(String(run?.status || '')) || CLOSED_RUN_STATUS.test(String(run?.state || ''));
 }
 
 export function isActiveTestRun(run: { status?: unknown }): boolean {

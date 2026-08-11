@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS folders (
 CREATE TABLE IF NOT EXISTS plans (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
+  summary         TEXT DEFAULT '',
   scope           TEXT DEFAULT '',
   objectives      TEXT DEFAULT '',
   in_scope        TEXT DEFAULT '',
@@ -334,6 +335,7 @@ ALTER TABLE runs   ADD COLUMN IF NOT EXISTS definition JSONB DEFAULT '{}'::jsonb
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS assigned_to TEXT DEFAULT '';
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS tags        TEXT[] DEFAULT ARRAY[]::TEXT[];
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS state       TEXT DEFAULT '';
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS summary     TEXT DEFAULT '';
 
 -- Pin the exact saved credential website on the run so execution resolves credentials by an
 -- exact websiteId match instead of guessing from the target URL's hostname (two apps on one

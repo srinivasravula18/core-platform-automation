@@ -28,6 +28,7 @@ import { EntityLinker } from '@/src/components/EntityLinker';
 import { TagDriftBanner } from '@/src/components/TagDriftBanner';
 import { VersionPinSelect } from '@/src/components/VersionPinSelect';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import { diffSelection, linkSuiteCases, type TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
@@ -49,6 +50,7 @@ export default function TestSuites() {
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const aiSearch = useAiSearch('test suites');
   const [filters, setFilters] = useState({ statuses: [] as string[], priorities: [] as string[], modules: [] as string[], owners: [] as string[], tags: [] as string[], planIds: [] as string[] });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -323,6 +325,13 @@ export default function TestSuites() {
       && matchesPlans;
   });
   const orderedSuites = orderSuitesByHierarchy(filteredSuites, suites);
+  const sortedSuites = sortRows(orderedSuites, sort, {
+    id: (suite) => suite.id,
+    name: (suite) => suite.name,
+    plans: (suite) => suitePlanIds(suite).map((id) => plans.find((plan) => String(plan.id) === String(id))?.name || id).join(', '),
+    tags: (suite) => normalizeTags(suite.tags || []).join(', '),
+    updated: (suite) => suite.updatedAt || suite.metadata?.updatedAt,
+  });
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
   // Reverse lookup (suite → plans it's part of, runs it has executed in) for the suite detail panel.
   const lineage = useMemo(() => buildLineageIndex(cases, suites, plans, runs), [cases, suites, plans, runs]);
@@ -338,7 +347,7 @@ export default function TestSuites() {
           <ExportMenu
             filename="test-suites"
             title="Test Suites"
-            rows={orderedSuites}
+            rows={sortedSuites}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'name', label: 'Name' },
@@ -705,13 +714,13 @@ export default function TestSuites() {
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
+                  <input type="checkbox" checked={bulk.allSelected(sortedSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(sortedSuites.map((s) => s.id))} />
                 </th>
-                <th className="w-52 px-4 py-3 font-medium">ID</th>
-                <th className="w-72 px-4 py-3 font-medium">Name</th>
-                <th className="w-80 px-4 py-3 font-medium">Test Plan</th>
-                <th className="w-36 px-4 py-3 font-medium">Tags</th>
-                <th className="w-32 px-4 py-3 font-medium">Updated</th>
+                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                <SortableHeader label="Name" column="name" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-72 px-4 py-3 font-medium" />
+                <SortableHeader label="Test Plan" column="plans" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
+                <SortableHeader label="Tags" column="tags" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-36 px-4 py-3 font-medium" />
+                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
                 <th className="w-28 px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -720,7 +729,7 @@ export default function TestSuites() {
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
-              ) : orderedSuites.map((suite) => {
+              ) : sortedSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
                 const hierarchyDepth = suiteHierarchyDepth(suite, suites);

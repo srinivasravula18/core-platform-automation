@@ -33,6 +33,9 @@ interface AtomicStep {
   kind: StepKind;
   // Coalescing key: the locator text for field actions, or the URL for navigations.
   locator: string;
+  // Source line index (0-based, in the ORIGINAL uncoalesced script) this step came from — lets a
+  // caller wrap the exact line that produced it in a labeled test.step() for execution correlation.
+  line: number;
 }
 
 // Field names/labels that mean the value is a secret — mask it so it never lands in a test step.
@@ -210,32 +213,33 @@ export function parseRecordingSteps(script: string): Omit<RecordingStep, 'id' | 
 // coalesce and group. waitForURL is a nav because scriptHardening rewrites post-login gotos to it.
 export function parseAtomicSteps(script: string): AtomicStep[] {
   const steps: AtomicStep[] = [];
-  for (const raw of String(script || '').split('\n')) {
-    const line = raw.trim();
+  const rawLines = String(script || '').split('\n');
+  for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+    const line = rawLines[lineIndex].trim();
     let m: RegExpMatchArray | null;
     if (/\btf\.pause\s*\(/.test(line)) {
       const prompt = line.match(/["']prompt["']\s*:\s*["']([^"']+)/)?.[1] || line.match(/\bprompt\s*:\s*["']([^"']+)/)?.[1] || 'human input';
-      steps.push({ action: `Pause for ${prompt}`, expected: 'The requested human action is completed.', kind: 'pause', locator: prompt });
+      steps.push({ action: `Pause for ${prompt}`, expected: 'The requested human action is completed.', kind: 'pause', locator: prompt, line: lineIndex });
     } else if ((m = line.match(/\.(?:goto|waitForURL)\(['"`]([^'"`]+)['"`]/))) {
-      steps.push({ action: `Navigate to ${m[1]}`, expected: 'The page loads successfully.', kind: 'nav', locator: m[1] });
+      steps.push({ action: `Navigate to ${m[1]}`, expected: 'The page loads successfully.', kind: 'nav', locator: m[1], line: lineIndex });
     } else if (/getBy\w+\(/.test(line) && /\.click\(/.test(line)) {
       const d = describeLocator(line);
       const action = `Click ${elementPhrase(d)}`;
-      steps.push({ action, expected: concreteExpectedResult(action), kind: 'click', locator: locatorKey(d) });
+      steps.push({ action, expected: concreteExpectedResult(action), kind: 'click', locator: locatorKey(d), line: lineIndex });
     } else if (/getBy\w+\(/.test(line) && /\.fill\(/.test(line)) {
       const d = describeLocator(line);
       const v = line.match(/\.fill\(\s*(['"`])([^'"`]*)\1/);
       const value = SECRET_LABEL_RE.test(d.label) ? '••••••' : (v ? v[2] : '');
-      steps.push({ action: `Enter "${value}" in ${elementPhrase(d)}`, expected: `The ${d.label || 'field'} accepts the value.`, kind: 'fill', locator: locatorKey(d) });
+      steps.push({ action: `Enter "${value}" in ${elementPhrase(d)}`, expected: `The ${d.label || 'field'} accepts the value.`, kind: 'fill', locator: locatorKey(d), line: lineIndex });
     } else if (/getBy\w+\(/.test(line) && /\.(check|selectOption|press)\(/.test(line)) {
       const d = describeLocator(line);
       const verb = /\.check\(/.test(line) ? 'Check' : /\.press\(/.test(line) ? 'Press a key in' : 'Select an option in';
       const kind: StepKind = /\.check\(/.test(line) ? 'check' : /\.press\(/.test(line) ? 'press' : 'select';
       const action = `${verb} ${elementPhrase(d)}`;
-      steps.push({ action, expected: concreteExpectedResult(action, 'The input is applied successfully.'), kind, locator: locatorKey(d) });
+      steps.push({ action, expected: concreteExpectedResult(action, 'The input is applied successfully.'), kind, locator: locatorKey(d), line: lineIndex });
     } else if (/expect\(/.test(line) && /getBy\w+\(/.test(line)) {
       const d = describeLocator(line);
-      steps.push({ action: `Verify ${elementPhrase(d)} is visible`, expected: 'The element is present and visible.', kind: 'verify', locator: locatorKey(d) });
+      steps.push({ action: `Verify ${elementPhrase(d)} is visible`, expected: 'The element is present and visible.', kind: 'verify', locator: locatorKey(d), line: lineIndex });
     }
   }
   return steps;
@@ -290,4 +294,29 @@ export function groupAtomicSteps(steps: AtomicStep[]): GroupedStep[] {
 // Full pipeline: raw script -> coalesced, grouped steps.
 export function scriptToGroupedSteps(script: string): GroupedStep[] {
   return groupAtomicSteps(coalesceAtomicSteps(parseAtomicSteps(script)));
+}
+
+// Execution-time-only: wraps each atomic step's source line in a labeled test.step(), same id scheme
+// as the compiler path, so recorded scripts get real per-step correlation too. Falls back to the
+// original script untouched if wrapping would produce invalid syntax (hand-edited multi-line statements).
+export function wrapRecordedScriptSteps(script: string): string {
+  if (/\bawait\s+test\.step\(/.test(script)) return script;
+  const atomic = coalesceAtomicSteps(parseAtomicSteps(script));
+  if (!atomic.length) return script;
+  const byLine = new Map(atomic.map((step, index) => [step.line, { id: `step:${index}`, label: step.action }]));
+  const rawLines = script.split('\n');
+  const wrapped = rawLines.map((raw, index) => {
+    const step = byLine.get(index);
+    if (!step || !raw.trim()) return raw;
+    const indent = raw.match(/^\s*/)?.[0] || '';
+    return `${indent}await test.step(${JSON.stringify(`[${step.id}] ${step.label}`)}, async () => { ${raw.trim()} });`;
+  }).join('\n');
+  try {
+    const { diagnostics } = ts.transpileModule(wrapped, {
+      compilerOptions: { target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext },
+      reportDiagnostics: true,
+    });
+    if (diagnostics && diagnostics.length > 0) return script;
+  } catch { return script; }
+  return wrapped;
 }

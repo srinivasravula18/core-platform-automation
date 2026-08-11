@@ -489,8 +489,11 @@ function main() {
     ] };
     const rsm = playwrightCompiler.compile({ mission: runtime, plan: smPlan, evidenceGraph: smGraph, run: smRun });
     ok(rsm.ok, 'form-heading plan compiles');
-    const openerAt = rsm.code.indexOf('data-testid');
-    const headAt = rsm.code.indexOf('New App');
+    // Check the REAL runner calls' order, not raw text position — both the opener's target name and the
+    // step's test.step() trace label can independently mention "New App", so a plain indexOf on that text
+    // does not reliably reflect execution order once steps are wrapped in labeled test.step() blocks.
+    const openerAt = rsm.code.indexOf('runner.click(');
+    const headAt = rsm.code.indexOf('runner.expectVisible(');
     ok(openerAt > 0 && headAt > 0 && openerAt < headAt, 'the create opener is injected BEFORE asserting the modal heading (was: heading asserted on the list → not visible)');
   }
 

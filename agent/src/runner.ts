@@ -51,11 +51,32 @@ class TestFlowProgressReporter {
   emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
   tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
   title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
+  // Compiler-emitted steps are wrapped in test.step('[id] label', ...) so the id round-trips through
+  // Playwright's step title (its reporter API has no field for arbitrary step metadata) — parsed back
+  // out here and reported on its own event stream, separate from the raw per-action one above, so it
+  // can correlate to the authored case step without touching the already-working raw step display.
+  caseStep(step) {
+    if (step.category !== 'test.step') return null;
+    const m = /^\\[([^\\]]+)\\]\\s*(.*)$/.exec(String(step.title || ''));
+    return m ? { id: m[1], label: m[2] } : null;
+  }
   onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
   onTestBegin(test) { this.emit('test_started', test); }
   onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
-  onStepBegin(_test, _result, step) { if (!this.tracked(step)) return; const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() })); }
-  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
+  onStepBegin(_test, _result, step) {
+    const cs = this.caseStep(step);
+    if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_started', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() })); return; }
+    if (!this.tracked(step)) return;
+    const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index);
+    console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() }));
+  }
+  onStepEnd(_test, _result, step) {
+    const cs = this.caseStep(step);
+    if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_finished', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() - Number(step.duration || 0), caseStepDurationMs: Number(step.duration || 0), caseStepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); return; }
+    if (!this.tracked(step)) return;
+    this.stepCompleted += 1;
+    console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' }));
+  }
 }
 module.exports = TestFlowProgressReporter;
 `;
@@ -70,20 +91,22 @@ export function configTemplate(engine: string, headed: boolean, hasPauses = fals
   const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
   // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
   const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
-  const fakeMediaArgs = browserName === 'chromium' && settings.fakeMedia
-    ? `, launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] }`
-    : '';
+  const chromiumArgs = browserName === 'chromium'
+    ? [...(headed ? ['--start-maximized'] : []), ...(settings.fakeMedia ? ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] : [])]
+    : [];
+  const launchOptions = chromiumArgs.length ? `, launchOptions: { args: ${JSON.stringify(chromiumArgs)} }` : '';
   const geolocation = settings.geolocation ? `, geolocation: ${JSON.stringify(settings.geolocation)}` : '';
   return `import { defineConfig } from 'playwright/test';
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
-  timeout: ${hasPauses ? 0 : 60000},
+  // No per-test ceiling — a script runs until its own steps finish (or the user cancels it).
+  timeout: 0,
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'}, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${fakeMediaArgs} },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'},${headed ? ' viewport: null,' : ''} trace: 'on', video: 'on', screenshot: 'on'${geolocation}${launchOptions} },
 });
 `;
 }
@@ -164,8 +187,10 @@ export class Runner {
     const outputFailure = output.join('\n').slice(-4000);
     const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : '');
     this.send('job.progress', { jobId: job.jobId, phase: 'uploading' });
-    await this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
     this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
+    // Execution is complete before evidence transfer. Report the result immediately so the Test Run
+    // does not remain Running while potentially slow screenshots, traces, and videos upload.
+    void this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
     this.log.info({ jobId: job.jobId, exitCode, summary }, 'job finished');
   }
 
@@ -194,10 +219,19 @@ export class Runner {
     });
   }
 
-  private parseSummary(runDir: string): Record<string, number> {
+  private parseSummary(runDir: string): Record<string, any> {
     try {
       const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
       const stats = raw.stats || {};
+      const tests: any[] = [];
+      const visit = (suite: any) => {
+        for (const spec of suite?.specs || []) for (const test of spec.tests || []) {
+          const result = test.results?.[test.results.length - 1] || {};
+          tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+        }
+        for (const child of suite?.suites || []) visit(child);
+      };
+      visit(raw);
       return {
         expected: stats.expected || 0,
         unexpected: stats.unexpected || 0,
@@ -206,6 +240,7 @@ export class Runner {
         flaky: stats.flaky || 0,
         skipped: stats.skipped || 0,
         durationMs: Math.round(stats.duration || 0),
+        tests,
       };
     } catch {
       return {};

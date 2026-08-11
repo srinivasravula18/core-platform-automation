@@ -9,19 +9,19 @@
  * LangGraph runtime uses for agent runs.
  */
 
-import { Agents, AutomationExecutionBatches, AutomationJobPauses, AutomationJobs, Recordings, Runs } from '../../db/repository';
+import { Agents, AutomationExecutionBatches, AutomationJobPauses, AutomationJobs, Cases, Recordings, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
-import { agentRunStatusForList } from '../../../core/shared/testRunStatus';
-import { automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { applyExecutionProgress, automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { normalizeCaseSteps } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
 import { runTeardown } from './teardownService';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
-import { parseAtomicSteps } from './stepGrouping';
+import { parseAtomicSteps, wrapRecordedScriptSteps } from './stepGrouping';
 import { closeOpenPausesForJob, recordPause } from './pauseService';
 import { isPauseResumeEnabled } from './flag';
 import { injectAuthChallengePauses } from './pauseDetection';
@@ -105,7 +105,9 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
   const authored = (job as any).script || rec?.script || '';
   // Gate OTP/MFA fills on the dispatched copy only. Catches hand-edited and agent-authored scripts
   // that never went through recording-step detection; the stored script is left untouched.
-  const script = isPauseResumeEnabled() ? injectAuthChallengePauses(authored) : authored;
+  // Dispatched copy only, same as the pause-injection above — labels each recorded step for live
+  // per-step correlation on the agent side without touching the stored/editable script.
+  const script = wrapRecordedScriptSteps(isPauseResumeEnabled() ? injectAuthChallengePauses(authored) : authored);
   if (isPauseResumeEnabled() && /\btf\.pause\s*\(/.test(script)) {
     const agent = await Agents.get(job.agentId);
     if (!agentSupportsPauseResume(String(agent?.version || ''))) {
@@ -316,9 +318,12 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   if (current?.status === 'cancelled') return; // late process-exit frame must not turn a user stop into a failure
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
   const finalSummary = { ...(current?.summary || {}), ...(summary || {}) };
-  await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
+  // setStatus finalizes (closes out any still-"Running" step) and persists the real summary — use ITS
+  // return value, not the raw agent-reported `summary`, which has no accumulated executionSteps/caseSteps
+  // at all (those only ever lived in the backend's merged job summary, built up over job.progress frames).
+  const saved = await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
   await closeOpenPausesForJob(jobId);
-  await syncLinkedRun(jobId, status, summary || {});
+  await syncLinkedRun(jobId, status, saved?.summary || finalSummary);
   const job = await AutomationJobs.get(jobId);
   // Result gate: on a failed row in a stop-on-failure batch, cancel the rest so no more bad data is written.
   if (status === 'failed' && job?.batchId) await enforceStopOnFailure(job.batchId);
@@ -371,7 +376,27 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const failed = Number(summary.failed || 0);
   const skipped = Number(summary.skipped || 0);
   const cancelled = status === 'cancelled';
-  const runStatus = cancelled ? 'Cancelled' : agentRunStatusForList(status === 'done' ? 'completed' : 'failed');
+  const runStatus = cancelled ? 'Cancelled' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
+  const onlyCaseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
+  // Persist the run's own QA-grade step record (Reports, exports, CSV all read run.steps directly, not
+  // the live job summary) — the case's real authored action/expected text with the real per-step outcome,
+  // not a collapsed one-row-per-Playwright-test() summary. Mirrors AutomatedRunWorkspace's live rendering
+  // (applyExecutionProgress against summary.caseSteps/executionSteps) so both views agree.
+  const caseForRun = onlyCaseId ? await Cases.get(onlyCaseId) : null;
+  const authoredCaseSteps = caseForRun ? normalizeCaseSteps(caseForRun.steps) : [];
+  const steps = authoredCaseSteps.length
+    ? applyExecutionProgress(authoredCaseSteps, summary.executionSteps || [], summary.caseSteps || [])
+      .map((step: any, index: number) => ({
+        step: String(index + 1), action: step.action, expected: step.expected,
+        testCaseId: onlyCaseId, testCaseTitle: caseForRun?.title || '',
+        outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
+        reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
+      }))
+    : Array.isArray(summary.tests) ? summary.tests.map((test: any, index: number) => ({
+      step: String(index + 1), action: test.title || `Playwright test ${index + 1}`, testCaseId: onlyCaseId, testCaseTitle: caseForRun?.title || test.title || '',
+      expected: 'Playwright script completes successfully.', outcome: /pass/i.test(String(test.status)) ? 'Passed' : /skip/i.test(String(test.status)) ? 'Skipped' : 'Failed',
+      reason: test.error || '', actual: test.error || '', durationMs: Number(test.durationMs) || 0,
+    })) : run.steps || [];
   await Runs.upsert({
     ...run,
     status: runStatus,
@@ -387,6 +412,7 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
     },
     executionTime: summary.durationMs ? `${Math.round(Number(summary.durationMs) / 1000)}s` : run.executionTime,
     completedAt: new Date().toISOString(),
+    steps,
   });
   persist('automation run synced');
 }

@@ -30,8 +30,11 @@ export const CONTEXT_ASSERTS = new Set<string>([
 export type PlanAction = typeof PLAN_ACTIONS[number];
 export type PlanAssert = typeof PLAN_ASSERTS[number];
 
-export interface ActionStep { action: PlanAction; target: string; value?: string }
-export interface AssertStep { assert: PlanAssert; target: string; value?: string }
+// `id` is stamped after authoring (never emitted by the LLM) — it correlates this step to the raw
+// Playwright execution events the runtime reports back, for the live per-step progress UI. Optional
+// so every existing producer/consumer of PlanStep stays valid until stamped.
+export interface ActionStep { id?: string; action: PlanAction; target: string; value?: string }
+export interface AssertStep { id?: string; assert: PlanAssert; target: string; value?: string }
 export type PlanStep = ActionStep | AssertStep;
 
 export interface TestPlan {
@@ -173,4 +176,16 @@ export function parseTestPlanStrict(json: unknown): { plan: TestPlan | null; iss
   const r = strictTestPlanSchema.safeParse(json);
   if (r.success) return { plan: r.data as TestPlan, issues: [] };
   return { plan: null, issues: describeStrictPlanIssues(json, r.error) };
+}
+
+/**
+ * Assigns a stable id to every step that doesn't already have one, positional within THIS plan
+ * (`step:${index}`) — sufficient for runtime execution correlation, which only needs uniqueness
+ * within one compiled script's own run, not a durable cross-run identity. A producer with real
+ * source-case-step attribution (e.g. the deterministic planner) should stamp its own more precise
+ * id first; this is the universal fallback so every plan has SOME id by the time it's compiled,
+ * regardless of which planner produced it.
+ */
+export function stampStepIds(plan: TestPlan): TestPlan {
+  return { ...plan, steps: plan.steps.map((step, index) => (step.id ? step : { ...step, id: `step:${index}` })) };
 }

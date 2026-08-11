@@ -147,19 +147,41 @@ export function useJobPauses(jobId: string) {
   return { pauses, loading, refresh };
 }
 
+// One EventSource for the whole app, refcounted across every useAgentEvents() call. Each SSE
+// connection permanently occupies one of Chrome's 6 concurrent connections per origin — several
+// components (run workspace, artifacts panel, pause prompt) each opening their own starved every
+// other fetch on the page (job status, pauses, artifacts) fighting over the few connections left.
+let sharedEventSource: EventSource | null = null;
+const sharedEventListeners = new Set<(evt: AutomationEvent) => void>();
+
+function ensureSharedEventSource(): void {
+  if (sharedEventSource) return;
+  const es = new EventSource(withEventSourceAuth('/api/automation/events'));
+  es.onmessage = (e) => {
+    let parsed: AutomationEvent;
+    try { parsed = JSON.parse(e.data); } catch { return; }
+    for (const listener of sharedEventListeners) listener(parsed);
+  };
+  sharedEventSource = es;
+}
+
 /**
- * Subscribe to the live automation event stream (SSE). The handler ref is kept current so the
- * EventSource itself is created once and survives handler changes (no reconnect storms).
+ * Subscribe to the live automation event stream (SSE), sharing one connection across every caller.
  */
 export function useAgentEvents(onEvent: (evt: AutomationEvent) => void): void {
   const handler = useRef(onEvent);
   handler.current = onEvent;
   useEffect(() => {
-    const es = new EventSource(withEventSourceAuth('/api/automation/events'));
-    es.onmessage = (e) => {
-      try { handler.current(JSON.parse(e.data)); } catch { /* ignore malformed frame */ }
+    const listener = (evt: AutomationEvent) => handler.current(evt);
+    ensureSharedEventSource();
+    sharedEventListeners.add(listener);
+    return () => {
+      sharedEventListeners.delete(listener);
+      if (sharedEventListeners.size === 0 && sharedEventSource) {
+        sharedEventSource.close();
+        sharedEventSource = null;
+      }
     };
-    return () => es.close();
   }, []);
 }
 

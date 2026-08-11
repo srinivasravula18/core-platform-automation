@@ -18,7 +18,7 @@ import { setJobStatus, syncLinkedRun } from './jobService';
 import { saveArtifact } from './artifactService';
 import { emitEvent } from './eventsService';
 import type { ArtifactKind } from './types';
-import { parseAtomicSteps } from './stepGrouping';
+import { parseAtomicSteps, wrapRecordedScriptSteps } from './stepGrouping';
 import { mergeExecutionProgress } from '../../../core/shared/automationProgress';
 import { playwrightFailure } from '../../../agent/src/playwrightFailure';
 import { startPauseControl, type PauseControl } from '../../../agent/src/pauseControl';
@@ -33,6 +33,17 @@ import { createAuthStorageState } from '../evidence/evidenceService';
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw', 'automation');
 const running = new Map<string, ReturnType<typeof spawn>>();
 const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
+
+/** Resolve Playwright's CLI entry directly from node_modules (no require/import.meta — the prod build
+ *  is an esbuild CJS bundle, see mcpClient.ts's resolveMcpCli for the same convention and why). Spawning
+ *  this directly via process.execPath, instead of `npx` under a shell, means child.pid is the REAL
+ *  Playwright process (not a cmd.exe/npx.cmd wrapper) — required for cancelServerJob's taskkill to
+ *  actually reach it and its browser children instead of only killing the wrapper. */
+function resolvePlaywrightCli(): string {
+  const candidate = path.join(process.cwd(), 'node_modules', 'playwright', 'cli.js');
+  if (fs.existsSync(candidate)) return candidate;
+  throw new Error('playwright CLI not found — run npm install. Looked in: ' + candidate);
+}
 
 const progressReporterSource = `
 class TestFlowProgressReporter {
@@ -127,7 +138,16 @@ function parseSummary(runDir: string): Record<string, number> {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
     const s = raw.stats || {};
-    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0) };
+    const tests: any[] = [];
+    const visit = (suite: any) => {
+      for (const spec of suite?.specs || []) for (const test of spec.tests || []) {
+        const result = test.results?.[test.results.length - 1] || {};
+        tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+      }
+      for (const child of suite?.suites || []) visit(child);
+    };
+    visit(raw);
+    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0), tests } as any;
   } catch { return {}; }
 }
 
@@ -188,7 +208,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions, storageStatePath));
   fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
   if (/from\s+['"]\.\/mission-runner['"]/.test(scriptSource)) fs.writeFileSync(path.join(runDir, 'tests', 'mission-runner.ts'), MISSION_RUNNER_SOURCE);
-  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${authSessionPrelude(sessionStorageState)}${hasPauses ? pausePreludeSource : ''}${scriptSource}`);
+  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${authSessionPrelude(sessionStorageState)}${hasPauses ? pausePreludeSource : ''}${wrapRecordedScriptSteps(scriptSource)}`);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });
@@ -198,9 +218,8 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   let exitCode: number;
   try {
     exitCode = await new Promise((resolve) => {
-      const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
+      const child = spawn(process.execPath, [resolvePlaywrightCli(), 'test', '--config', 'playwright.config.ts'], {
         cwd: runDir,
-        shell: process.platform === 'win32',
         env: {
           ...process.env,
           PLAYWRIGHT_HTML_OPEN: 'never',
@@ -244,11 +263,14 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   const current = await AutomationJobs.get(jobId);
   const outputFailure = output.join('\n').slice(-4000);
   const failure = exitCode === 0 ? '' : parseFailure(runDir, scriptSource) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : 'Test run reported failures.');
-  await setJobStatus(jobId, status, { exitCode, summary: { ...(current?.summary || {}), ...summary }, error: failure, finishedAt: new Date().toISOString() });
+  // setJobStatus finalizes and persists the real merged summary — use ITS return value, not the raw
+  // per-process `summary`, which never carries the accumulated executionSteps/caseSteps (same fix as
+  // the agent-dispatched job.done path in jobService.ts).
+  const saved = await setJobStatus(jobId, status, { exitCode, summary: { ...(current?.summary || {}), ...summary }, error: failure, finishedAt: new Date().toISOString() });
   await closeOpenPausesForJob(jobId);
   // Keep server-scheduled execution in parity with agent execution: the linked Test Run is what
   // powers durable dashboard/test-management outcome views.
-  await syncLinkedRun(jobId, status, summary);
+  await syncLinkedRun(jobId, status, saved?.summary || summary);
 }
 
 /**

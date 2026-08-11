@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CalendarClock, CheckCircle, ChevronLeft, ChevronRight, Download, Filter, Folder, GitCompareArrows, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
-import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
-import { sortByTime, type TimeSortKey } from '@/src/lib/time';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, withoutAutomationJobMeta } from '@/core/shared/testRunStatus';
@@ -14,6 +13,7 @@ import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { AutomatedRunWorkspace } from '@/src/components/AutomatedRunWorkspace';
 import { RunPausePrompt } from '@/src/components/RunPausePrompt';
 import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
@@ -108,7 +108,7 @@ export default function TestRuns() {
   const [suites, setSuites] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>({ key: 'updated', direction: 'descending' });
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('test runs');
   const [runView, setRunView] = useUrlState('view', 'active', ['active', 'closed'] as const);
@@ -127,6 +127,7 @@ export default function TestRuns() {
   const [editingRunId, setEditingRunId] = useState('');
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [newRunName, setNewRunName] = useState('');
+  const [newRunSummary, setNewRunSummary] = useState('');
   const [newRunRequester, setNewRunRequester] = useState('');
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
   const [newRunEstimatedHours, setNewRunEstimatedHours] = useState(0);
@@ -194,8 +195,13 @@ export default function TestRuns() {
   }, []);
 
   // Quiet runs-only refetch (no full-page loading flash) used to poll a live automation run.
+  const runsInFlight = useRef(false);
   const refreshRunsQuiet = useCallback(async () => {
-    try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
+    if (runsInFlight.current) return;
+    runsInFlight.current = true;
+    try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); }
+    catch { /* keep */ }
+    finally { runsInFlight.current = false; }
   }, []);
 
   const pendingRun = (location.state as any)?.pendingRun;
@@ -210,6 +216,15 @@ export default function TestRuns() {
     if (!hasRunningRuns) return;
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
+  }, [hasRunningRuns, refreshRunsQuiet]);
+
+  // Background tabs throttle setInterval, so also resync on visibility/focus regain.
+  useEffect(() => {
+    if (!hasRunningRuns) return;
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshRunsQuiet(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
   }, [hasRunningRuns, refreshRunsQuiet]);
 
   // Tick a 1s clock while any run is mid-flight (started, not yet completed) so the Duration column
@@ -243,7 +258,7 @@ export default function TestRuns() {
 
   const filteredRuns = useMemo(() => {
     const base = runView === 'active' ? activeRuns : closedRuns;
-    return sortByTime(base.filter((run) => {
+    return base.filter((run) => {
       const searchable = `${run.name || ''} ${run.id || ''} ${run.suiteName || ''} ${run.requestedBy || ''}`.toLowerCase();
       const matchesSearch = aiSearch.isAiQuery(searchTerm)
         ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(run.id) : true)
@@ -263,8 +278,19 @@ export default function TestRuns() {
       if (selectedView === 'Automated Runs') return run.mode !== 'manual';
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
-    }), timeSort);
-  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter, timeSort]);
+    });
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter]);
+  const sortedRuns = sortRows(filteredRuns, sort, {
+    run: (run) => run.name || run.id,
+    type: (run) => run.mode === 'manual' ? 'Manual' : `Automated ${run.executionMode || ''}`,
+    scripts: (run) => scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts).map(scriptLabel).join(', '),
+    tests: (run) => getRunStats(run).total,
+    duration: (run) => formatRunDuration(run, now),
+    started: (run) => runStartedAt(run) || run.createdAt || run.date,
+    status: (run) => run.status,
+    failure: (run) => getRunStats(run).failed,
+    updated: (run) => run.metadata?.updatedAt || run.updatedAt || run.date,
+  });
 
   const statusOptions = Array.from(new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', ...runs.map((run) => String(run.status || 'Not Started'))]));
   const requesterOptions = Array.from(new Set(runs.map((run) => String(run.requestedBy || '').trim()).filter(Boolean))).sort();
@@ -323,6 +349,7 @@ export default function TestRuns() {
   const openNewModal = () => {
     setEditingRunId('');
     setNewRunName('');
+    setNewRunSummary('');
     setNewRunRequester('');
     setNewRunExecutionTime('');
     setNewRunEstimatedHours(0);
@@ -342,6 +369,7 @@ export default function TestRuns() {
   const openEditModal = (run: any) => {
     setEditingRunId(run.id);
     setNewRunName(run.name || '');
+    setNewRunSummary(run.summary || '');
     setNewRunRequester(run.requestedBy || '');
     setNewRunExecutionTime(run.executionTime || '');
     const estimate = parseDurationEstimate(run.executionTime || '');
@@ -373,11 +401,11 @@ export default function TestRuns() {
     let body: any;
     if (editingRunId) {
       url = `/api/runs/${encodeURIComponent(editingRunId)}`;
-      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId, mode: newRunMode, executionMode };
+      body = { name: newRunName, summary: newRunSummary, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId, mode: newRunMode, executionMode };
       body.caseIds = caseIds;
     } else {
       url = '/api/runs/from-selection';
-      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, executionMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
+      body = { name: newRunName, summary: newRunSummary, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, executionMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
     }
     setSavingRun(true);
     try {
@@ -496,6 +524,10 @@ export default function TestRuns() {
   const handleStopRun = async (run: any) => {
     if (!await showConfirm('Stop this running execution?', { title: 'Stop Test Run', confirmText: 'Stop Run', tone: 'danger' })) return;
     setStoppingRunId(run.id);
+    // End the local running state immediately. The cancellation request then terminates the agent
+    // process in the background; the UI must not remain stuck on “Stopping all…” if that process
+    // takes time to exit or its connection is reconnecting.
+    setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Cancelled', state: 'Cancelled', completedAt: new Date().toISOString(), progress: 'Stopped by user' } : item));
     try {
       const jobId = String(run.triggerMeta?.automationJobId || '');
       const url = jobId
@@ -504,12 +536,22 @@ export default function TestRuns() {
       const response = await fetch(url, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Failed to stop test run.');
-      await refreshRunsQuiet();
+      void refreshRunsQuiet();
     } catch (error: any) {
+      void refreshRunsQuiet();
       void showAlert(error.message || 'Failed to stop test run.');
     } finally {
       setStoppingRunId('');
     }
+  };
+
+  const handleViewReport = async (run: any) => {
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/report`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to prepare the run report.');
+      navigate(`/reports?runId=${encodeURIComponent(run.id)}&reportId=${encodeURIComponent(data.reportId || '')}`);
+    } catch (error: any) { void showAlert(error.message || 'Failed to view the run report.'); }
   };
 
   // Automated runs execute Playwright scripts, so only cases that HAVE a linked script are runnable.
@@ -531,8 +573,8 @@ export default function TestRuns() {
   if (selectedRun && !isRunModalOpen) {
     const stats = getRunStats(selectedRun, selectedRunCases.length);
     const selectedExecution = runExecutionState(selectedRun);
-    const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
+    const selectedCanClose = isPendingReviewTestRun(selectedRun) || /^(stopped|cancelled|canceled)$/i.test(String(selectedRun.status || ''));
     const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
     // Resolved from the run's own cases (not a stored display string) so it reflects real composition.
     const runLineageSuiteIds = Array.from(new Set(selectedRunCases.flatMap((testCase) => caseSuiteIds(testCase))));
@@ -568,19 +610,24 @@ export default function TestRuns() {
 
     return (
       <div className="app-page-shell min-h-full">
-        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
-          <div className="p-5 border-b border-[var(--border)]">
-            <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
+        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl shadow-black/10">
+          <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]/35 px-5 py-4">
+            <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] mb-3">
               <button onClick={() => navigate('/runs')} className="inline-flex items-center gap-1 hover:text-[var(--text-primary)]">
                 <ArrowLeft className="w-4 h-4" /> Test Runs
               </button>
               <span>/</span>
               <span className="font-mono">{selectedRun.id}</span>
             </div>
-            <h1 className="truncate text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="truncate text-xl font-semibold tracking-tight text-[var(--text-primary)]">{selectedRun.name}</h1>
+              <span className={cn('inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold', selectedRun.mode === 'manual' ? 'border-sky-500/30 bg-sky-500/10 text-sky-300' : 'border-violet-500/30 bg-violet-500/10 text-violet-300')}>
+                {selectedRun.mode === 'manual' ? 'Manual run' : `Automated · ${selectedRun.executionMode === 'headed' ? 'Headed' : 'Headless'}`}
+              </span>
+            </div>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-                <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
+                <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap font-medium', /pass/i.test(selectedRun.status) ? 'text-emerald-400' : /fail/i.test(selectedRun.status) ? 'text-red-400' : 'text-[var(--text-secondary)]')}><span className={cn('h-2 w-2 rounded-full', /pass/i.test(selectedRun.status) ? 'bg-emerald-400' : /fail/i.test(selectedRun.status) ? 'bg-red-400' : 'bg-slate-500')} /> {selectedRun.status || 'In Progress'}</span>
                 {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
                 {selectedRun.triggerMeta?.scheduleId && (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-medium text-indigo-400">
@@ -602,7 +649,7 @@ export default function TestRuns() {
                 {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {isPendingReviewTestRun(selectedRun) && can('runs:update') && (
+                {selectedCanClose && can('runs:update') && (
                   <button
                     onClick={() => { void handleCloseRun(selectedRun); }}
                     disabled={closingRunId === selectedRun.id}
@@ -628,18 +675,21 @@ export default function TestRuns() {
                     disabled={stoppingRunId === selectedRun.id}
                     className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping…' : 'Stop Run'}
+                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping all…' : 'Stop all execution'}
                   </button>
                 )}
                 {selectedRun.mode !== 'manual' && can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}
-                  disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
-                  title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
+                  disabled={isClosedTestRun(selectedRun) || selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
+                  title={isClosedTestRun(selectedRun) ? 'A closed test run cannot be executed' : selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                   className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <PlayCircle className="h-4 w-4" /> Run Scripts
                 </button>
+                )}
+                {selectedRun.completedAt && (
+                  <button onClick={() => { void handleViewReport(selectedRun); }} className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"><Download className="h-4 w-4" /> View Report</button>
                 )}
               </div>
             </div>
@@ -701,17 +751,26 @@ export default function TestRuns() {
             </div>
           )}
 
-          {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
+          <AutomationRunArtifacts
+            jobId={selectedRun.triggerMeta?.automationJobId || selectedRun.id}
+            summaryOnly
+            runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+            runDuration={formatRunDuration(selectedRun, now)}
+          />
+
           {selectedRun.triggerMeta?.automationJobId && (
-            <div className="p-5 border-b border-[var(--border)] overflow-auto">
+            <div className="border-b border-[var(--border)] p-5 overflow-auto">
               <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
               <AutomationRunArtifacts
                 jobId={selectedRun.triggerMeta.automationJobId}
+                hideSummary
+                progressOnly
                 runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
                 runDuration={formatRunDuration(selectedRun, now)}
               />
             </div>
           )}
+
           {evidenceItems.length > 0 && (
             <div className="border-b border-[var(--border)] p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -771,6 +830,22 @@ export default function TestRuns() {
             </div>
           )}
 
+          <AutomatedRunWorkspace run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} onChanged={refreshRunsQuiet} />
+
+          {!selectedIsRunning && selectedRun.triggerMeta?.automationJobId && (
+            <div className="border-b border-[var(--border)] p-5 overflow-auto">
+              <RunPausePrompt jobId={selectedRun.triggerMeta.automationJobId} />
+              <AutomationRunArtifacts
+                jobId={selectedRun.triggerMeta.automationJobId}
+                hideSummary
+                hideProgress
+                runSummary={resettingRunStats ? { passed: 0, failed: 0, skipped: 0, blocked: 0, retest: 0, untested: 0 } : stats}
+                runDuration={formatRunDuration(selectedRun, now)}
+              />
+            </div>
+          )}
+
+          <div className="hidden">
           <div className="h-2 bg-[var(--bg-secondary)] flex">
             {selectedIsRunning ? (
               <div
@@ -1008,6 +1083,7 @@ export default function TestRuns() {
               </table>
             </div>
           </div>
+          </div>
           </>)}
         </div>
         <Modal
@@ -1138,6 +1214,9 @@ export default function TestRuns() {
         <div className="space-y-4">
           <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name<RequiredMark />
             <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+          </label>
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Summary
+            <textarea value={newRunSummary} onChange={(e) => setNewRunSummary(e.target.value)} placeholder="Optional run summary" rows={3} className="mt-1 w-full resize-y bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
           </label>
 
           {/* Runs map to a Test Plan. */}
@@ -1305,7 +1384,6 @@ export default function TestRuns() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input value={searchTerm} onChange={(e) => { const v = e.target.value; setSearchTerm(v); if (aiSearch.isAiQuery(v)) aiSearch.run(v, runs.map((r) => ({ id: r.id, name: r.name, status: r.status, suiteName: r.suiteName, requestedBy: r.requestedBy, date: r.date }))); else aiSearch.reset(); }} placeholder="Search runs…  or @ai find smartly" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
             </div>
-            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
             <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
             <div ref={filterRef} className="relative">
               <button onClick={() => setIsFilterOpen((open) => !open)} aria-expanded={isFilterOpen} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"><Filter className="w-4 h-4" /> Filters{activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}</button>
@@ -1344,33 +1422,33 @@ export default function TestRuns() {
             <div className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</div>
           ) : (
             <DataTable
-              rowCount={filteredRuns.length}
+              rowCount={sortedRuns.length}
               rowHeight={72}
               height="100%"
               ariaLabel="Test runs"
               tableClassName="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap"
-              onActivateRow={(index) => navigate(`/runs/${filteredRuns[index].id}`)}
+              onActivateRow={(index) => navigate(`/runs/${sortedRuns[index].id}`)}
               emptyState={<div className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</div>}
               renderHeaderRow={() => (
                 <tr>
                   <th className="px-4 py-3 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
+                    <input type="checkbox" checked={bulk.allSelected(sortedRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(sortedRuns.map((run) => run.id))} />
                   </th>
                   <th className="px-4 py-3 w-10"></th>
-                  <th className="w-80 px-4 py-3 font-medium" scope="col">Run</th>
-                  <th className="w-52 px-4 py-3 font-medium" scope="col">Type</th>
-                  <th className="w-64 px-4 py-3 font-medium" scope="col">Scripts</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Tests</th>
-                  <th className="w-28 px-4 py-3 font-medium" scope="col">Duration</th>
-                  <th className="w-52 px-4 py-3 font-medium" scope="col">Run Date &amp; Time</th>
-                  <th className="w-56 px-4 py-3 font-medium" scope="col">Tests Status</th>
-                  <th className="w-40 px-4 py-3 font-medium" scope="col">Failure Analysis</th>
-                  <th className="w-32 px-4 py-3 font-medium" scope="col">Updated</th>
+                  <SortableHeader label="Run" column="run" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
+                  <SortableHeader label="Type" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                  <SortableHeader label="Scripts" column="scripts" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-64 px-4 py-3 font-medium" />
+                  <SortableHeader label="Tests" column="tests" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 font-medium" />
+                  <SortableHeader label="Duration" column="duration" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-3 font-medium" />
+                  <SortableHeader label="Run Date & Time" column="started" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
+                  <SortableHeader label="Tests Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-56 px-4 py-3 font-medium" />
+                  <SortableHeader label="Failure Analysis" column="failure" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-40 px-4 py-3 font-medium" />
+                  <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
                   <th className="w-20 px-4 py-3"></th>
                 </tr>
               )}
               renderRow={(index, rowProps) => {
-                const run = filteredRuns[index];
+                const run = sortedRuns[index];
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts);
                 const scriptNames = runScripts.map(scriptLabel);
@@ -1411,8 +1489,8 @@ export default function TestRuns() {
                         {can('runs:execute') && (
                         <button
                           onClick={(event) => { event.stopPropagation(); if (run.mode === 'manual') void startManualRun(run); else void handleExecuteRuns([run]); }}
-                          disabled={run.mode !== 'manual' && (running || !hasScripts)}
-                          title={run.mode === 'manual' ? 'Start This Manual Run' : (hasScripts ? 'Run Linked Playwright Scripts' : 'No Playwright scripts are linked to this run')}
+                          disabled={closed || (run.mode !== 'manual' && (running || !hasScripts))}
+                          title={closed ? 'A closed test run cannot be executed' : run.mode === 'manual' ? 'Start This Manual Run' : (hasScripts ? 'Run Linked Playwright Scripts' : 'No Playwright scripts are linked to this run')}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}

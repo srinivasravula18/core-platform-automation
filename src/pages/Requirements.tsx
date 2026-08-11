@@ -15,6 +15,7 @@ import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { readSseJson } from '@/src/lib/sse';
+import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -47,6 +48,7 @@ export default function Requirements() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [sort, setSort] = useState<SortState>(null);
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const [discoverQuery, setDiscoverQuery] = useState('');
   const [discovering, setDiscovering] = useState(false);
@@ -161,9 +163,14 @@ export default function Requirements() {
     const matchesSearch = !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
     return matchesSearch && passesTimeFilter(req.metadata?.updatedAt || req.updatedAt, updatedFilter);
   }), timeSort);
+  const sortedRequirements = sortRows(filtered, sort, {
+    id: (req) => req.id, title: (req) => req.title, query: (req) => req.featureQuery,
+    coverage: (req) => req.coverage ?? req.coveragePercent, cases: (req) => req.caseCount ?? req.linkedCaseIds?.length,
+    status: (req) => req.status, updated: (req) => req.metadata?.updatedAt || req.updatedAt,
+  });
   const exportRequirements = bulk.selectedCount
-    ? filtered.filter((req) => bulk.selectedIds.has(req.id))
-    : filtered;
+    ? sortedRequirements.filter((req) => bulk.selectedIds.has(req.id))
+    : sortedRequirements;
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -255,22 +262,22 @@ export default function Requirements() {
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filtered.map((r) => r.id))} onChange={() => bulk.toggleAll(filtered.map((r) => r.id))} />
+                  <input type="checkbox" checked={bulk.allSelected(sortedRequirements.map((r) => r.id))} onChange={() => bulk.toggleAll(sortedRequirements.map((r) => r.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-28">ID</th>
-                <th className="font-medium py-3 px-4">Title</th>
-                <th className="font-medium py-3 px-4">Feature Query</th>
-                <th className="font-medium py-3 px-4 w-36">Coverage</th>
-                <th className="font-medium py-3 px-4 w-44">Cases</th>
-                <th className="font-medium py-3 px-4 w-28">Status</th>
-                <th className="font-medium py-3 px-4 w-32">Updated</th>
+                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
+                <SortableHeader label="Title" column="title" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
+                <SortableHeader label="Feature Query" column="query" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
+                <SortableHeader label="Coverage" column="coverage" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-36" />
+                <SortableHeader label="Cases" column="cases" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
+                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
+                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
                 <th className="font-medium py-3 px-4 w-16 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
               {!loading && filtered.length === 0 && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Create one with the agent above.</td></tr>)}
-              {filtered.map((req) => {
+              {sortedRequirements.map((req) => {
                 const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
                 return (
                   <tr key={req.id} onClick={() => openDetail(req)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
