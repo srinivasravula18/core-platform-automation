@@ -845,7 +845,7 @@ export default function TestRuns() {
             </div>
           )}
 
-          <AutomatedRunWorkspace run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} />
+          <AutomatedRunWorkspace run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} onChanged={refreshRunsQuiet} />
 
           {!selectedIsRunning && selectedRun.triggerMeta?.automationJobId && (
             <div className="border-b border-[var(--border)] p-5 overflow-auto">

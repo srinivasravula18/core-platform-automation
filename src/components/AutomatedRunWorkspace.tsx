@@ -38,7 +38,7 @@ function stepsForCase(run: any, testCase: any, executionSteps: ExecutionStepProg
     : progressed.map((step) => ({ ...step, outcome: savedOutcome }));
 }
 
-export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any; cases: any[]; plans: any[]; suites: any[] }) {
+export function AutomatedRunWorkspace({ run, cases, plans, suites, onChanged }: { run: any; cases: any[]; plans: any[]; suites: any[]; onChanged?: () => void }) {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [showImages, setShowImages] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -80,7 +80,8 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
   }, [running, jobId, loadExecutionSteps]);
   const results = useMemo(() => cases.map((testCase) => {
     const stepResults = stepsForCase(run, testCase, executionSteps);
-    return { caseId: testCase.id, caseTitle: testCase.title, priority: testCase.priority, tags: testCase.tags || [], outcome: outcomeFor(stepResults), stepResults };
+    const summary = run.definition?.caseSummary?.[testCase.id] || {};
+    return { caseId: testCase.id, caseTitle: testCase.title, priority: summary.priority || testCase.priority, configuration: summary.configuration || '', tags: testCase.tags || [], outcome: outcomeFor(stepResults), stepResults };
   }), [cases, executionSteps, run]);
   useEffect(() => { if (results.length && !results.some((result) => result.caseId === selectedCaseId)) setSelectedCaseId(results[0].caseId); }, [results, selectedCaseId]);
 
@@ -94,6 +95,10 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
   const suiteName = suites.find((suite) => suite.id === run.suiteId)?.name || run.suiteName || '';
 
   const activeIndex = results.findIndex((result) => result.caseId === selectedCaseId);
+  const updateSummary = async (caseId: string, patch: Record<string, string>) => {
+    const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/summary/${encodeURIComponent(caseId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+    if (response.ok) onChanged?.();
+  };
   return <div className="flex min-h-[30rem] border-b border-[var(--border)] bg-[var(--bg-secondary)]/20">
     <aside className="flex h-[calc(100dvh-10rem)] w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-card)]">
       <div className="border-b border-[var(--border)] p-3">
@@ -113,7 +118,7 @@ export function AutomatedRunWorkspace({ run, cases, plans, suites }: { run: any;
         <button type="button" disabled={activeIndex < 0 || activeIndex === results.length - 1} onClick={() => setSelectedCaseId(results[activeIndex + 1]?.caseId || null)} aria-label="Next test case" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
       </div>
       {count('Failed') > 0 && <button type="button" onClick={() => setSelectedCaseId(results.find((result) => result.outcome === 'Failed')?.caseId || null)} className="mx-3 mb-2 rounded-md border border-[var(--border)] py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]">Jump to first failed</button>}
-      {active && <div className="border-t border-[var(--border)] overflow-y-auto"><RunSummaryPanel run={run} planName={planName} suiteName={suiteName} result={active} linkedDefects={[]} disabled authoringDisabled onFieldChange={() => {}} /></div>}
+      {active && <div className="border-t border-[var(--border)] overflow-y-auto"><RunSummaryPanel run={run} planName={planName} suiteName={suiteName} result={active} linkedDefects={[]} disabled={running} onFieldChange={(patch) => { void updateSummary(active.caseId, patch); }} /></div>}
     </aside>
     <section className="min-w-0 flex-1 overflow-auto">
       {!active ? <div className="p-8 text-sm text-[var(--text-muted)]">No test cases in this run.</div> : <>

@@ -684,6 +684,20 @@ export function registerResourceRoutes(app: Express) {
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
     res.json({ success: true, run: updated });
   });
+  app.patch('/api/runs/:id/summary/:caseId', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!uniqueStrings([...(run.caseIds || []), run.testCaseId]).includes(req.params.caseId)) return res.status(404).json({ error: 'Test case is not part of this run.' });
+    const patch: Record<string, string> = {};
+    for (const field of ['configuration', 'priority']) {
+      if (typeof req.body?.[field] === 'string') patch[field] = req.body[field].slice(0, 200);
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No editable summary fields supplied.' });
+    const caseSummary = { ...(run.definition?.caseSummary || {}), [req.params.caseId]: { ...(run.definition?.caseSummary?.[req.params.caseId] || {}), ...patch } };
+    const updated = await Runs.upsert({ ...run, definition: { ...(run.definition || {}), caseSummary } });
+    if (!isPgEnabled()) persistDataInBackground('updated run case summary');
+    res.json({ success: true, run: updated });
+  });
   app.post('/api/runs/:id/close', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });

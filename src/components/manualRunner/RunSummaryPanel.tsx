@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { Pencil } from 'lucide-react';
 import { Timestamp } from '@/src/components/Timestamp';
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -51,18 +53,25 @@ export function RunSummaryPanel({
   onFieldChange: (patch: Record<string, string>) => void;
 }) {
   const runBy = result.runBy || run.assignedTo || run.requestedBy || 'Unassigned';
+  const [editing, setEditing] = useState(false);
+  const canEdit = !disabled && !authoringDisabled;
   return (
     <div className="p-5">
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">
-        <h3 className="mb-3 text-sm font-semibold">Summary</h3>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Summary</h3>
+          {canEdit && <button type="button" onClick={() => setEditing((value) => !value)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]">
+            <Pencil className="h-3 w-3" /> {editing ? 'Done' : 'Edit Summary'}
+          </button>}
+        </div>
         <div className="space-y-2">
           <Field label="Run by">{runBy}</Field>
-          {/* Configuration + Priority are authored through the run's Edit modal. */}
-          <EditableField label="Configuration" value={result.configuration} disabled={disabled || authoringDisabled} caseId={result.caseId} field="configuration" onFieldChange={onFieldChange} placeholder="e.g. Sandbox / Chrome" />
+          {/* Per-case execution context remains editable after an automated run completes. */}
+          <EditableField label="Configuration" value={result.configuration} disabled={!editing} caseId={result.caseId} field="configuration" onFieldChange={onFieldChange} placeholder="e.g. Sandbox / Chrome" />
           <Field label="Completed time">{result.completedAt ? <Timestamp value={result.completedAt} /> : '—'}</Field>
           <Field label="Test plan">{planName || run.testPlanId || '—'}</Field>
           <Field label="Test suite">{suiteName || run.suiteName || '—'}</Field>
-          <EditableField label="Priority" value={result.priority} disabled={disabled || authoringDisabled} caseId={result.caseId} field="priority" onFieldChange={onFieldChange} placeholder="e.g. 2 / High" />
+          <EditableField label="Priority" value={result.priority} disabled={!editing} caseId={result.caseId} field="priority" onFieldChange={onFieldChange} placeholder="e.g. 2 / High" />
         </div>
       </div>
 
