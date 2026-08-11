@@ -405,7 +405,7 @@ export default function Dashboard() {
             <ul className="space-y-2 text-xs">
               {stats.upcomingSchedules.map((s: any) => (
                 <li key={s.id} className="flex justify-between gap-2">
-                  <span className="truncate text-[var(--text-primary)]">{s.kind || 'run'}{s.cron ? ` · ${s.cron}` : ''}</span>
+                  <span className="truncate text-[var(--text-primary)]">{s.title || s.kind || 'run'}{s.cron ? ` · ${s.cron}` : ''}</span>
                   <span className="whitespace-nowrap text-[var(--text-muted)]">{new Date(s.nextRunAt).toLocaleString()}</span>
                 </li>
               ))}

@@ -127,6 +127,7 @@ export default function TestRuns() {
   const [editingRunId, setEditingRunId] = useState('');
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [newRunName, setNewRunName] = useState('');
+  const [newRunSummary, setNewRunSummary] = useState('');
   const [newRunRequester, setNewRunRequester] = useState('');
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
   const [newRunEstimatedHours, setNewRunEstimatedHours] = useState(0);
@@ -348,6 +349,7 @@ export default function TestRuns() {
   const openNewModal = () => {
     setEditingRunId('');
     setNewRunName('');
+    setNewRunSummary('');
     setNewRunRequester('');
     setNewRunExecutionTime('');
     setNewRunEstimatedHours(0);
@@ -367,6 +369,7 @@ export default function TestRuns() {
   const openEditModal = (run: any) => {
     setEditingRunId(run.id);
     setNewRunName(run.name || '');
+    setNewRunSummary(run.summary || '');
     setNewRunRequester(run.requestedBy || '');
     setNewRunExecutionTime(run.executionTime || '');
     const estimate = parseDurationEstimate(run.executionTime || '');
@@ -398,11 +401,11 @@ export default function TestRuns() {
     let body: any;
     if (editingRunId) {
       url = `/api/runs/${encodeURIComponent(editingRunId)}`;
-      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId, mode: newRunMode, executionMode };
+      body = { name: newRunName, summary: newRunSummary, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: newRunPlanId, mode: newRunMode, executionMode };
       body.caseIds = caseIds;
     } else {
       url = '/api/runs/from-selection';
-      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, executionMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
+      body = { name: newRunName, summary: newRunSummary, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, executionMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
     }
     setSavingRun(true);
     try {
@@ -1226,6 +1229,9 @@ export default function TestRuns() {
         <div className="space-y-4">
           <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name<RequiredMark />
             <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+          </label>
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Summary
+            <textarea value={newRunSummary} onChange={(e) => setNewRunSummary(e.target.value)} placeholder="Optional run summary" rows={3} className="mt-1 w-full resize-y bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
           </label>
 
           {/* Runs map to a Test Plan. */}

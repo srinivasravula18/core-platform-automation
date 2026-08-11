@@ -176,6 +176,7 @@ function mapPlan(r: any) {
   return {
     id: r.id,
     name: r.name,
+    summary: r.summary || '',
     scope: r.scope,
     objectives: r.objectives,
     inScope: r.in_scope,
@@ -1530,10 +1531,10 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, mode, execution_mode, definition, case_pins, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, $30, $31, $32::jsonb, $33::jsonb, $34, now(), now())
+      `INSERT INTO runs (id, name, summary, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, mode, execution_mode, definition, case_pins, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19::jsonb,$20,$21,$22,$23,$24, COALESCE($25, CURRENT_DATE), $26, $27, $28, $29, $30, $31, $32, $33::jsonb, $34::jsonb, $35, now(), now())
        ON CONFLICT (id) DO UPDATE SET
-         name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
+         name=EXCLUDED.name, summary=EXCLUDED.summary, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
          total_executions=EXCLUDED.total_executions, passed=EXCLUDED.passed, failed=EXCLUDED.failed,
          progress=EXCLUDED.progress, status=EXCLUDED.status, target_url=EXCLUDED.target_url,
@@ -1549,7 +1550,7 @@ export const Runs = {
          updated_at=now()
        RETURNING *`,
       [
-        id, r.name || 'Untitled Run', r.suiteId || null, r.testPlanId || null,
+        id, r.name || 'Untitled Run', r.summary || '', r.suiteId || null, r.testPlanId || null,
         r.caseIds || [], r.requestedBy || 'human', r.executionTime || '',
         r.totalExecutions || 0, r.passed || 0, r.failed || 0,
         r.progress || '', r.status || 'Pending', r.targetUrl || '',

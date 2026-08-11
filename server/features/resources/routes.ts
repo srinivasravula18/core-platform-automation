@@ -666,6 +666,7 @@ export function registerResourceRoutes(app: Express) {
     const updated = await Runs.upsert({
       ...run,
       name,
+      summary: String(req.body?.summary || ''),
       testPlanId: String(req.body?.testPlanId || ''),
       requestedBy: String(req.body?.requestedBy || ''),
       assignedTo: String(req.body?.assignedTo || ''),
@@ -1917,6 +1918,7 @@ Rules:
       ...scopeStamp(scope),
       id: runId,
       name,
+      summary: String(req.body?.summary || ''),
       mode: runMode,
       executionMode: runMode === 'automated' && req.body?.executionMode === 'headed' ? 'headed' : runMode === 'automated' ? 'headless' : '',
       definition: req.body?.definition || {},
