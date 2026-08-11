@@ -240,6 +240,24 @@ function heuristicClassifyGoal(message: string, ctx: RoutingContext = {}): RawGo
   };
 }
 
+function isClearQaAction(message: string, direct: RawGoalClassification): boolean {
+  const text = cleanText(message);
+  if (direct.kind === 'requirement_draft') return looksLikeRequirementDraft(message);
+  if (direct.kind === 'deep_test_run') {
+    return /\b(run|execute|rerun|re-run)\b/.test(text)
+      && /\b(tests?|cases?|scripts?|playwright)\b/.test(text);
+  }
+  if (direct.kind !== 'generate_cases') return false;
+  return /\b(generate|draft|write|author|create|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/.test(text)
+    || /^(?:(?:please|can you|could you|pls|hey)[\s,]+)?(?:test|cover|automate)\b[\s\S]{0,80}\b(view|views|page|pages|screen|screens|flow|flows|feature|features|module|modules|list|form|forms|workflow|tab|grid|dashboard|e2e|creation|functionality|button|field)\b/.test(text);
+}
+
+/** Return a trustworthy classification for obvious requests; null keeps the semantic-model fallback. */
+export function classifyGoalDeterministically(message: string, ctx: RoutingContext = {}): RawGoalClassification | null {
+  const direct = heuristicClassifyGoal(message, ctx);
+  return looksLikeQuestionOrCoverageAsk(message) || isClearQaAction(message, direct) ? direct : null;
+}
+
 /** Map the model's free-form label onto a canonical RouteKind. */
 function canonicalKind(raw: string): RouteKind {
   const k = String(raw || '').toLowerCase().trim();
@@ -447,11 +465,11 @@ export async function routeGoal(input: ClassifyGoalInput, ctx: RoutingContext = 
   const normalizedInput: ClassifyGoalInput = processed.normalized && processed.normalized !== input.message.toLowerCase()
     ? { ...input, message: processed.normalized }
     : input;
-  const direct = heuristicClassifyGoal(normalizedInput.message, ctx);
-  const shouldBypassModel = looksLikeQuestionOrCoverageAsk(normalizedInput.message);
+  const deterministic = classifyGoalDeterministically(normalizedInput.message, ctx);
+  const direct = deterministic || heuristicClassifyGoal(normalizedInput.message, ctx);
   let raw: RawGoalClassification;
-  if (shouldBypassModel) {
-    raw = direct;
+  if (deterministic) {
+    raw = deterministic;
   } else {
     try {
       // Give the model the corrected message but keep the original as userMessage so its reply reads naturally.

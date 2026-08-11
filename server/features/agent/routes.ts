@@ -99,6 +99,17 @@ function wantsCodeGroundedTestUnderstanding(value: string): boolean {
     && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
 }
 
+const REVIEW_BRIEF_VERSION = 'review-brief-v1';
+const REVIEW_BRIEF_INSTRUCTIONS = `
+REVIEW CARD OUTPUT CONTRACT — follow this exactly:
+- Write a source-grounded coverage brief titled "<Feature> — What to Test", not a generated test-case artifact.
+- Open with "Here is the full test brief for **<feature and app>**, grounded in the actual source code"; mention executed test evidence only when it is actually present in the supplied evidence.
+- Organize the response into numbered functional-area sections such as fields and validation, action behavior, boundaries, duplicate handling, list behavior, permissions, and access preconditions.
+- Describe confirmed controls, business behavior, validation timing/messages, edge cases, and evidence gaps. Label unknown behavior as an "Untested Gap" and explain what must be probed.
+- Tables are allowed for compact field/control inventories. Use concise bullets for behavior matrices and edge cases.
+- NEVER output individual generated test cases: no case IDs, case titles, numbered scenario rows, per-case steps/expected-results, priorities, tags, or automation types. Those belong to the generation stage after approval.
+- Do not claim a behavior is verified, executed, required, unique, or permission-gated unless the source or supplied evidence proves it.`;
+
 function listRepoSrcApps(repoPath: string): string[] {
   const root = String(repoPath || '');
   if (!root || !existsSync(root)) return [];
@@ -2752,12 +2763,16 @@ Rules:
     }
 
     if (!correction && wantsCodeGroundedTestUnderstanding(intentPrompt)) {
+      const reviewPrompt = `${groundingPrompt}\n\n${REVIEW_BRIEF_INSTRUCTIONS}`;
+      const cacheKey = featureCacheKey(rawTargetUrl, groundingPrompt, [REVIEW_BRIEF_VERSION, scope.userId, scope.projectId, scope.appId].filter(Boolean).join(':'));
+      const cached = getCached(understandingCache, cacheKey);
+      if (cached) return cached;
       try {
         const targetLabel = rawTargetName || rawTargetUrl;
         const apps = targetLabel
           ? [{ name: rawTargetName || targetLabel, baseUrl: rawTargetUrl || targetLabel }]
           : undefined;
-        const grounded = await answerAppQuestionFromCode(groundingPrompt || intentPrompt, {
+        const grounded = await answerAppQuestionFromCode(reviewPrompt, {
           workspaceId: scope.userId || 'default',
           userId: scope.userId,
           projectId: scope.projectId,
@@ -2766,7 +2781,7 @@ Rules:
         });
         const understanding = stripCodebaseLocationsForAgentConsole(String(grounded || '').trim());
         if (understanding) {
-          return {
+          const result = {
             ...fallback,
             understanding,
             task: rawPrompt,
@@ -2778,6 +2793,8 @@ Rules:
             missingInfo: [],
             source: 'codebase',
           };
+          setCached(understandingCache, cacheKey, result);
+          return result;
         }
       } catch {
         // Fall through to the concise confirmation generator/fallback below.
