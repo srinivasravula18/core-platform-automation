@@ -20,6 +20,7 @@ import { createJob, createServerJob, tryDispatch } from '../automation/jobServic
 import { isAgentConnected } from '../automation/agentGateway';
 import { recordingForScript } from '../automation/recordingService';
 import { runJobOnServer } from '../automation/serverRunner';
+import { listArtifacts, resolveArtifact, contentTypeFor } from '../automation/artifactService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
@@ -266,6 +267,25 @@ function executionSteps(tests: any[]): any[] {
 // not the run's persisted `steps` snapshot, which can predate this correlation or never have had it
 // (a run synced before this fix, or one whose script reported no case-step ids). Computing it here,
 // at report-view time, fixes the Report for every existing run retroactively, not just future ones.
+// A run's one linked test maps to one Playwright screenshot attachment (screenshot:'on' in
+// serverRunner.ts/runner.ts's config); look it up by title, falling back to the run's only test when
+// present, then read the uploaded artifact bytes and inline them as a data: URI — the report viewer
+// (evidenceImageSource) only renders \evidence\ paths or data: URIs directly, nothing else.
+async function failedStepScreenshot(jobId: string, summary: any, testCaseTitle: string): Promise<string> {
+  const testScreenshots: Record<string, string> = summary?.testScreenshots || {};
+  const filename = testScreenshots[testCaseTitle] || Object.values(testScreenshots)[0];
+  if (!filename) return '';
+  try {
+    const artifacts = await listArtifacts(jobId);
+    const artifact = artifacts.find((a: any) => a.filename === filename);
+    if (!artifact) return '';
+    const resolved = await resolveArtifact(jobId, artifact.id);
+    if (!resolved) return '';
+    const buffer = await fs.promises.readFile(resolved.absPath);
+    return `data:${contentTypeFor(filename)};base64,${buffer.toString('base64')}`;
+  } catch { return ''; }
+}
+
 async function automatedJobSteps(run: any): Promise<any[] | null> {
   const jobId = String(run.triggerMeta?.automationJobId || '');
   const caseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
@@ -274,13 +294,18 @@ async function automatedJobSteps(run: any): Promise<any[] | null> {
   const summary = job?.summary || {};
   const authored = testCase ? normalizeCaseSteps(testCase.steps) : [];
   if (!authored.length) return null;
-  return applyExecutionProgress(authored, summary.executionSteps || [], summary.caseSteps || [])
-    .map((step: any, index: number) => ({
-      step: String(index + 1), action: step.action, expected: step.expected,
-      testCaseId: caseId, testCaseTitle: testCase?.title || '',
-      outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
-      reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
-    }));
+  const progressed = applyExecutionProgress(authored, summary.executionSteps || [], summary.caseSteps || []);
+  // Playwright stops a test at its first failing step, so the test's one screenshot belongs to the
+  // first Failed step in this case — not every failed-looking row (only one is ever real here).
+  const firstFailedIndex = progressed.findIndex((step: any) => step.outcome === 'Failed');
+  const screenshot = firstFailedIndex >= 0 ? await failedStepScreenshot(jobId, summary, testCase?.title || '') : '';
+  return progressed.map((step: any, index: number) => ({
+    step: String(index + 1), action: step.action, expected: step.expected,
+    testCaseId: caseId, testCaseTitle: testCase?.title || '',
+    outcome: step.outcome || 'Not Run', durationMs: Number(step.durationMs) || 0,
+    reason: step.outcome === 'Failed' ? String(step.error || '') : '', actual: step.outcome === 'Failed' ? String(step.error || '') : '',
+    screenshot: index === firstFailedIndex ? screenshot : '',
+  }));
 }
 
 async function createReportForRun(run: any, scope: any) {

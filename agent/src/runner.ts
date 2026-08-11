@@ -224,10 +224,16 @@ export class Runner {
       const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
       const stats = raw.stats || {};
       const tests: any[] = [];
+      // Same per-test screenshot correlation as the server runner (serverRunner.ts parseSummary) —
+      // Playwright attaches one PNG per test result when screenshot:'on', filename matches the
+      // uploaded artifact, so the report can look it up by test title.
+      const testScreenshots: Record<string, string> = {};
       const visit = (suite: any) => {
         for (const spec of suite?.specs || []) for (const test of spec.tests || []) {
           const result = test.results?.[test.results.length - 1] || {};
           tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+          const shot = (result.attachments || []).find((a: any) => a.name === 'screenshot' && a.path);
+          if (shot) testScreenshots[spec.title || test.title || ''] = path.basename(shot.path);
         }
         for (const child of suite?.suites || []) visit(child);
       };
@@ -241,6 +247,7 @@ export class Runner {
         skipped: stats.skipped || 0,
         durationMs: Math.round(stats.duration || 0),
         tests,
+        testScreenshots,
       };
     } catch {
       return {};

@@ -139,15 +139,22 @@ function parseSummary(runDir: string): Record<string, number> {
     const raw = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
     const s = raw.stats || {};
     const tests: any[] = [];
+    // Playwright's `screenshot: 'on'` attaches a PNG to every test result (results.json
+    // `attachments[]`); its filename matches what collectArtifacts/saveArtifact uploaded, so a report
+    // can look it up by test title later — this is the only per-test evidence Playwright captures
+    // (there is no per-step screenshot API from a Reporter, which never sees the live page).
+    const testScreenshots: Record<string, string> = {};
     const visit = (suite: any) => {
       for (const spec of suite?.specs || []) for (const test of spec.tests || []) {
         const result = test.results?.[test.results.length - 1] || {};
         tests.push({ title: spec.title || test.title || 'Playwright test', status: result.status || 'skipped', error: result.error?.message || result.error || '', durationMs: Number(result.duration) || 0 });
+        const shot = (result.attachments || []).find((a: any) => a.name === 'screenshot' && a.path);
+        if (shot) testScreenshots[spec.title || test.title || ''] = path.basename(shot.path);
       }
       for (const child of suite?.suites || []) visit(child);
     };
     visit(raw);
-    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0), tests } as any;
+    return { passed: s.expected || 0, failed: s.unexpected || 0, flaky: s.flaky || 0, skipped: s.skipped || 0, durationMs: Math.round(s.duration || 0), tests, testScreenshots } as any;
   } catch { return {}; }
 }
 
