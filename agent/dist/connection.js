@@ -33,7 +33,7 @@ export class ConnectionManager {
         this.workDir = workDir;
         this.config = config;
         const send = (type, payload) => this.send(type, payload);
-        this.recorder = new Recorder(log, workDir, send);
+        this.recorder = new Recorder(log, workDir, send, config);
         this.runner = new Runner(log, workDir, config, send);
     }
     isConnected() {
@@ -138,7 +138,7 @@ export class ConnectionManager {
             return;
         switch (frame.type) {
             case 'record.start':
-                this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions);
+                this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions, frame.payload.videoJobId);
                 break;
             case 'record.stop':
                 this.recorder.stop(frame.payload.recordingId);

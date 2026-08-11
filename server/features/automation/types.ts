@@ -98,7 +98,7 @@ export interface PublicAgent {
 }
 
 export type JobStatus = 'queued' | 'dispatched' | 'running' | 'awaiting_user' | 'uploading' | 'done' | 'failed' | 'cancelled';
-export type JobTrigger = 'manual' | 'schedule' | 'webhook' | 'ci';
+export type JobTrigger = 'manual' | 'schedule' | 'webhook' | 'ci' | 'live-recording';
 export type ScheduleKind = 'now' | 'once' | 'daily' | 'weekly' | 'monthly' | 'cron' | 'webhook';
 export type ScheduleExecutionMode = 'sequential' | 'parallel';
 export type ScheduleFailurePolicy = 'stop' | 'continue';

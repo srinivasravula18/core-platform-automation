@@ -98,6 +98,8 @@ export default function RecordPlay() {
       setOutputPath(data.outputPath || outputPath);
       setSavedRecordingId(savedData.recording.id);
       setPreviewJobId('');
+      const renamedTitle = String(savedData.recording.metadata?.renamedTitle || '');
+      if (renamedTitle) void showAlert(`A test case titled "${(scriptName.trim() || sessionId)}" already exists — this one was saved as "${renamedTitle}".`);
       if (can('record-play:execute')) {
         const preview = await fetch(`/api/automation/recordings/${encodeURIComponent(savedData.recording.id)}/video-preview`, { method: 'POST' });
         const previewData = await preview.json().catch(() => ({}));
