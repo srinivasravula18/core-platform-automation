@@ -412,13 +412,16 @@ export default function Reports() {
         setSelectedReport((current) => current
           ? nextReports.find((report) => report.id === current.id) || null
           : nextReports[0] || null);
+        // Resolve the deep link OUTSIDE the state updater: React invokes updaters twice in StrictMode,
+        // so latching the ref in there consumed the link on the first pass and returned null on the second.
+        const requested = !deepLinkOpened.current && (requestedReportId || requestedRunId)
+          ? nextReports.find((report) =>
+              (requestedReportId && report.id === requestedReportId) || (requestedRunId && report.runId === requestedRunId))
+          : undefined;
+        if (requested) deepLinkOpened.current = true;
         setDetailReport((current) => {
           // Re-resolve whatever is already open so a refresh keeps its latest data.
           if (current) return nextReports.find((report) => report.id === current.id) || null;
-          if (deepLinkOpened.current || (!requestedReportId && !requestedRunId)) return null;
-          const requested = nextReports.find((report) =>
-            (requestedReportId && report.id === requestedReportId) || (requestedRunId && report.runId === requestedRunId));
-          if (requested) deepLinkOpened.current = true;
           return requested || null;
         });
         setLoading(false);
