@@ -5,7 +5,7 @@ import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
-import { downloadFile, printReportPDF, reportMetrics, reportTypeLabel, toReportHTML, toReportMarkdown, type ReportContext } from '../lib/exportData';
+import { downloadFile, printReportPDF, reportCaseCounts, reportMetrics, reportTypeLabel, toReportHTML, toReportMarkdown, type ReportContext } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -342,14 +342,8 @@ export default function Reports() {
     setLightboxTab(tab);
   };
 
-  const stepCounts = (rep: Report) => {
-    const steps = (rep.steps || []).filter((step) => !/^(not run|untested|paused)$/i.test(String(step.outcome || '')));
-    return {
-      passed: steps.filter((s) => /pass/i.test(String(s.outcome || ''))).length,
-      failed: steps.filter((s) => /fail/i.test(String(s.outcome || ''))).length,
-      total: steps.length,
-    };
-  };
+  // Pass/fail is reported per executed TEST CASE, not per step (a case's steps roll up to one verdict).
+  const stepCounts = (rep: Report) => reportCaseCounts(rep);
 
   const handleShareReport = async (reportId: string) => {
     const url = new URL(window.location.href);
@@ -565,14 +559,15 @@ export default function Reports() {
   });
   const totalReportCases = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.caseCount || 0), 0);
   const totalReportSteps = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.stepCount || 0), 0);
+  // Summary tiles count test cases too, so they agree with the Pass/Fail column and the report detail.
   const passedReportSteps = filteredReports.reduce((total, report) => {
-    const steps = report.steps || [];
-    if (steps.length > 0) return total + steps.filter(step => /pass/i.test(String(step.outcome || ''))).length;
-    return total + (report.status === 'Passed' ? (report.totalExecutions || 0) : 0);
+    const counts = reportCaseCounts(report);
+    if (counts.total > 0) return total + counts.passed;
+    return total + (report.status === 'Passed' ? (reportMetricsById.get(report.id)?.caseCount || 0) : 0);
   }, 0);
   const failedReportSteps = filteredReports.reduce((total, report) => {
-    const steps = report.steps || [];
-    if (steps.length > 0) return total + steps.filter(step => /fail/i.test(String(step.outcome || ''))).length;
+    const counts = reportCaseCounts(report);
+    if (counts.total > 0) return total + counts.failed;
     return total + (report.status === 'Failed' ? 1 : 0);
   }, 0);
   return (
@@ -632,7 +627,7 @@ export default function Reports() {
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
-            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Combined Summary Metric</span>
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Test Case Results</span>
             <span className="block text-xs font-semibold mt-1 flex items-center gap-2">
               <span className="text-emerald-500 font-bold">{passedReportSteps} Passed</span>
               <span className="text-slate-400 font-bold">•</span>

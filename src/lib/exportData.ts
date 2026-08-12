@@ -156,6 +156,37 @@ export function reportTags(report: any, context: ReportContext = {}) {
   return { all: [...all], byCase };
 }
 
+export type ReportCaseOutcome = 'passed' | 'failed' | 'skipped';
+
+/**
+ * One verdict per executed test case, rolled up from its steps (failed > skipped > passed) — reports
+ * store a flat step list, so counting steps overstated the totals. Same rule the detail view groups
+ * by, so the list and the report can't disagree.
+ */
+export function reportCaseOutcomes(report: any): ReportCaseOutcome[] {
+  const byCase = new Map<string, ReportCaseOutcome>();
+  (report?.steps || []).forEach((step: any, index: number) => {
+    const outcome = String(step?.outcome || '');
+    if (/^(not run|untested|paused)$/i.test(outcome)) return;
+    const key = String(step?.testCaseId || step?.testCaseTitle || step?.action || `check-${index}`);
+    const status: ReportCaseOutcome = /fail|block/i.test(outcome) ? 'failed' : /pass/i.test(outcome) ? 'passed' : 'skipped';
+    const current = byCase.get(key);
+    if (current === 'failed') return;
+    if (!current || status === 'failed' || (status === 'skipped' && current === 'passed')) byCase.set(key, status);
+  });
+  return [...byCase.values()];
+}
+
+export function reportCaseCounts(report: any) {
+  const outcomes = reportCaseOutcomes(report);
+  return {
+    total: outcomes.length,
+    passed: outcomes.filter((outcome) => outcome === 'passed').length,
+    failed: outcomes.filter((outcome) => outcome === 'failed').length,
+    skipped: outcomes.filter((outcome) => outcome === 'skipped').length,
+  };
+}
+
 export function reportMetrics(report: any, context: ReportContext = {}) {
   const results = Array.isArray(context.results) ? context.results : [];
   const linkedCases = linkedReportCases(report, context);
