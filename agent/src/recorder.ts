@@ -22,6 +22,11 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const compiledLauncher = path.join(moduleDir, 'codegen.js');
 const codegenLauncher = fs.existsSync(compiledLauncher) ? [compiledLauncher] : ['--import', 'tsx', path.join(moduleDir, 'codegen.ts')];
 
+/** Recorded viewport + video canvas. Identical by construction so video frames carry no black bars. */
+export const RECORD_VIEWPORT = { width: 1280, height: 720 };
+/** How long a graceful stop may take to flush the video before we force-kill the tree. */
+const GRACEFUL_STOP_MS = 6000;
+
 export function codegenArguments(workDir: string, outputPath: string, url: string, browser: string, rawPermissions?: BrowserPermissionSettings, videoDir?: string): string[] {
   const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
   const permissions = normalizeBrowserPermissionSettings(rawPermissions);
@@ -36,6 +41,7 @@ export function codegenArguments(workDir: string, outputPath: string, url: strin
     ...(permissions.fakeMedia ? ['--fake-media'] : []),
     ...(permissions.acceptDialogs ? ['--accept-dialogs'] : []),
     ...(channel ? ['--channel', channel] : []),
+    '--viewport', `${RECORD_VIEWPORT.width},${RECORD_VIEWPORT.height}`,
     ...(videoDir ? ['--video-dir', videoDir] : [])];
 }
 
@@ -55,6 +61,7 @@ interface ActiveRecording {
   videoJobId: string;
   poll: NodeJS.Timeout;
   lastScript: string;
+  paused: boolean;
 }
 
 function deriveStats(script: string): RecorderStats {
@@ -89,8 +96,9 @@ export class Recorder {
     // recording start on Windows and unnecessarily interpreted URL characters in a shell.
     const args = codegenArguments(this.workDir, outputPath, url, browser, browserPermissions, videoDir);
     const engine = args[args.indexOf('--browser') + 1];
+    // stdin is the control channel (pause/resume/stop) — see codegen.ts.
     const child = spawn(process.execPath, args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['pipe', 'ignore', 'pipe'],
     });
     // Stdout stays ignored (the codegen CLI is silent there), but stderr carries the reason for an
     // early exit — a bad target URL, a launch failure — that would otherwise show up as nothing more
@@ -98,7 +106,7 @@ export class Recorder {
     child.stderr?.on('data', (chunk) => this.log.warn({ recordingId }, `codegen: ${String(chunk).trim()}`));
     this.log.info({ recordingId, url, engine }, 'recording started');
 
-    const state: ActiveRecording = { child, outputPath, videoDir, videoJobId, lastScript: '', poll: setInterval(() => this.tick(recordingId), 1000) };
+    const state: ActiveRecording = { child, outputPath, videoDir, videoJobId, lastScript: '', paused: false, poll: setInterval(() => this.tick(recordingId), 1000) };
     this.active.set(recordingId, state);
     this.send('record.status', { recordingId, stats: deriveStats(''), state: 'recording' });
 
@@ -115,34 +123,89 @@ export class Recorder {
     if (script && script !== state.lastScript) {
       state.lastScript = script;
       this.send('record.chunk', { recordingId, script });
-      this.send('record.status', { recordingId, stats: deriveStats(script), state: 'recording' });
+      this.send('record.status', { recordingId, stats: deriveStats(script), state: state.paused ? 'paused' : 'recording' });
     }
+  }
+
+  private command(state: ActiveRecording, command: 'pause' | 'resume' | 'stop'): boolean {
+    if (!state.child.stdin || state.child.stdin.destroyed) return false;
+    try { return state.child.stdin.write(`${command}\n`) || true; }
+    catch { return false; }
+  }
+
+  /**
+   * Real pause: puts Playwright's recorder in mode 'none' so interactions stop producing steps.
+   * Without this the codegen window kept appending actions the user believed were not being recorded.
+   */
+  pause(recordingId: string): void {
+    const state = this.active.get(recordingId);
+    if (!state || state.paused) return;
+    if (!this.command(state, 'pause')) return;
+    state.paused = true;
+    this.log.info({ recordingId }, 'recording paused');
+    this.send('record.status', { recordingId, stats: deriveStats(state.lastScript), state: 'paused' });
+  }
+
+  resume(recordingId: string): void {
+    const state = this.active.get(recordingId);
+    if (!state || !state.paused) return;
+    if (!this.command(state, 'resume')) return;
+    state.paused = false;
+    this.log.info({ recordingId }, 'recording resumed');
+    this.send('record.status', { recordingId, stats: deriveStats(state.lastScript), state: 'recording' });
+  }
+
+  isPaused(recordingId: string): boolean {
+    return this.active.get(recordingId)?.paused === true;
   }
 
   stop(recordingId: string): void {
     const state = this.active.get(recordingId);
     if (!state) return;
-    this.killTree(state.child);
-    // Do not wait for Playwright codegen's process-exit event: on Windows that can lag after the
-    // browser is already closed, leaving the authoring UI stuck on "Generating".
-    this.tick(recordingId);
-    void this.finalize(recordingId);
+    void this.shutdown(recordingId, state);
   }
 
-  /** Newest .webm under dir, however long ffmpeg takes to flush the container after the kill. */
+  /**
+   * Ask codegen to close its context first: a force-kill leaves the .webm container unflushed, which
+   * is why the last recorded action was missing from the preview. Force-kill stays as the bounded
+   * fallback so the authoring UI can never hang on "Generating".
+   */
+  private async shutdown(recordingId: string, state: ActiveRecording): Promise<void> {
+    if (this.command(state, 'stop')) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, GRACEFUL_STOP_MS);
+        state.child.once('exit', () => { clearTimeout(timer); resolve(); });
+      });
+    }
+    if (state.child.exitCode === null && state.child.signalCode === null) this.killTree(state.child);
+    this.tick(recordingId);
+    await this.finalize(recordingId);
+  }
+
+  /** Newest .webm under dir, once its size stops growing — a still-flushing file uploads truncated. */
   private async findVideo(dir: string): Promise<string | null> {
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    const newest = async (): Promise<string | null> => {
       let files: string[] = [];
       try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.webm')); } catch { return null; }
-      if (files.length) {
-        const newest = files
-          .map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-          .sort((a, b) => b.mtime - a.mtime)[0];
-        return path.join(dir, newest.f);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!files.length) return null;
+      return path.join(dir, files
+        .map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)[0].f);
+    };
+    let file: string | null = null;
+    for (let attempt = 0; attempt < 10 && !file; attempt += 1) {
+      file = await newest();
+      if (!file) await new Promise((resolve) => setTimeout(resolve, 300));
     }
-    return null;
+    if (!file) return null;
+    let previous = -1;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const size = fs.statSync(file).size;
+      if (size > 0 && size === previous) return file;
+      previous = size;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return file;
   }
 
   private async finalize(recordingId: string): Promise<void> {

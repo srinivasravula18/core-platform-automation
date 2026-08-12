@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil, Video } from 'lucide-react';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil, Video, Pause, Play } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
+import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { useRemoteAgentFlag, useAgents, useRecordingSession, type BrowserPermissionSettings, type RecordingCaseMeta } from '@/src/lib/useAutomation';
@@ -44,7 +45,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const flag = useRemoteAgentFlag();
   const { agents, loading, refresh } = useAgents();
   const session = useRecordingSession({ onAgentEvent: () => { void refresh(); } });
-  const { phase, recordingId, script, stats, mmss, busy, caseId, empty, videoJobId, renamedTitle } = session;
+  const { phase, recordingId, script, stats, mmss, busy, caseId, empty, videoJobId, renamedTitle, paused } = session;
 
   const [agentId, setAgentId] = useState('');
   const [browser, setBrowser] = useState<string>('chromium');
@@ -314,8 +315,8 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   if (phase === 'recording') {
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-red-400">
-          <Circle className="h-3 w-3 animate-pulse fill-current" /> Recording · {mmss}
+        <div aria-live="polite" className={cn('flex items-center gap-2 text-sm font-semibold', paused ? 'text-amber-500' : 'text-red-400')}>
+          <Circle className={cn('h-3 w-3 fill-current', !paused && 'animate-pulse')} /> {paused ? 'Paused' : 'Recording'} · {mmss}
         </div>
         <div className="grid grid-cols-4 gap-2">
           <StatTile label="Actions" value={stats.actions ?? 0} />
@@ -328,12 +329,22 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
             className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />} {busy ? 'Stopping…' : 'Stop'}
           </button>
+          <button
+            onClick={() => void session.setPaused(!paused).catch((error: any) => showToast(error?.message || 'Could not pause the recording.', { tone: 'error' }))}
+            disabled={busy}
+            aria-pressed={paused}
+            title={paused ? 'Resume capturing steps' : 'Stop capturing steps without ending the recording'}
+            className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+            {paused ? <><Play className="h-4 w-4" /> Resume</> : <><Pause className="h-4 w-4" /> Pause</>}
+          </button>
           <button onClick={discard}
             className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-red-400 hover:border-red-500">
             <Trash2 className="h-4 w-4" /> Discard
           </button>
         </div>
-        <p className="text-xs text-[var(--text-muted)]">Interact with your app in the codegen window on your machine. Steps stream here live.</p>
+        <p className="text-xs text-[var(--text-muted)]">{paused
+          ? 'Paused — the browser stays open and your clicks are not captured. Resume to continue recording.'
+          : 'Interact with your app in the codegen window on your machine. Steps stream here live.'}</p>
         <ScriptPane script={script} placeholder="Waiting for the first recorded action…" />
       </div>
     );

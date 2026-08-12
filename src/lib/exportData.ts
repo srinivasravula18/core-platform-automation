@@ -128,6 +128,34 @@ function linkedReportCases(report: any, context: ReportContext): any[] {
   return [...ids].map((id) => caseById.get(id)).filter(Boolean);
 }
 
+const normalizeTag = (value: unknown) => {
+  const tag = String(value ?? '').trim();
+  return tag ? (tag.startsWith('@') ? tag : `@${tag}`) : '';
+};
+
+/**
+ * Real tags for a report, resolved from the executed test cases (reports never store their own).
+ * `all` is the run-wide tag line; `byCase` is the per-test tag line keyed by case id AND title, so a
+ * step that carries only one of the two still resolves.
+ */
+export function reportTags(report: any, context: ReportContext = {}) {
+  const byCase = new Map<string, string[]>();
+  const all = new Set<string>();
+  const collect = (source: any) => {
+    const tags = Array.from(new Set((Array.isArray(source?.tags) ? source.tags : []).map(normalizeTag).filter(Boolean))) as string[];
+    tags.forEach((tag) => all.add(tag));
+    return tags;
+  };
+  collect(report).forEach((tag) => all.add(tag));
+  for (const testCase of linkedReportCases(report, context)) {
+    const tags = collect(testCase);
+    if (testCase?.id) byCase.set(String(testCase.id), tags);
+    if (testCase?.title) byCase.set(String(testCase.title), tags);
+  }
+  for (const step of report.steps || []) collect(step);
+  return { all: [...all], byCase };
+}
+
 export function reportMetrics(report: any, context: ReportContext = {}) {
   const results = Array.isArray(context.results) ? context.results : [];
   const linkedCases = linkedReportCases(report, context);
@@ -184,7 +212,7 @@ export function toReportHTML(report: any, context: ReportContext = {}): string {
     ...(Array.isArray(run.tags) ? run.tags : []),
     ...(Array.isArray(plan.tags) ? plan.tags : []),
     ...linkedCases.flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []),
-  ].filter(Boolean)));
+  ].map(normalizeTag).filter(Boolean)));
   const featureFor = (result: any, testCase: any) => {
     const suiteIds = Array.from(new Set([
       ...(Array.isArray(testCase?.testSuiteIds) ? testCase.testSuiteIds : []),
@@ -221,10 +249,6 @@ export function toReportHTML(report: any, context: ReportContext = {}): string {
   const failed = allSteps.filter((step: any) => /fail|block/i.test(String(step.outcome || ''))).length;
   const skipped = Math.max(0, allSteps.length - passed - failed);
   const resultFor = (steps: any[]) => steps.some((step) => /fail|block/i.test(String(step.outcome || ''))) ? 'Fail' : steps.every((step) => /skip/i.test(String(step.outcome || ''))) ? 'Skipped' : 'Pass';
-  const templateRows = features.map((feature) => {
-    const steps = cases.filter((testCase: any) => testCase.feature === feature).flatMap((testCase: any) => testCase.steps || []);
-    return `<tr><td>${esc(feature)}</td><td>—</td><td>${esc(resultFor(steps))}</td><td>${esc(duration(steps.reduce((sum: number, step: any) => sum + Number(step.durationMs || 0), 0)))}</td><td>${esc(tags.join(' ') || '—')}</td></tr>`;
-  }).join('');
   const fileCards = cases.map((testCase: any) => `<div class="card"><b>${esc(testCase.steps?.[0]?.file || `${String(testCase.title).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.spec.ts`)}</b><div class="muted">${esc(resultFor(testCase.steps || []))} · ${(testCase.steps || []).length} step(s)</div></div>`).join('');
   const caseSections = features.map((feature) => `<section class="feature"><h2>Feature: ${esc(feature)}</h2>${cases.filter((testCase: any) => testCase.feature === feature).map((testCase: any) => `<section class="case">
     <h3>${esc(testCase.title)}</h3>
@@ -242,7 +266,6 @@ export function toReportHTML(report: any, context: ReportContext = {}): string {
   </style></head><body><div class="report"><header class="header"><h1>QA Automation Report</h1><div class="muted">${esc(report.name)} · Generated ${esc(new Date().toLocaleString())}</div></header><div class="layout"><aside class="sidebar"><div class="status"><b>${allSteps.length}</b><span class="muted">All Tests</span></div><div class="status"><b class="passed">${passed}</b><span class="muted">Passed</span></div><div class="status"><b class="failed">${failed}</b><span class="muted">Failed</span></div><div class="status"><b class="skipped">${skipped}</b><span class="muted">Skipped</span></div></aside><main>
   <table class="meta"><tbody><tr><th>Run date</th><td>${esc(report.date || 'Not recorded')}</td></tr><tr><th>Total execution time</th><td>${esc(report.executionTime || (totalStepsDurationMs ? duration(totalStepsDurationMs) : 'Not recorded'))}</td></tr><tr><th>Environment</th><td>${esc(environment)}</td></tr><tr><th>App URL</th><td>${esc(report.targetUrl || run.targetUrl || 'Not recorded')}</td></tr><tr><th>Type</th><td>${esc(type)}</td></tr><tr><th>Features executed</th><td>${esc(features.join(', ') || 'Not recorded')}</td></tr><tr><th>Tags</th><td>${esc(tags.join(', ') || 'None')}</td></tr></tbody></table>
   <h2 class="section">Overview (Plain Summary)</h2><div class="overview">Out of <b>${allSteps.length} checks</b>, <b>${passed} passed</b>, <b>${failed} failed</b>, and <b>${skipped} were skipped</b>.</div>
-  <h2 class="section">Templates executed this run</h2><table><thead><tr><th>Template</th><th>AI / Human</th><th>Result</th><th>Time</th><th>Tag</th></tr></thead><tbody>${templateRows || '<tr><td colspan="5">No templates recorded.</td></tr>'}</tbody></table>
   <h2 class="section">Files Executed</h2><div class="summary-grid">${fileCards || '<div class="card">No files recorded.</div>'}</div>
   <h2 class="section">Execution summary</h2><div class="summary-grid"><div class="card"><span class="label">Report ID</span>${esc(report.id || 'Not recorded')}</div><div class="card"><span class="label">Run ID</span>${esc(report.runId || run.id || 'Not recorded')}</div><div class="card"><span class="label">Executed cases / steps</span>${esc(metrics.caseCount)} / ${esc(metrics.stepCount)}</div></div>
   <h2 class="section">Test Results</h2>${caseSections || '<p>No execution steps were recorded.</p>'}</main></div><div class="footer muted">Generated by QA Automation · Report ${esc(report.id || '')}</div></div></body></html>`;
@@ -257,7 +280,7 @@ export function toReportMarkdown(report: any, context: ReportContext = {}): stri
   const md = (value: unknown) => String(value ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
   const rows = steps.map((step: any, index: number) => `| ${index + 1} | ${md(step.testCaseTitle || report.name)} | ${md(step.action)} | ${md(step.expected || '—')} | ${md(step.actual || step.reason || '—')} | ${md(step.outcome || 'Not Run')} |`).join('\n');
   const files = [...new Set(steps.map((step: any) => step.file).filter(Boolean))];
-  return `# QA Automation Report\n\n## ${md(report.name)}\n\n| Run metadata | Value |\n| --- | --- |\n| Report ID | ${md(report.id || 'Not recorded')} |\n| Run ID | ${md(report.runId || run.id || 'Not recorded')} |\n| Run date | ${md(report.date || 'Not recorded')} |\n| Total execution time | ${md(report.executionTime || 'Not recorded')} |\n| App URL | ${md(report.targetUrl || run.targetUrl || 'Not recorded')} |\n\n## Overview (Plain Summary)\n\nOut of **${steps.length} checks**, **${passed} passed**, **${failed} failed**, and **${Math.max(0, steps.length - passed - failed)} were skipped**.\n\n## Templates executed this run\n\n| Template | Result |\n| --- | --- |\n| ${md(report.suiteName || report.planName || 'Default')} | ${failed ? 'Fail' : passed ? 'Pass' : 'Skipped'} |\n\n## Files Executed\n\n${files.length ? files.map((file) => `- \`${md(file)}\``).join('\n') : '- No files recorded.'}\n\n## Test Results\n\n| # | Test case | Test step | Expected result | Actual result | Outcome |\n| ---: | --- | --- | --- | --- | --- |\n${rows || '| — | No execution steps were recorded | — | — | — | — |'}\n`;
+  return `# QA Automation Report\n\n## ${md(report.name)}\n\n| Run metadata | Value |\n| --- | --- |\n| Report ID | ${md(report.id || 'Not recorded')} |\n| Run ID | ${md(report.runId || run.id || 'Not recorded')} |\n| Run date | ${md(report.date || 'Not recorded')} |\n| Total execution time | ${md(report.executionTime || 'Not recorded')} |\n| App URL | ${md(report.targetUrl || run.targetUrl || 'Not recorded')} |\n\n## Overview (Plain Summary)\n\nOut of **${steps.length} checks**, **${passed} passed**, **${failed} failed**, and **${Math.max(0, steps.length - passed - failed)} were skipped**.\n\n## Files Executed\n\n${files.length ? files.map((file) => `- \`${md(file)}\``).join('\n') : '- No files recorded.'}\n\n## Test Results\n\n| # | Test case | Test step | Expected result | Actual result | Outcome |\n| ---: | --- | --- | --- | --- | --- |\n${rows || '| — | No execution steps were recorded | — | — | — | — |'}\n`;
 }
 
 export function printReportPDF(report: any, context: ReportContext = {}) {

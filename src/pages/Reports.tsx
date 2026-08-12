@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity, Pencil, Check, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
@@ -328,6 +328,12 @@ export default function Reports() {
   const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>(null);
   // The report opened for full step-by-step detail (#9 — list is a summary; click opens detail).
   const [detailReport, setDetailReport] = useState<Report | null>(null);
+  // A ?reportId/?runId deep link opens the detail ONCE. The params outlive the modal, so without this
+  // latch the 10s refresh below re-opened the report every tick after the user closed it.
+  const deepLinkOpened = useRef(false);
+  const [renamingReport, setRenamingReport] = useState(false);
+  const [reportNameDraft, setReportNameDraft] = useState('');
+  const [savingReportName, setSavingReportName] = useState(false);
   const galleryItems = useMemo(() => evidenceGalleryItems(detailReport), [detailReport]);
   const activeGalleryIndex = lightboxKey ? galleryItems.findIndex((item) => item.key === lightboxKey) : -1;
   const activeGalleryItem = activeGalleryIndex >= 0 ? galleryItems[activeGalleryIndex] : null;
@@ -351,6 +357,27 @@ export default function Reports() {
     url.hash = '';
     try { await navigator.clipboard?.writeText(url.toString()); await showConfirm('Report link copied to clipboard.'); }
     catch { /* clipboard unavailable */ }
+  };
+
+  // Only the name is editable — everything else in a report is execution evidence.
+  const saveReportName = async () => {
+    const name = reportNameDraft.trim();
+    if (!detailReport || savingReportName) return;
+    if (!name || name === detailReport.name) { setRenamingReport(false); return; }
+    setSavingReportName(true);
+    try {
+      const response = await fetch(`/api/reports/${encodeURIComponent(detailReport.id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not rename this report.');
+      setDetailReport((current) => current ? { ...current, name } : current);
+      setReports((current) => current.map((report) => report.id === detailReport.id ? { ...report, name } : report));
+      setRenamingReport(false);
+    } catch (error: any) {
+      await showConfirm(error?.message || 'Could not rename this report.');
+    } finally {
+      setSavingReportName(false);
+    }
   };
 
   const reportExportContext = async (report: Report): Promise<ReportContext> => {
@@ -386,8 +413,13 @@ export default function Reports() {
           ? nextReports.find((report) => report.id === current.id) || null
           : nextReports[0] || null);
         setDetailReport((current) => {
-          const requested = nextReports.find((report) => report.id === requestedReportId || report.runId === requestedRunId);
-          return requested || (current ? nextReports.find((report) => report.id === current.id) || null : null);
+          // Re-resolve whatever is already open so a refresh keeps its latest data.
+          if (current) return nextReports.find((report) => report.id === current.id) || null;
+          if (deepLinkOpened.current || (!requestedReportId && !requestedRunId)) return null;
+          const requested = nextReports.find((report) =>
+            (requestedReportId && report.id === requestedReportId) || (requestedRunId && report.runId === requestedRunId));
+          if (requested) deepLinkOpened.current = true;
+          return requested || null;
         });
         setLoading(false);
       })
@@ -708,7 +740,33 @@ export default function Reports() {
       </div>
 
       {/* Report detail — full step-by-step + evidence + Download/Share (the list is a summary now). */}
-      <Modal isOpen={!!detailReport} onClose={() => setDetailReport(null)} title={detailReport?.name || 'Report'} size="report"
+      <Modal isOpen={!!detailReport} onClose={() => { setDetailReport(null); setRenamingReport(false); }} size="report"
+        title={renamingReport ? (
+          <span className="flex items-center gap-2">
+            <label htmlFor="report-name" className="sr-only">Report name</label>
+            <input
+              id="report-name"
+              autoFocus
+              value={reportNameDraft}
+              onChange={(event) => setReportNameDraft(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') void saveReportName(); if (event.key === 'Escape') setRenamingReport(false); }}
+              className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-base font-semibold text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+            <button type="button" onClick={() => void saveReportName()} disabled={savingReportName || !reportNameDraft.trim()} aria-label="Save report name" title="Save report name" className="shrink-0 rounded-md p-1.5 text-emerald-500 hover:bg-emerald-500/10 disabled:opacity-50"><Check className="h-4 w-4" /></button>
+            <button type="button" onClick={() => setRenamingReport(false)} aria-label="Cancel rename" title="Cancel rename" className="shrink-0 rounded-md p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)]"><X className="h-4 w-4" /></button>
+          </span>
+        ) : (
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate">{detailReport?.name || 'Report'}</span>
+            <button
+              type="button"
+              onClick={() => { setReportNameDraft(detailReport?.name || ''); setRenamingReport(true); }}
+              aria-label="Rename report"
+              title="Rename report"
+              className="shrink-0 rounded-md p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--accent)]"
+            ><Pencil className="h-4 w-4" /></button>
+          </span>
+        )}
         footer={
           <div className="flex w-full items-center justify-between gap-3">
             <div className="text-xs text-[var(--text-muted)]">Requested By {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
@@ -748,6 +806,7 @@ export default function Reports() {
           return <DetailedReportView
             report={detailReport}
             jobId={String(runs.find((run: any) => String(run.id) === String(detailReport.runId))?.triggerMeta?.automationJobId || '')}
+            context={{ run: runById.get(String(detailReport.runId || '')), cases, suites }}
             evidenceFor={(step, index) => stepEvidence(detailReport, step as Step, index)}
             onViewEvidence={selectScreenshot}
           />;

@@ -279,9 +279,26 @@ export default function TestSuites() {
     setIsStartingRun(true);
     try {
       if (mode === 'manual') await startSelectedRun({ suiteIds: runSuiteIds, caseIds, mode }, navigate);
-      else for (const caseId of caseIds) {
-        const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
-        const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+      else {
+        // Each case starts independently: one case without a recorded script must not abort the rest
+        // of the suite, which previously left the remaining cases silently unstarted.
+        const failures: string[] = [];
+        let started = 0;
+        for (const caseId of caseIds) {
+          try {
+            const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+            started += 1;
+          } catch (error: any) {
+            const title = cases.find((testCase: any) => String(testCase.id) === caseId)?.title || caseId;
+            failures.push(`${title}: ${error?.message || 'Could not start automated run.'}`);
+          }
+        }
+        if (!started) throw new Error(failures.join('\n') || 'No test case in this suite could be started.');
+        // Headed runs execute one at a time per agent, so the rest queue behind the first.
+        if (failures.length) void showAlert(`Started ${started} of ${caseIds.length} automated cases.\n\nNot started:\n${failures.join('\n')}`);
+        navigate('/runs');
       }
       setRunModalOpen(false); bulk.clearSelection();
     } catch (error: any) { void showAlert(error.message || 'Failed to start selected test suite run.'); }

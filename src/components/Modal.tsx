@@ -4,7 +4,8 @@ import { X } from 'lucide-react';
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
-  title: string;
+  /** ReactNode so a header can carry inline actions (e.g. rename) beside the title. */
+  title: ReactNode;
   children: ReactNode;
   size?: 'md' | 'xl' | 'report';
   /**
@@ -23,8 +24,8 @@ export function Modal({ isOpen, onClose, title, children, size = 'xl', footer }:
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
       <div className={`bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-xl w-full max-w-[95vw] ${widthClass} max-h-[90dvh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] flex-shrink-0">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
-          <button onClick={onClose} className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors">
+          <h2 className="min-w-0 flex-1 text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
+          <button onClick={onClose} aria-label="Close dialog" className="ml-3 shrink-0 p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>

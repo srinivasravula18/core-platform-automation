@@ -71,9 +71,10 @@ export async function startScheduleExecution(schedule: any, scheduledFor: string
   const configured = await AutomationScheduleItems.listForSchedule(schedule.id);
   const items = configured.length ? configured : [{ id: `legacy:${schedule.id}`, stageNo: 1, position: 1, runnableType: 'recording', runnableId: schedule.recordingId, recordingId: schedule.recordingId, enabled: true }];
   for (const item of items.filter((entry: any) => entry.enabled !== false)) {
-    const recording = item.runnableType === 'script'
-      ? null
-      : await Recordings.get(item.recordingId);
+    // Load the backing recording for BOTH runnable kinds: a script item is resolved to a recording at
+    // schedule time, and that recording carries the test-case link. Skipping it for scripts left the
+    // scheduled Test Run with no caseIds, which is why Test Runs showed no executed cases.
+    const recording = item.recordingId ? await Recordings.get(item.recordingId) : null;
     const script = item.runnableType === 'script'
       ? await Scripts.get(item.runnableId)
       : null;

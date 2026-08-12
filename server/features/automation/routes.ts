@@ -40,6 +40,7 @@ import {
   createRecording,
   finalizeRecording,
   startRecording,
+  setRecordingPaused,
   stopRecording,
   updateRecording,
   removeRecording,
@@ -413,6 +414,14 @@ export function registerAutomationRoutes(app: Express) {
     const agentId = String(req.body?.agentId || (rec as any).agentId || '');
     if (!agentId) return res.status(400).json({ error: 'agentId is required.' });
     const out = await startRecording(req.params.id, agentId);
+    if ('error' in out) return res.status(out.status).json({ error: out.error });
+    res.json(out);
+  });
+
+  app.post('/api/automation/recordings/:id/pause', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const out = await setRecordingPaused(req.params.id, req.body?.paused !== false);
     if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out);
   });

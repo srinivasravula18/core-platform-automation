@@ -119,6 +119,8 @@ export type AgentFrameType =
   | 'error'
   // cloud → agent
   | 'record.start'
+  | 'record.pause'
+  | 'record.resume'
   | 'record.stop'
   | 'job.dispatch'
   | 'pause.resume'

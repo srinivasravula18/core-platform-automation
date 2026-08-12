@@ -31,6 +31,8 @@ export interface Job {
   id: string; recordingId: string; agentId: string; trigger: string; status: string; scheduleId?: string | null;
   queuedAt: string; startedAt: string | null; finishedAt: string | null; exitCode: number | null;
   summary: Record<string, any>; error: string;
+  /** Groups every job produced by one firing of a multi-test schedule. */
+  scheduleExecutionId?: string;
 }
 
 /** Jobs still in flight — used to find the run currently backing a schedule/recording. */
@@ -205,7 +207,9 @@ export type RecordingPhase = 'setup' | 'recording' | 'finalizing' | 'summary';
 export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   phase: RecordingPhase; recordingId: string; script: string; stats: Record<string, number>;
   elapsed: number; mmss: string; busy: boolean; caseId: string; empty: boolean; videoJobId: string; renamedTitle: string;
+  paused: boolean;
   start: (input: StartRecordingInput) => Promise<string>; stop: () => Promise<void>;
+  setPaused: (paused: boolean) => Promise<void>;
   discard: () => Promise<void>; reset: () => void;
 } {
   const [phase, setPhase] = useState<RecordingPhase>('setup');
@@ -223,16 +227,22 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   const [renamedTitle, setRenamedTitle] = useState('');
   // True when the finished recording captured no interactions, so no test case was created.
   const [empty, setEmpty] = useState(false);
+  // Mirrors the agent's recorder mode — the elapsed clock and step capture both stop while paused.
+  const [paused, setPausedState] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
-  const startTimer = () => { setElapsed(0); timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000); };
+  const runTimer = () => { timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000); };
+  const startTimer = () => { setElapsed(0); runTimer(); };
   useEffect(() => () => { stopTimer(); }, []);
 
   useAgentEvents((evt) => {
     if (evt.scopeType === 'agent') { opts?.onAgentEvent?.(); return; }
     if (evt.scopeId !== recordingId) return;
     if (evt.type === 'recording.chunk' && typeof evt.data.script === 'string') setScript(evt.data.script);
-    if (evt.type === 'recording.status' && evt.data.stats) setStats((s) => ({ ...s, ...evt.data.stats }));
+    if (evt.type === 'recording.status') {
+      if (evt.data.stats) setStats((s) => ({ ...s, ...evt.data.stats }));
+      if (typeof evt.data.paused === 'boolean') setPausedState(evt.data.paused);
+    }
     if (evt.type === 'recording.done') {
       const rec = evt.data.recording as Recording | undefined;
       if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
@@ -277,7 +287,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
       });
       const startedBody = await started.json().catch(() => ({}));
       if (!started.ok) throw new Error(startedBody?.error || 'start failed');
-      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setRenamedTitle(''); setVideoJobId(String(startedBody?.videoJobId || '')); setPhase('recording'); startTimer();
+      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setRenamedTitle(''); setPausedState(false); setVideoJobId(String(startedBody?.videoJobId || '')); setPhase('recording'); startTimer();
       return id;
     } finally { setBusy(false); }
   };
@@ -292,14 +302,27 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     catch { /* ignore */ } finally { setBusy(false); }
   };
 
+  const setPaused = async (next: boolean): Promise<void> => {
+    if (!recordingId || busy || next === paused) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/automation/recordings/${recordingId}/pause`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: next }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not pause the recording.');
+      setPausedState(next);
+      if (next) stopTimer(); else { stopTimer(); runTimer(); }
+    } finally { setBusy(false); }
+  };
+
   const discard = async (): Promise<void> => {
     stopTimer();
     if (recordingId) await fetch(`/api/automation/recordings/${recordingId}`, { method: 'DELETE' }).catch(() => {});
-    setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setVideoJobId(''); setRenamedTitle(''); setPhase('setup');
+    setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setVideoJobId(''); setRenamedTitle(''); setPausedState(false); setPhase('setup');
   };
 
-  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setVideoJobId(''); setRenamedTitle(''); };
+  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setVideoJobId(''); setRenamedTitle(''); setPausedState(false); };
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
-  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, videoJobId, renamedTitle, start, stop, discard, reset };
+  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, videoJobId, renamedTitle, paused, start, stop, setPaused, discard, reset };
 }

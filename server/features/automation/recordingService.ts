@@ -303,6 +303,19 @@ export async function recordingForScript(scriptId: string, scope: Scope) {
   return saved;
 }
 
+/** Pause/resume the live codegen recorder so interactions stop producing steps until resumed. */
+export async function setRecordingPaused(recordingId: string, paused: boolean) {
+  const rec = await Recordings.get(recordingId);
+  if (!rec) return { error: 'Recording not found.', status: 404 } as const;
+  if (rec.status !== 'recording') return { error: 'This recording is not running.', status: 409 } as const;
+  if (!rec.agentId || !isAgentConnected(rec.agentId)) return { error: 'Target agent is not connected.', status: 409 } as const;
+  dispatchToAgent(rec.agentId, { type: paused ? 'record.pause' : 'record.resume', payload: { recordingId } });
+  await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, paused } });
+  persist(paused ? 'recording paused' : 'recording resumed');
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.status', ownerId: rec.ownerId, data: { paused } });
+  return { ok: true, paused } as const;
+}
+
 export async function stopRecording(recordingId: string) {
   const rec = await Recordings.get(recordingId);
   if (!rec) return { error: 'Recording not found.', status: 404 };
@@ -428,12 +441,14 @@ export async function removeRecording(id: string) {
 /* ---------- agent frame handlers (registered once at module load) ---------- */
 
 onAgentFrame('record.status', async (_agentId, frame: AgentFrame) => {
-  const { recordingId, stats } = frame.payload || {};
+  const { recordingId, stats, state } = frame.payload || {};
   if (!recordingId) return;
   const rec = await Recordings.get(recordingId);
   if (!rec) return;
-  await Recordings.upsert({ ...rec, stats: { ...rec.stats, ...(stats || {}) } });
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.status', ownerId: rec.ownerId, data: { stats } });
+  // The agent is authoritative on paused: it knows whether codegen actually accepted the toggle.
+  const paused = state ? state === 'paused' : Boolean(rec.metadata?.paused);
+  await Recordings.upsert({ ...rec, stats: { ...rec.stats, ...(stats || {}) }, metadata: { ...rec.metadata, paused } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.status', ownerId: rec.ownerId, data: { stats, paused } });
 });
 
 onAgentFrame('record.chunk', async (_agentId, frame: AgentFrame) => {

@@ -132,6 +132,12 @@ export class ConnectionManager {
       case 'record.start':
         this.recorder.start(frame.payload.recordingId, frame.payload.url, frame.payload.browser, frame.payload.browserPermissions, frame.payload.videoJobId);
         break;
+      case 'record.pause':
+        this.recorder.pause(frame.payload.recordingId);
+        break;
+      case 'record.resume':
+        this.recorder.resume(frame.payload.recordingId);
+        break;
       case 'record.stop':
         this.recorder.stop(frame.payload.recordingId);
         break;

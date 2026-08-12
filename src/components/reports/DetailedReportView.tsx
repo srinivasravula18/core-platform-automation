@@ -1,6 +1,7 @@
 import { Check, ChevronRight, CircleMinus, Copy, FileText, Image, MapPin, Video, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { reportTags, type ReportContext } from '@/src/lib/exportData';
 import './DetailedReportView.css';
 
 type Outcome = 'passed' | 'failed' | 'skipped';
@@ -42,8 +43,8 @@ export interface DetailedReportData {
 interface TestGroup {
   key: string;
   title: string;
+  caseId: string;
   file: string;
-  template: string;
   steps: Array<DetailedReportStep & { sourceIndex: number }>;
   outcome: Outcome;
   durationMs: number;
@@ -61,8 +62,8 @@ function groupTests(report: DetailedReportData): TestGroup[] {
     const current = groups.get(key) || {
       key,
       title,
+      caseId: String(step.testCaseId || ''),
       file: step.file || `${slug(title)}.spec.ts`,
-      template: step.template || report.suiteName || report.planName || 'Default',
       steps: [],
       outcome: 'passed' as Outcome,
       durationMs: 0,
@@ -77,9 +78,11 @@ function groupTests(report: DetailedReportData): TestGroup[] {
   return [...groups.values()];
 }
 
-export function DetailedReportView({ report, jobId, evidenceFor, onViewEvidence }: {
+export function DetailedReportView({ report, jobId, context, evidenceFor, onViewEvidence }: {
   report: DetailedReportData;
   jobId?: string;
+  /** Linked run/cases/results — the only source of a report's real tags. */
+  context?: ReportContext;
   evidenceFor: (step: DetailedReportStep, index: number) => string;
   onViewEvidence: (key: string) => void;
 }) {
@@ -93,12 +96,10 @@ export function DetailedReportView({ report, jobId, evidenceFor, onViewEvidence 
     skipped: groups.filter((group) => group.outcome === 'skipped').length,
   };
   const visible = filter === 'all' ? groups : groups.filter((group) => group.outcome === filter);
-  const tags = [...new Set([...(report.tags || []), ...groups.flatMap((group) => group.steps.flatMap((step) => step.tags || []))])];
+  // Reports never store tags of their own — resolve them from the executed test cases.
+  const resolvedTags = useMemo(() => reportTags(report, context || {}), [report, context]);
+  const tagsFor = (group: TestGroup) => resolvedTags.byCase.get(group.caseId) || resolvedTags.byCase.get(group.title) || [];
   const features = [...new Set([report.planName, report.suiteName, ...groups.map((group) => group.title)].filter(Boolean))] as string[];
-  const templates = [...new Set(groups.map((group) => group.template))].map((name) => {
-    const related = groups.filter((group) => group.template === name);
-    return { name, outcome: related.some((group) => group.outcome === 'failed') ? 'failed' as Outcome : related.every((group) => group.outcome === 'skipped') ? 'skipped' as Outcome : 'passed' as Outcome, durationMs: related.reduce((sum, group) => sum + group.durationMs, 0), tags: [...new Set(related.flatMap((group) => group.steps.flatMap((step) => step.tags || [])))] };
-  });
   const files = [...new Set(groups.map((group) => group.file))].map((name) => {
     const related = groups.filter((group) => group.file === name);
     return { name, passed: related.filter((group) => group.outcome === 'passed').length, failed: related.filter((group) => group.outcome === 'failed').length, skipped: related.filter((group) => group.outcome === 'skipped').length };
@@ -124,18 +125,15 @@ export function DetailedReportView({ report, jobId, evidenceFor, onViewEvidence 
           <tr><th>App URL</th><td>{report.targetUrl ? <a href={report.targetUrl} target="_blank" rel="noreferrer">{report.targetUrl}</a> : '—'}</td></tr>
           <tr><th>Browser</th><td>{browser}</td></tr>
           <tr><th>Features executed</th><td>{features.length ? <ul>{features.map((feature) => <li key={feature}>{feature}</li>)}</ul> : '—'}</td></tr>
-          <tr><th>Tags</th><td><div className="qa-tags">{tags.length ? tags.map((tag) => <span key={tag}>{tag.startsWith('@') ? tag : `@${tag}`}</span>) : '—'}</div></td></tr>
-          <tr><th>Taglines</th><td>{groups.length ? <ul>{groups.map((group) => <li key={group.key}>{group.steps[0]?.expected || group.title}</li>)}</ul> : '—'}</td></tr>
+          <tr><th>Tags</th><td><div className="qa-tags">{resolvedTags.all.length ? resolvedTags.all.map((tag) => <span key={tag}>{tag}</span>) : '—'}</div></td></tr>
+          {/* Tagline = the tag line of each executed test, so per-test tagging is auditable next to the run-wide set. */}
+          <tr><th>Taglines</th><td>{groups.length ? <ul className="qa-taglines">{groups.map((group) => <li key={group.key}><span className="qa-tagline-test">{group.title}</span><span className="qa-tags">{tagsFor(group).length ? tagsFor(group).map((tag) => <span key={tag}>{tag}</span>) : <em>untagged</em>}</span></li>)}</ul> : '—'}</td></tr>
         </tbody></table>
 
         <div className="qa-result-bar" aria-label="Execution outcome distribution"><span className="pass" style={{ width: percentage(counts.passed) }} /><span className="fail" style={{ width: percentage(counts.failed) }} /><span className="skip" style={{ width: percentage(counts.skipped) }} /></div>
 
         <h2 className="qa-section-title">Overview (Plain Summary)</h2>
         <div className="qa-plain">Out of <b>{counts.all} checks</b> run against {report.targetUrl ? <b>{report.targetUrl}</b> : 'this application'}, <b>{counts.passed} worked correctly</b>{counts.failed ? <>, <b>{counts.failed} failed</b></> : ''}{counts.skipped ? <>, and <b>{counts.skipped} were skipped</b></> : ''}.</div>
-
-        <h2 className="qa-section-title">Templates executed this run</h2>
-        <p className="qa-note">Template-level execution, origin, result, time, and tags for this run.</p>
-        <div className="qa-table-scroll"><table className="qa-template-table"><thead><tr><th>Template</th><th>AI / Human</th><th>Result</th><th>Time</th><th>Tag</th></tr></thead><tbody>{templates.map((template) => <tr key={template.name}><td><b>{template.name}</b></td><td><span className="qa-origin-pill">—</span></td><td><span className={`qa-result-text ${template.outcome}`}>{template.outcome === 'passed' ? 'Pass' : template.outcome === 'failed' ? 'Fail' : 'Skipped'}</span></td><td>{duration(template.durationMs)}</td><td className="qa-template-tags">{template.tags.map((tag) => tag.startsWith('@') ? tag : `@${tag}`).join(' ') || '—'}</td></tr>)}</tbody></table></div>
 
         {(failedGroups.length > 0 || skippedGroups.length > 0) && <>
           <h2 className="qa-section-title">Rerun commands</h2>
@@ -148,8 +146,8 @@ export function DetailedReportView({ report, jobId, evidenceFor, onViewEvidence 
 
         <h2 className="qa-section-title">Test Results</h2>
         {!visible.length && <div className="qa-filter-empty">No tests match this filter.</div>}
-        {visible.map((group) => <details className="qa-test" key={group.key}><summary className="qa-test-head"><span className={`qa-status-dot ${group.outcome}`} /><div className="qa-test-title"><b>{group.title}</b>{group.template && <small>Template executed: <strong>{group.template}</strong></small>}</div><code>{group.file}</code><time>{duration(group.durationMs)}</time><ChevronRight className="qa-chevron" size={15} /></summary><div className="qa-test-body">
-          <div className="qa-plain"><b>Template:</b> {group.template}<br />{group.steps[0]?.expected || group.title}</div>
+        {visible.map((group) => <details className="qa-test" key={group.key}><summary className="qa-test-head"><span className={`qa-status-dot ${group.outcome}`} /><div className="qa-test-title"><b>{group.title}</b>{tagsFor(group).length > 0 && <small className="qa-tags">{tagsFor(group).map((tag) => <span key={tag}>{tag}</span>)}</small>}</div><code>{group.file}</code><time>{duration(group.durationMs)}</time><ChevronRight className="qa-chevron" size={15} /></summary><div className="qa-test-body">
+          <div className="qa-plain">{group.steps[0]?.expected || group.title}</div>
           <div className="qa-steps">{group.steps.map((step, index) => { const status = outcomeOf(step.outcome); const evidence = evidenceFor(step, step.sourceIndex); return <div className="qa-step" key={`${step.step || index}-${step.action}`}><span className={`qa-step-icon ${status}`}>{status === 'passed' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : <CircleMinus size={12} />}</span><div className="qa-step-text"><b>{step.action || `Step ${index + 1}`}</b><code>{step.action || '—'}</code><p><strong>Expected:</strong> {step.expected || '—'}</p>{(step.actual || step.reason) && <p className={status === 'failed' ? 'qa-actual' : ''}><strong>Actual:</strong> {step.actual || step.reason}</p>}{status === 'failed' && <><div className="qa-fail-location"><MapPin size={18} /><div><b>Failure location</b><code>{group.file} · step {step.step || index + 1}</code></div></div><div className="qa-compare"><div className="expected"><b>Expected</b><p>{step.expected || '—'}</p></div><div className="actual"><b>Actual</b><p>{step.actual || step.reason || report.failureReason || 'No actual result was recorded.'}</p></div></div>{(step.reason || report.failureReason) && <pre className="qa-error-box">{step.reason || report.failureReason}</pre>}</>}{evidence && <button type="button" className="qa-media-tag" onClick={() => onViewEvidence(evidence)}><Image size={14} />screenshot</button>}</div><span className={`qa-step-status ${status}`}>{status}</span></div>; })}</div>
           <div className="qa-media-row">{group.steps.some((step) => evidenceFor(step, step.sourceIndex)) && <span className="qa-media-tag"><Image size={14} />screenshots</span>}{jobId && <button type="button" className="qa-media-tag" aria-expanded={showVideo} onClick={() => setShowVideo((visible) => !visible)}><Video size={14} />video.webm</button>}</div>
           {showVideo && jobId && <AutomationRunArtifacts jobId={jobId} videoOnly />}

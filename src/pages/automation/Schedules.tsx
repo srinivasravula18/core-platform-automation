@@ -141,6 +141,30 @@ function buildCron(tab: ScheduleTab, time: string, weekdays: number[], monthDay:
   return `${m} ${h} ${monthDay} * *`;
 }
 
+/**
+ * Inverse of buildCron. Everything non-one-off is stored as kind 'cron', so without this an existing
+ * schedule reopened on the raw Cron tab and its Daily/Weekly/Monthly time silently reverted to the
+ * 02:00 / Monday / 1st form defaults — and saving then overwrote the real schedule with them.
+ */
+function parseCron(cron: string): { tab: ScheduleTab; time: string; weekdays: number[]; monthDay: number } | null {
+  const parts = String(cron || '').trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+  const m = Number(minute);
+  const h = Number(hour);
+  if (!Number.isInteger(m) || !Number.isInteger(h) || m < 0 || m > 59 || h < 0 || h > 23 || month !== '*') return null;
+  const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  if (dayOfMonth === '*' && dayOfWeek === '*') return { tab: 'daily', time, weekdays: [1], monthDay: 1 };
+  if (dayOfMonth === '*') {
+    const weekdays = dayOfWeek.split(',').map(Number);
+    if (!weekdays.length || weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) return null;
+    return { tab: 'weekly', time, weekdays, monthDay: 1 };
+  }
+  const monthDay = Number(dayOfMonth);
+  if (dayOfWeek !== '*' || !Number.isInteger(monthDay) || monthDay < 1 || monthDay > 31) return null;
+  return { tab: 'monthly', time, weekdays: [1], monthDay };
+}
+
 /** Plain-English echo of the current selection, so nobody has to read the cron to trust it. */
 function describeSchedule(tab: ScheduleTab, time: string, weekdays: number[], monthDay: number, tzLabel: string): string {
   if (tab === 'daily') return `Everyday at ${time} ${tzLabel}`;
@@ -199,6 +223,29 @@ export default function Schedules() {
     return map;
   }, [jobs]);
 
+  // EVERY job of the schedule's most recent fire. A schedule with N selected tests produces N jobs;
+  // keying only the newest one made a 2-test schedule look like it had executed a single test.
+  const lastExecutionByScheduleId = useMemo(() => {
+    const map = new Map<string, Job[]>();
+    for (const [scheduleId, newest] of lastJobByScheduleId) {
+      const executionId = newest.scheduleExecutionId || '';
+      map.set(scheduleId, jobs.filter((job) => job.scheduleId === scheduleId && (executionId
+        ? job.scheduleExecutionId === executionId
+        : job.id === newest.id)));
+    }
+    return map;
+  }, [jobs, lastJobByScheduleId]);
+
+  const executionSummary = (scheduleId: string) => {
+    const batch = lastExecutionByScheduleId.get(scheduleId) || [];
+    return {
+      total: batch.length,
+      running: batch.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+      passed: batch.filter((job) => job.status === 'done').length,
+      failed: batch.filter((job) => job.status === 'failed').length,
+    };
+  };
+
   // SSE pushes job.progress/job.done frames faster than the 8s poll — refresh jobs on any of them.
   useAgentEvents((event) => {
     if (event.scopeType === 'job') void refreshJobs();
@@ -219,7 +266,10 @@ export default function Schedules() {
 
   const openSchedule = async (schedule: Schedule) => {
     const job = lastJobByScheduleId.get(schedule.id);
-    const terminal = job && (Boolean(job.finishedAt) || ['done', 'failed', 'cancelled'].includes(job.status));
+    // Only jump straight to a run when the fire produced exactly one; otherwise the other tests of
+    // that execution would be unreachable from here.
+    const single = (lastExecutionByScheduleId.get(schedule.id) || []).length <= 1;
+    const terminal = single && job && (Boolean(job.finishedAt) || ['done', 'failed', 'cancelled'].includes(job.status));
     if (terminal) {
       try {
         const runs = await fetch('/api/runs').then((response) => response.json());
@@ -285,6 +335,7 @@ export default function Schedules() {
               {sortedSchedules.map((s) => {
                 const activeJob = activeJobByScheduleId.get(s.id) || null;
                 const lastJob = lastJobByScheduleId.get(s.id) || null;
+                const batch = executionSummary(s.id);
                 const scheduledItems = itemsFor(s);
                 const scheduledNames = scheduledItems.map((item) => nameFor(item.recordingId));
                 return (
@@ -303,15 +354,19 @@ export default function Schedules() {
                     {activeJob ? (
                       <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${jobStatusMeta(activeJob.status).cls}`}>
                         <Loader2 className="h-3 w-3 animate-spin" /> {jobStatusMeta(activeJob.status).label}
+                        {batch.total > 1 && <span className="opacity-80">{batch.passed + batch.failed}/{batch.total}</span>}
                       </span>
                     ) : lastJob ? (
                       <button
                         type="button"
                         onClick={(event) => { event.stopPropagation(); setSelectedScheduleId(s.id); }}
-                        title="Open to view video, screenshots, and logs from this run"
-                        className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium hover:opacity-80 ${jobStatusMeta(lastJob.status).cls}`}
+                        title={batch.total > 1 ? `${batch.total} tests ran — open to view each result` : 'Open to view video, screenshots, and logs from this run'}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium hover:opacity-80 ${jobStatusMeta(batch.failed ? 'failed' : lastJob.status).cls}`}
                       >
-                        {jobStatusMeta(lastJob.status).label}
+                        {/* A multi-test fire reports every test, not just the newest job's verdict. */}
+                        {batch.total > 1
+                          ? `${batch.passed}/${batch.total} passed${batch.failed ? ` · ${batch.failed} failed` : ''}`
+                          : jobStatusMeta(lastJob.status).label}
                       </button>
                     ) : (
                       <span className="text-xs text-[var(--text-muted)]">—</span>
@@ -336,16 +391,20 @@ export default function Schedules() {
 
       <NewScheduleModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={refresh} recordings={recordings} />
       {editing && <NewScheduleModal isOpen schedule={editing} recordings={recordings} onClose={() => setEditing(null)} onCreated={() => { setEditing(null); refresh(); }} />}
-      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} recordings={recordings} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} onClose={() => setSelectedScheduleId(null)} />
+      <ScheduleRecordingModal schedule={selectedSchedule} recording={selectedRecording} recordings={recordings} resultJob={selectedResultJob} resultJobIsLive={Boolean(selectedActiveJob)} executionJobs={selectedSchedule ? lastExecutionByScheduleId.get(selectedSchedule.id) || [] : []} onClose={() => setSelectedScheduleId(null)} />
     </div>
   );
 }
 
-function ScheduleRecordingModal({ schedule, recording, recordings, resultJob, resultJobIsLive, onClose }: { schedule: Schedule | null; recording: any | null; recordings: any[]; resultJob: Job | null; resultJobIsLive: boolean; onClose: () => void }) {
+function ScheduleRecordingModal({ schedule, recording, recordings, resultJob, resultJobIsLive, executionJobs, onClose }: { schedule: Schedule | null; recording: any | null; recordings: any[]; resultJob: Job | null; resultJobIsLive: boolean; executionJobs: Job[]; onClose: () => void }) {
   const scheduledItems = schedule?.items?.length
     ? schedule.items
     : schedule ? [{ id: `legacy-${schedule.id}`, recordingId: schedule.recordingId, runnableId: schedule.recordingId, runnableType: 'recording' as const, stageNo: 1, position: 1, enabled: true }] : [];
   const recordingById = new Map(recordings.map((item) => [item.id, item]));
+  // Which test of the last fire is showing its artifacts. Defaults to the newest.
+  const [shownJobId, setShownJobId] = useState('');
+  useEffect(() => { setShownJobId(''); }, [schedule?.id]);
+  const shownJob = executionJobs.find((job) => job.id === shownJobId) || resultJob;
   return <Modal isOpen={!!schedule} onClose={onClose} title="Scheduled test" size="xl"
     footer={<div className="flex justify-end"><button type="button" onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Close</button></div>}>
     {!schedule ? null : <div className="space-y-4">
@@ -361,10 +420,28 @@ function ScheduleRecordingModal({ schedule, recording, recordings, resultJob, re
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">{scheduledItems.length > 1 ? 'First target URL' : 'Target URL'}</dt><dd className="mt-1 break-all text-[var(--text-primary)]">{recording?.appUrl || 'Not available'}</dd></div>
         <div><dt className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">{scheduledItems.length > 1 ? 'First test case' : 'Test case'}</dt><dd className="mt-1 text-[var(--text-primary)]">{recording?.metadata?.caseId || 'Not linked'}</dd></div>
       </dl>
-      {resultJob && (
+      {shownJob && (
         <div>
           <div className="mb-2 text-sm font-semibold text-[var(--text-primary)]">{resultJobIsLive ? 'Running now' : 'Latest run results'}</div>
-          <AutomationRunArtifacts jobId={resultJob.id} />
+          {/* One row per test of the last fire — a multi-test schedule executes them all. */}
+          {executionJobs.length > 1 && (
+            <ul className="mb-3 divide-y divide-[var(--border)] overflow-hidden rounded-md border border-[var(--border)]">
+              {executionJobs.map((job, index) => (
+                <li key={job.id}>
+                  <button
+                    type="button"
+                    onClick={() => setShownJobId(job.id)}
+                    aria-current={job.id === shownJob.id}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--bg-secondary)] ${job.id === shownJob.id ? 'bg-[var(--bg-secondary)]' : ''}`}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{index + 1}. {recordingById.get(job.recordingId)?.name || job.recordingId}</span>
+                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium ${jobStatusMeta(job.status).cls}`}>{jobStatusMeta(job.status).label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <AutomationRunArtifacts jobId={shownJob.id} />
         </div>
       )}
       <div>
@@ -612,9 +689,18 @@ function NewScheduleModal({ isOpen, onClose, onCreated, schedule, recordings = [
     setSelectedSuiteIds(new Set());
     setSelectedRunIds(new Set());
     setTitle(schedule?.title || '');
-    setTab(schedule?.kind === 'once' ? 'once' : schedule ? 'cron' : 'daily');
+    // Restore the saved shape: a stored cron that the friendly tabs can express reopens on that tab
+    // with its real time/days, and only a genuinely custom expression falls back to the Cron tab.
+    const savedCron = schedule && schedule.kind !== 'once' ? parseCron(schedule.cron) : null;
+    setTab(schedule?.kind === 'once' ? 'once' : savedCron ? savedCron.tab : schedule ? 'cron' : 'daily');
+    setTime(savedCron?.time || '02:00');
+    setWeekdays(savedCron?.weekdays || [1]);
+    setMonthDay(savedCron?.monthDay || 1);
     setTimezone(initialTimezone);
-    setOnceAt(schedule?.nextRunAt ? utcIsoToZonedInput(schedule.nextRunAt, initialTimezone) : nextHourInZoneInput(initialTimezone));
+    // A fired one-off clears nextRunAt server-side; fall back to its lastRunAt so reopening shows the
+    // time it was set to run at, not "the next whole hour".
+    const savedRunAt = schedule?.nextRunAt || (schedule?.kind === 'once' ? schedule?.lastRunAt : '');
+    setOnceAt(savedRunAt ? utcIsoToZonedInput(savedRunAt, initialTimezone) : nextHourInZoneInput(initialTimezone));
     setCronInput(schedule?.cron || 'At 04:05 on day-of-month 5');
     setExecutionMode(schedule?.executionMode || 'parallel');
     setFailurePolicy(schedule?.failurePolicy || 'continue');
