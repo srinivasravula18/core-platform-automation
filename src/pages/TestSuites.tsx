@@ -19,6 +19,7 @@ import {
 } from '@/src/lib/suiteCaseSelection';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { DeleteImpactDialog } from '@/src/components/DeleteImpactDialog';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { TagEditor } from '@/src/components/TagEditor';
@@ -223,16 +224,12 @@ export default function TestSuites() {
     }
   };
 
-  const handleDeleteSuite = async () => {
+  // Deleting a suite can take its exclusively-owned sub-suites/cases with it, so confirm against a
+  // real impact preview instead of a generic yes/no.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const handleDeleteSuite = () => {
     if (!selectedSuiteId) return;
-    if (await showConfirm('Are you sure you want to delete this suite?', { tone: 'danger' })) {
-      fetch(`/api/suites/${selectedSuiteId}`, { method: 'DELETE' })
-        .then(() => {
-          setIsSuiteModalOpen(false);
-          fetchSuites();
-          fetchCases();
-        });
-    }
+    setPendingDelete(selectedSuiteId);
   };
 
   const handleAIApprove = (data: any) => {
@@ -943,6 +940,20 @@ export default function TestSuites() {
           items: getSuiteCases(id).map((testCase: any) => testCase.title || testCase.id),
         }))}
       />
+      {pendingDelete && (
+        <DeleteImpactDialog
+          entity="suites"
+          id={pendingDelete}
+          label={suites.find((suite) => String(suite.id) === pendingDelete)?.name || pendingDelete}
+          onCancel={() => setPendingDelete(null)}
+          onDeleted={() => {
+            setPendingDelete(null);
+            setIsSuiteModalOpen(false);
+            fetchSuites();
+            fetchCases();
+          }}
+        />
+      )}
     </div>
   );
 }

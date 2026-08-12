@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import * as archiverNs from 'archiver';
 import { z } from 'zod';
-import { generateObject } from 'ai';
 import { prepareSse, sendSse } from '../../shared/sse';
 import { asyncRoute } from '../../shared/asyncRoute';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
@@ -14,6 +13,8 @@ import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../share
 import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
+import { resolveDeletionClosure, executeDeletionClosure } from './deletionGraph';
+import { isRecycleBinCascadeEnabled } from './flag';
 import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
 import { createJob, createServerJob, tryDispatch } from '../automation/jobService';
@@ -44,6 +45,7 @@ function pinRunWebsite(targetUrl: string, ownerId?: string): { websiteId: string
 
 import {
   Plans,
+  RecycleBin,
   Suites,
   Cases,
   CaseRevisions,
@@ -1270,6 +1272,23 @@ export function registerResourceRoutes(app: Express) {
     { name: 'reports', repo: Reports },
   ];
 
+  /**
+   * Resolve the cascade for plans/suites, or null when this entity/flag does not cascade.
+   * Cases already cascade to their scripts inside the repository, so they are left alone.
+   */
+  const cascadeClosureFor = async (entity: string, id: string, req: any) => {
+    if (!isRecycleBinCascadeEnabled()) return null;
+    if (entity !== 'plans' && entity !== 'suites') return null;
+    const scope = reqScope(req);
+    const [plans, suites, cases] = await Promise.all([Plans.list(), Suites.list(), Cases.list()]);
+    const closure = resolveDeletionClosure(entity as 'plans' | 'suites', id, {
+      plans: scopeFilter(plans as any[], scope),
+      suites: scopeFilter(suites as any[], scope),
+      cases: scopeFilter(cases as any[], scope),
+    });
+    return closure && (closure.willDelete.length || closure.willDetach.length) ? closure : null;
+  };
+
   const unlinkRunsFromPlans = async (runIds: string[]) => {
     const deleted = new Set(runIds.map(String));
     for (const plan of await Plans.list()) {
@@ -1343,6 +1362,28 @@ export function registerResourceRoutes(app: Express) {
     app.delete(`/api/${e.name}/:id`, async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
+
+      // Cascade for the hierarchy entities: a plan/suite takes its exclusively-owned descendants with
+      // it, while anything a surviving parent still references is only detached. ?preview=1 answers
+      // with the impact and writes nothing, so the UI can confirm before destroying anything.
+      const closure = await cascadeClosureFor(e.name, req.params.id, req);
+      if (String(req.query.preview || '') === '1') {
+        return res.json({ preview: true, cascade: Boolean(closure), ...(closure || { willDelete: [], willDetach: [] }) });
+      }
+      if (closure) {
+        const batchId = await RecycleBin.createBatch({
+          rootType: e.name, rootId: req.params.id,
+          rootLabel: String(existing.name || existing.title || req.params.id),
+          detached: closure.willDetach, scope: reqScope(req),
+        });
+        await executeDeletionClosure(closure, batchId, (type, ids, batch) => RecycleBin.stampBatch(type, ids, batch));
+        await e.repo.remove(req.params.id);
+        await RecycleBin.stampBatch(e.name, [req.params.id], batchId);
+        if (!isPgEnabled()) persistDataInBackground(`${e.name} delete`);
+        logActivity(req, `Deleted ${e.name.slice(0, -1)}: ${existing.name || existing.title} (+${closure.willDelete.length} related)`);
+        return res.json({ success: true, deleted: closure.willDelete.length + 1, detached: closure.willDetach.length, batchId });
+      }
+
       await e.repo.remove(req.params.id);
       if (e.name === 'runs') await unlinkRunsFromPlans([req.params.id]);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} delete`);
@@ -2381,5 +2422,4 @@ Rules:
   /* ---------- unused import suppression (referenced only for type docs) ---------- */
   void db;
   void Activity;
-  void generateObject;
 }

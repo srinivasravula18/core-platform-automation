@@ -10,6 +10,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { DeleteImpactDialog } from '@/src/components/DeleteImpactDialog';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
@@ -298,16 +299,12 @@ export default function TestPlans() {
     }
   };
 
-  const handleDeletePlan = async () => {
+  // Deleting a plan can take its exclusively-owned suites/cases with it, so confirm against a real
+  // impact preview instead of a generic yes/no.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const handleDeletePlan = () => {
     if (!selectedPlanId) return;
-    if (await showConfirm('Are you sure you want to delete this plan?', { tone: 'danger' })) {
-      fetch(`/api/plans/${selectedPlanId}`, { method: 'DELETE' })
-        .then(() => {
-          setIsPlanModalOpen(false);
-          fetchPlans();
-          fetchPlanRelations();
-        });
-    }
+    setPendingDelete(selectedPlanId);
   };
 
   const handleAIApprove = (data: any) => {
@@ -1332,6 +1329,20 @@ export default function TestPlans() {
           items: getPlanCases(id).map((testCase: any) => testCase.title || testCase.id),
         }))}
       />
+      {pendingDelete && (
+        <DeleteImpactDialog
+          entity="plans"
+          id={pendingDelete}
+          label={plans.find((plan) => String(plan.id) === pendingDelete)?.name || pendingDelete}
+          onCancel={() => setPendingDelete(null)}
+          onDeleted={() => {
+            setPendingDelete(null);
+            setIsPlanModalOpen(false);
+            fetchPlans();
+            fetchPlanRelations();
+          }}
+        />
+      )}
     </div>
   );
 }
