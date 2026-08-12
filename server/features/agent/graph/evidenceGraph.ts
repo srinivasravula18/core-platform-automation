@@ -47,6 +47,10 @@ export interface EvidenceNode {
   /** True when this is a live DATA-row instance (row-key selector), not a structural control — its text is
    * ephemeral, so tests must not assert it as if it were a fixed control. */
   isDataInstance?: boolean;
+  /** Set for provenance 'REPO_SOURCE' nodes backed by a Page Object method (importPath is repo-relative). */
+  pageObjectRef?: { importPath: string; className: string; method: string } | null;
+  /** Source file + line a REPO_SOURCE node was extracted from. */
+  sourceRef?: { file: string; line: number } | null;
   // Versioning/provenance fields (populated by the Object Repository as evidence accrues).
   domHash?: string | null;
   screenshotRef?: string | null;
@@ -70,8 +74,9 @@ export interface EvidenceGraph {
   index?: Record<string, EvidenceNode>;
 }
 
-/** PascalCase semantic handle from a human label; stable + deterministic. Falls back to role+ref. */
-function semanticNameFrom(label: string | null | undefined, role: string | null | undefined, ref: string): string {
+/** PascalCase semantic handle from a human label; stable + deterministic. Falls back to role+ref.
+ *  Exported for repoGrounding.ts to derive handles the same way. */
+export function semanticNameFrom(label: string | null | undefined, role: string | null | undefined, ref: string): string {
   const base = String(label || '').trim();
   if (base) {
     const pascal = base.replace(/[^a-zA-Z0-9]+/g, ' ').trim().split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('');
@@ -147,6 +152,15 @@ function uniqueSemantic(seen: Set<string>, name: string): string {
   const out = `${name}_${i}`;
   seen.add(out);
   return out;
+}
+
+// Repo-sourced nodes win a semanticName collision against DOM-discovered ones — resolveTarget is exact-match,
+// so two nodes sharing a name (e.g. both find "New") would otherwise read as AMBIGUOUS_SELECTOR.
+export function mergeRepoGrounding(domGraph: EvidenceGraph, repoNodes: EvidenceNode[]): EvidenceGraph {
+  if (!repoNodes.length) return domGraph;
+  const repoNames = new Set(repoNodes.map((n) => n.semanticName));
+  const domNodes = domGraph.nodes.filter((n) => !repoNames.has(n.semanticName));
+  return indexEvidenceGraph({ ...domGraph, nodes: [...repoNodes, ...domNodes] });
 }
 
 export function indexEvidenceGraph(g: EvidenceGraph): EvidenceGraph {

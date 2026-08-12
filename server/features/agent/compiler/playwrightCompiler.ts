@@ -32,6 +32,28 @@ function isNegativeCase(plan: { title?: string | null }): boolean {
     || /\bis\s+(required|mandatory)\b|\brequires?\s+(a|an|the)\b|\bmust\s+(be\s+)?(provided|entered|filled|specified|set|selected)\b/i.test(t);
 }
 
+// A repo-sourced role match came from a regex/string literal in test code, not a captured accessible
+// name — its casing isn't verified, so exact (case-sensitive) matching would false-negative at runtime.
+function specFor(node: EvidenceNode | null | undefined, selector: string | null, selectorType: string | null): string {
+  return JSON.stringify({
+    selector, selectorType, role: node?.role ?? null, label: node?.label ?? null,
+    ...(node?.provenance === 'REPO_SOURCE' ? { exact: false } : {}),
+  });
+}
+
+function instanceVar(className: string): string {
+  return className.charAt(0).toLowerCase() + className.slice(1);
+}
+
+// selectApp/selectTab/selectModule take the item name — read from the mission's own already-resolved
+// application/tab/module fields (never invented, same fields the MISSION header already carries).
+function navArgFor(method: string, mission: { application?: { name: string } | null; tab?: { name: string } | null; module?: { name: string } | null }): string | null {
+  if (/^selectApp$/i.test(method)) return mission.application?.name ?? null;
+  if (/^selectTab$/i.test(method)) return mission.tab?.name ?? null;
+  if (/^selectModule$/i.test(method)) return mission.module?.name ?? null;
+  return null;
+}
+
 const VALIDATION_ASSERTS = new Set(['VERIFY_VALIDATION', 'VERIFY_ERROR']);
 const FILL_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK']);
 const FIELD_TOUCH_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK', 'UNCHECK', 'CLEAR']);
@@ -315,6 +337,8 @@ export class PlaywrightCompiler implements Compiler {
     });
 
     const body: string[] = [];
+    // className -> absolute source file (no extension), collected as pageObjectRef nodes resolve.
+    const pageObjects = new Map<string, string>();
     // Values the engine resolved for fills/selects — later assertions must expect the SAME resolved
     // values, or every expectValue after a generated fill fails on the plan's placeholder text.
     const resolvedBySelector = new Map<string, string>();
@@ -374,7 +398,7 @@ export class PlaywrightCompiler implements Compiler {
     };
     const emitRequiredCompletion = () => {
       for (const node of missingRequired) {
-        const spec = JSON.stringify({ selector: node.selector, selectorType: node.selectorType, role: node.role ?? null, label: node.label ?? null });
+        const spec = specFor(node, node.selector, node.selectorType);
         const isSelect = ['combobox', 'listbox'].includes(String(node.role || '').toLowerCase());
         const synthetic = { action: isSelect ? 'SELECT' : 'FILL', target: node.semanticName, value: null } as unknown as ActionStep;
         const value = resolveStepValue(engine, synthetic, node);
@@ -422,6 +446,21 @@ export class PlaywrightCompiler implements Compiler {
         body.push(`  // ${g.status}: "${target}" — ${g.reason || ''}`);
         return;
       }
+      // A Page-Object-backed node reuses the repo's own working method instead of a locator — only makes
+      // sense for an ACTION step (an assert on one is left unresolved: no raw locator to assert against).
+      if (g.pageObjectRef && g.node?.sourceRef) {
+        if (!isActionStep(step)) {
+          diagnostics.push({ kind: 'UNRESOLVED_SELECTOR', target, stepIndex: i, message: 'Matched a Page Object method, which has no locator an assertion can target.', severity: 'skippable' });
+          body.push(`  // UNRESOLVED_SELECTOR: "${target}" — Page Object method, no assertable locator`);
+          return;
+        }
+        const { className, method } = g.pageObjectRef;
+        const absFile = g.node.sourceRef.file.replace(/\.tsx?$/, '');
+        pageObjects.set(className, absFile);
+        const arg = /^select(App|Tab|Module)$/i.test(method) ? navArgFor(method, mission) : null;
+        body.push(`  await pages.${instanceVar(className)}.${method}(${arg !== null ? JSON.stringify(arg) : ''});`);
+        return;
+      }
       if (isActionStep(step) && !actionFitsRole(step, g.node?.role)) {
         // Recover instead of dropping the whole case: coerce the verb to the grounded role when a safe mapping
         // exists ("Select the X textbox" → CLICK/FILL). Only a truly un-coercible action stays blocking.
@@ -437,12 +476,12 @@ export class PlaywrightCompiler implements Compiler {
       }
       // Open the create dialog before the first step that touches a control living inside it.
       if (shouldInjectOpener && !openerInjected && touchesDialog(step, g.node)) {
-        const oSpec = JSON.stringify({ selector: openerNode!.selector, selectorType: openerNode!.selectorType, role: openerNode!.role ?? null, label: openerNode!.label ?? null });
+        const oSpec = specFor(openerNode, openerNode!.selector, openerNode!.selectorType);
         body.push(`  await runner.click(${oSpec});`);
         body.push('  // ^ opener auto-injected: the dialog controls below only exist once this control opens the modal');
         openerInjected = true;
       }
-      const spec = JSON.stringify({ selector: g.selector, selectorType: g.selectorType, role: g.node?.role ?? null, label: g.node?.label ?? null });
+      const spec = specFor(g.node, g.selector, g.selectorType);
       if (isActionStep(step)) {
         const value = resolveStepValue(engine, step, g.node);
         if (step.action === 'FILL' || step.action === 'SELECT') {
@@ -530,13 +569,20 @@ export class PlaywrightCompiler implements Compiler {
 
     // Fallback must stay user-presentable — it becomes the evidence-card header in the console.
     const title = String(plan.title || plan.module || plan.mission || 'Untitled test case').replace(/`/g, "'");
+    const pageObjectImports = [...pageObjects.entries()]
+      .map(([className, absFile]) => `import { ${className} } from '${absFile.replace(/\\/g, '/')}';`).join('\n');
+    const pagesBlock = pageObjects.size
+      ? `  const pages = { ${[...pageObjects.keys()].map((c) => `${instanceVar(c)}: new ${c}(page)`).join(', ')} };\n`
+      : '';
     const code =
       `import { test, expect } from '@playwright/test';\n` +
-      `import { MissionRunner } from './mission-runner';\n\n` +
-      `const MISSION = ${missionJson} as const;\n\n` +
+      `import { MissionRunner } from './mission-runner';\n` +
+      (pageObjectImports ? `${pageObjectImports}\n` : '') +
+      `\nconst MISSION = ${missionJson} as const;\n\n` +
       `test(${JSON.stringify(title)}, async ({ page }) => {\n` +
       `  const runner = new MissionRunner(page, MISSION as any);\n` +
       `  await runner.startMission();\n` +
+      pagesBlock +
       `${body.join('\n')}\n` +
       `});\n`;
 

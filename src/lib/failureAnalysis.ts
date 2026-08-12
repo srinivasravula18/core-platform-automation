@@ -8,6 +8,7 @@
  */
 
 import { stripAnsi } from './stripAnsi';
+import { classifyErrorKind, isNonProductFailure } from '../../core/shared/failureClassification';
 
 export interface FailureAnalysis {
   kind:
@@ -19,6 +20,7 @@ export interface FailureAnalysis {
     | 'ambiguous-locator'
     | 'navigation'
     | 'timeout'
+    | 'tooling-fault'
     | 'unknown';
   /** Short badge label, e.g. "Couldn't find it". */
   label: string;
@@ -124,6 +126,25 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   const doWord = action && !isAssertion ? plainAction(action, null, false).replace(/ the thing it needed$/, '') : 'use';
 
   // --- classification, most specific first ------------------------------------------------
+
+  // A tooling/harness fault (obscured/ambiguous/missing locator, wrong mission scope, an unrecognized
+  // platform error) is never the application misbehaving — say so plainly and show the FULL message,
+  // since these already explain themselves (e.g. "...this is a locator/tooling fault, not a product
+  // defect.") and a truncated fragment of that sentence reads as nonsense (see failureAnalysis fix log).
+  if (isNonProductFailure(e)) {
+    const errorKind = classifyErrorKind(e);
+    return {
+      kind: 'tooling-fault', label: 'Not a Product Bug', attempted, target, resolvedElement,
+      expected: 'The test can locate and drive the control it needs.',
+      actual: e.split('\n')[0],
+      likelyCause: errorKind === 'tooling-obscured'
+        ? 'The locator matched a control that was behind an open overlay (e.g. a background grid header hidden under a modal) — a test-authoring/tooling fault, not the application misbehaving.'
+        : errorKind === 'scope-violation' || errorKind === 'context-mismatch'
+        ? 'The step ran against the wrong target/context for this mission — a test-authoring fault, not the application misbehaving.'
+        : 'This failure is a test-harness/tooling fault (the script could not reliably drive the app), not the application misbehaving.',
+      suggestedFixes: ['Re-record or adjust the step\'s selector so it targets the intended control.'],
+    };
+  }
 
   // Typed into something that can't be typed into (a dropdown, checkbox, button…). Very common when a
   // test uses "type text" on a <select>; the raw error is unreadable, so name the real control + fix.

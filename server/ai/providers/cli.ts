@@ -159,9 +159,13 @@ export class AccountCliProvider implements AIProvider {
 
     // Pass the prompt via stdin to avoid ENAMETOOLONG on large prompts (OS arg-length limits).
     // `claude -p` reads from stdin when no inline prompt argument is given.
+    // 'bypassPermissions' is the only mode that doesn't require an interactive approval — headless
+    // -p has no TTY to approve from, so anything else silently denies tool use (was 'dontAsk', not a
+    // real permission-mode value, which fell back to the approval-required default and blocked every
+    // account-CLI agent's own tool calls).
     return await runProcess(
       commandFor('claude'),
-      ['-p', '--model', model, '--permission-mode', 'dontAsk', '--output-format', 'text'],
+      ['-p', '--model', model, '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
       this.buildPrompt(opts),
     );
   }

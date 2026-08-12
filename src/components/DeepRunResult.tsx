@@ -7,6 +7,7 @@ import { showAlert } from '@/src/lib/dialog';
 import { containsPrivateFileActivity } from '@/src/lib/userFacingAgentActivity';
 import { stripAnsi } from '@/src/lib/stripAnsi';
 import { failureGist } from '@/src/lib/failureAnalysis';
+import { isNonProductFailure } from '@/core/shared/failureClassification';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
@@ -989,11 +990,13 @@ export function DeepRunResult({
     if (!tests.length) return 0;
     return tests.filter((t) => !/pass/i.test(String(t.status || ''))).length;
   })();
-  // Bugs = every executed test that did NOT pass, carried into its own tab so the
-  // failure breakdown (expected/actual/likely cause/fix) lives next to Evidence.
+  // Bugs = every executed test that did NOT pass AND whose failure looks like the application actually
+  // misbehaving — not a tooling/harness fault (obscured/ambiguous/missing locator, wrong mission scope,
+  // a navigation error, or an unrecognized platform failure). Those still failed and are still visible
+  // via Re-run/Evidence; they just aren't application defects, so they don't inflate the Bugs count.
   const bugs: any[] = (() => {
     const tests: any[] = (pwResult?.tests?.length ? pwResult.tests : (run?.execution_result?.tests || [])) as any[];
-    return tests.filter((t) => !/pass/i.test(String(t.status || '')));
+    return tests.filter((t) => !/pass/i.test(String(t.status || '')) && !isNonProductFailure(t.error));
   })();
 
   const downloadScripts = () => {

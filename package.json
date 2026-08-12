@@ -44,6 +44,8 @@
     "test:grounding": "tsx scripts/test-grounding-engine.ts",
     "test:testplan": "tsx scripts/test-testplan-schema.ts",
     "test:compiler": "tsx scripts/test-playwright-compiler.ts",
+    "test:repo-grounding": "tsx scripts/test-repo-grounding.ts",
+    "test:repo-grounding-compile": "tsx scripts/test-repo-grounding-compile.ts",
     "test:mission-runner": "tsx scripts/test-mission-runner.ts",
     "test:validate-compiled": "tsx scripts/test-validate-compiled.ts",
     "test:coverage-plan": "tsx scripts/test-coverage-plan.ts",

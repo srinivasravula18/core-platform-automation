@@ -19,6 +19,8 @@ export interface GroundResult {
   /** Authoritative locator (re-read from the Selector Registry when available). */
   selector: string | null;
   selectorType: string | null;
+  /** Set when the node resolves to an existing Page Object method instead of a raw selector. */
+  pageObjectRef?: { importPath: string; className: string; method: string } | null;
   reason?: string;
 }
 
@@ -59,9 +61,13 @@ function baseSemantic(s: string): string {
   return String(s || '').toLowerCase().replace(/_\d+$/, '').replace(/[\s*:()]+$/g, '').trim();
 }
 
+function isTrustedProvenance(provenance: string | null | undefined): boolean {
+  return provenance === 'LIVE_DOM' || provenance === 'REPO_SOURCE';
+}
+
 /** Fully trusted, executable node — the same bar resolveTarget enforces before emitting a locator. */
 function isTrustedNode(n: EvidenceNode): boolean {
-  return n.uniqueness === true && n.confidence === 'verified-live' && n.provenance === 'LIVE_DOM' && !!n.selector;
+  return n.uniqueness === true && n.confidence === 'verified-live' && isTrustedProvenance(n.provenance) && !!(n.selector || n.pageObjectRef);
 }
 
 /**
@@ -101,9 +107,12 @@ export function resolveTarget(target: string, graph: EvidenceGraph, run?: any): 
     return { status: 'AMBIGUOUS_SELECTOR', target, node, selector: null, selectorType: null,
       reason: 'Matched a control whose selector was not proven unique in the live DOM.' };
   }
-  if (node.confidence !== 'verified-live' || node.provenance !== 'LIVE_DOM') {
+  if (node.confidence !== 'verified-live' || !isTrustedProvenance(node.provenance)) {
     return { status: 'UNRESOLVED_SELECTOR', target, node, selector: null, selectorType: null,
-      reason: 'Matched evidence is not trusted live DOM proof.' };
+      reason: 'Matched evidence is not trusted live DOM or repo-source proof.' };
+  }
+  if (node.provenance === 'REPO_SOURCE' && node.pageObjectRef) {
+    return { status: 'RESOLVED', target, node, selector: node.selector ?? null, selectorType: node.selectorType ?? null, pageObjectRef: node.pageObjectRef };
   }
   const reg = registrySelector(run, node.selectorRef);
   if (reg && !reg.trusted) {

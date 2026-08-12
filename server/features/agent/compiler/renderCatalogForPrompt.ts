@@ -14,8 +14,8 @@ export interface RenderCatalogOpts {
 /** Render the enumerated semantic-target catalog. Only verified-unique, locatable controls are offered. */
 export function renderTargetCatalogForPrompt(graph: EvidenceGraph | null | undefined, opts: RenderCatalogOpts = {}): string {
   const limit = opts.limit ?? 200;
-  const usable = (graph?.nodes || []).filter((n) => n.selector && n.uniqueness === true
-    && n.confidence === 'verified-live' && n.provenance === 'LIVE_DOM');
+  const usable = (graph?.nodes || []).filter((n) => (n.selector || n.pageObjectRef) && n.uniqueness === true
+    && n.confidence === 'verified-live' && (n.provenance === 'LIVE_DOM' || n.provenance === 'REPO_SOURCE'));
   if (!usable.length) {
     return 'SEMANTIC TARGET CATALOG: (none available — discovery produced no verified-unique controls; do not invent targets).';
   }
@@ -30,7 +30,8 @@ export function renderTargetCatalogForPrompt(graph: EvidenceGraph | null | undef
     const obs = observed && (observed.value != null || observed.checked != null)
       ? ` (observed: ${observed.checked != null ? `checked=${observed.checked}` : `value=${JSON.stringify(String(observed.value)).slice(0, 40)}`})` : '';
     const dataRow = n.isDataInstance ? ' [DATA ROW — ephemeral; do NOT assert this specific value unless THIS test created it]' : '';
-    return `- ${n.semanticName}${role}${label}${required}${obs}${meta}${dataRow}`;
+    const repo = n.provenance === 'REPO_SOURCE' ? ' [from existing test code — prefer this]' : '';
+    return `- ${n.semanticName}${role}${label}${required}${obs}${meta}${dataRow}${repo}`;
   };
   // State-model: page/list controls exist at rest; form controls only exist AFTER the create/edit opener is
   // clicked. Grouping them stops the author from asserting a modal field/heading on the list (a top failure).

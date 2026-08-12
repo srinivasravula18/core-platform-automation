@@ -28,6 +28,9 @@ export interface LocatorSpec {
   selectorType: string | null;
   role: string | null;
   label: string | null;
+  /** False for a repo-sourced role match extracted from a case-insensitive regex literal — its casing
+   *  isn't a verified accessible name, so exact (case-sensitive) matching would false-negative. Defaults true. */
+  exact?: boolean;
 }
 
 /**
@@ -423,12 +426,19 @@ export class MissionRunner {
   /** Build a Playwright Locator from VERIFIED primitives only — never invents a selector. */
   locator(spec: LocatorSpec): Locator {
     if (spec.selectorType === 'role' && spec.role) {
+      if (spec.exact === false && spec.label) {
+        const escaped = spec.label.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&');
+        return this.page.getByRole(spec.role as any, { name: new RegExp('^' + escaped + '$', 'i') });
+      }
       return this.page.getByRole(spec.role as any, spec.label ? { name: spec.label, exact: true } : {});
     }
     if (spec.selectorType === 'testid' && spec.selector) {
       const m = /\[data-testid=["']([^"']+)["']\]/.exec(spec.selector);
       if (m) return this.page.getByTestId(m[1]);
     }
+    if (spec.selectorType === 'label' && spec.label) return this.page.getByLabel(spec.label);
+    if (spec.selectorType === 'placeholder' && spec.label) return this.page.getByPlaceholder(spec.label);
+    if (spec.selectorType === 'text' && spec.label) return this.page.getByText(spec.label);
     if (spec.selector) return this.page.locator(spec.selector);
     throw new Error('MissionRunner.locator: no verified selector provided for ' + JSON.stringify(spec));
   }

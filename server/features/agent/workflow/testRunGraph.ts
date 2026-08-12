@@ -24,6 +24,10 @@ import { runContextNode } from './nodes/context';
 import { runDiscoveryNode } from './nodes/discovery';
 import type { VerifiedElement } from '../domExplorer';
 import { runGroundingNode, MAX_REDISCOVERY_ATTEMPTS } from './nodes/grounding';
+import { discoverRepoGrounding } from './nodes/repoGrounding';
+import { isRepoGroundingEnabled } from './nodes/repoGroundingFlag';
+import { mergeRepoGrounding } from '../graph/evidenceGraph';
+import { getProjectRepoPath } from '../../projects/projectService';
 import { authorTestCases, authorAbstractPlan, type AuthoredTestCase } from './nodes/authoring';
 import { runCompilationNode } from './nodes/compilation';
 import { buildPendingReview, requestReviewInterrupt } from './nodes/review';
@@ -344,8 +348,13 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       discoveryFailure: discovery.elements.length === 0 ? (discovery.errors[0] ?? null) : null,
       discoveryAttempts,
     });
+    // Prefer the connected repo's own working test code over a DOM guess — additive, no-op when no repo
+    // is connected or it has no conventional test dir (see repoGrounding.ts).
+    const repoPath = isRepoGroundingEnabled() && state.projectId ? getProjectRepoPath(state.projectId) : '';
+    const repoNodes = repoPath ? discoverRepoGrounding(repoPath) : [];
+    const evidenceGraph = mergeRepoGrounding(grounding.evidenceGraph, repoNodes);
     // Full graph/registry go to the run stash for authoring/compilation; state gets refs/digests only.
-    stashArtifacts(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
+    stashArtifacts(state.runId, { evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
     // Observe-then-assert (BEHAVIOR_ORACLE_V1): stash the probed form behaviour for the author + critic.
     if (discovery.behavior?.probed) stashArtifacts(state.runId, { behaviorOracle: discovery.behavior });
     return {

@@ -10,6 +10,7 @@
  * No I/O and no LLM here: callers (runtime terminal hook, tests) supply inputs and persist outputs.
  */
 import { createHash } from 'crypto';
+import { classifyErrorKind as sharedClassifyErrorKind, NON_PRODUCT_ERROR_KINDS } from '../../../../core/shared/failureClassification';
 
 /** Loose per-test record: the graph path passes full TestResult; the legacy path passes execution_result.tests. */
 export interface TestResultLike {
@@ -161,22 +162,9 @@ export function normalizeFailureMessage(error?: string): string {
     .slice(0, 220);
 }
 
-/** Deterministic error-kind classification from the raw failure text (no LLM). */
-export function classifyErrorKind(error?: string): string {
-  const e = String(error || '');
-  if (!e) return 'unknown';
-  if (/MISSION SCOPE VIOLATION/i.test(e)) return 'scope-violation';
-  if (/MISSION CONTEXT MISMATCH/i.test(e)) return 'context-mismatch';
-  // A locator that matched a background control obscured by an open overlay is a grounding/tooling fault, not a
-  // product defect — classified before 'timeout' since the runtime marks it while relabeling the click timeout.
-  if (/\bTOOLING_OBSCURED\b|\[tooling\]/i.test(e)) return 'tooling-obscured';
-  if (/Timed?\s?out|timeout/i.test(e)) return 'timeout';
-  if (/toBeVisible|toBeHidden|toContainText|toHaveValue|toBeEnabled|toBeDisabled|toBeGreaterThan|expect\(/i.test(e)) return 'assertion';
-  if (/strict mode violation|resolved to \d+ elements/i.test(e)) return 'ambiguous-locator';
-  if (/no verified selector|not found|unable to find|waiting for locator/i.test(e)) return 'locator-not-found';
-  if (/net::|ERR_|ECONNREFUSED|navigation/i.test(e)) return 'navigation';
-  return 'unknown';
-}
+/** Deterministic error-kind classification from the raw failure text (no LLM). Re-exported from the
+ *  shared classifier so the server's defect filing and the client's failure UI agree on what a "bug" is. */
+export const classifyErrorKind = sharedClassifyErrorKind;
 
 /** The step target the failure anchors to: last failing step-log label, else a locator quoted in the error. */
 export function failingTargetOf(test: TestResultLike, stepLog?: StepLogEntry[]): string | null {
@@ -204,13 +192,6 @@ export function failureSignature(test: TestResultLike, stepLog?: StepLogEntry[])
 
 const FAILED_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
-/** Failure kinds that are tooling/harness faults, never auto-filed as product defects: the test could not be
- *  driven (obscured/ambiguous/missing locator), or it ran against the wrong target (scope/context), or the
- *  platform itself failed internally (unknown). Only the APPLICATION misbehaving belongs in the bug section. */
-const NON_PRODUCT_DEFECT_KINDS = new Set([
-  'tooling-obscured', 'ambiguous-locator', 'locator-not-found', 'scope-violation', 'context-mismatch', 'navigation', 'unknown',
-]);
-
 /** Interaction/navigation step kinds — a failure ON one of these means the script could not OPERATE the app
  *  (locate/click/fill/select/navigate), i.e. a locator/tooling fault, not the application producing a wrong
  *  result. An ASSERTION step failing (expect*) is the opposite: the app's observed state contradicted the
@@ -221,8 +202,8 @@ const ACTION_STEP_KINDS = new Set([
 
 /** True when a failure is a tooling/harness fault rather than an application defect. Only genuine app-behavior
  *  failures (an assertion/oracle contradicted by the live app) are auto-filed as bugs. */
-function isToolingFailure(errorKind: string, stepLog: StepLogEntry[] | undefined): boolean {
-  if (NON_PRODUCT_DEFECT_KINDS.has(errorKind)) return true;
+export function isToolingFailure(errorKind: string, stepLog: StepLogEntry[] | undefined): boolean {
+  if (NON_PRODUCT_ERROR_KINDS.has(errorKind as any)) return true;
   const failed = [...(stepLog ?? [])].reverse().find((s) => s.ok === false);
   return !!failed && ACTION_STEP_KINDS.has(String(failed.kind || ''));
 }

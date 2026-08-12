@@ -89,6 +89,7 @@ import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
 import { generateValidCaseRework, requestsAdditionalCaseStep } from './reworkCaseValidation';
 import { prepareSse, sendSse } from '../../shared/sse';
+import { runTestAuthorAgentAuto } from './toolloop/testAuthorAgent';
 
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
@@ -1072,25 +1073,16 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     ownerId: run.ownerId || '',
   });
 
-  if (String(run.status || '').toLowerCase() === 'failed') {
-    await Defects.upsert({
-      id: `DEF-${run.id.substring(0, 8).toUpperCase()}`,
-      title: `${baseName} — Run failed`,
-      description: (run.messages || []).slice(-3).map((m: any) => typeof m.output === 'string' ? m.output : JSON.stringify(m.output || '')).filter(Boolean).join('\n\n'),
-      severity: 'High',
-      status: 'Open',
-      linkedRunId: runRecordId,
-      evidence: run.evidence_screenshots || [],
-      tags: ['@failure'],
-      folderId: run.folderId || null,
-      approvalState: 'approved',
-      proposedBy: 'QA Assistant',
-      sourceRunId: run.id,
-      projectId: run.projectId || '',
-      appId: run.appId || '',
-      ownerId: run.ownerId || '',
-    });
-  }
+  // A "run failed" is not, on its own, a product bug: it can mean the app misbehaved (the rich
+  // per-signature defects below, built from real Playwright test results, already file THAT case
+  // correctly and exclude tooling/harness faults) or it can mean the agent never got as far as
+  // executing anything (an authoring/orchestration failure — e.g. "stopped mid-generation"). The
+  // unconditional Defect this block used to file here for EVERY failed run — titled "Run failed" and
+  // described by the last 3 workflow status/chip lines (not a real error) — produced exactly the
+  // confusing, non-actionable "bugs" QA flagged: orchestration noise and tooling faults mislabeled as
+  // product defects, sometimes with a real underlying error truncated by the UI's generic-failure
+  // fallback because this text never carried a classifiable one. Removed; the rich path below is the
+  // sole source of auto-filed Bugs.
 
   // Per-signature professional defects (bug-investigation framework): the same deterministic builder the
   // graph terminal hook uses, fed from this run's execution_result. Additive — the coarse defect above and
@@ -3215,6 +3207,31 @@ Rules:
       // Pre-flight is advisory — never block the flow on its failure.
       console.warn(`[agent] target-options failed: ${err?.message || err}`);
       res.json({ needsChoice: false });
+    }
+  });
+
+  // Tool-loop test-authoring agent: repo-grounded, real browser + real Playwright execution, no
+  // deterministic compiler in between. Synchronous — runs to completion (write + validate) and
+  // returns the result directly. See server/features/agent/toolloop/testAuthorAgent.ts.
+  app.post('/api/agent/toolloop/start', async (req, res) => {
+    const { app_url, prompt, maxSteps } = req.body || {};
+    const scope = reqScope(req);
+    if (!scope.projectId) return res.status(400).json({ error: 'A project must be selected (repo grounding needs its connected repository).' });
+    const repoPath = getProjectRepoPath(scope.projectId).trim();
+    if (!repoPath) return res.status(400).json({ error: 'The selected project has no connected repository to ground against.' });
+    const targetUrl = String(app_url || '').trim();
+    if (!targetUrl) return res.status(400).json({ error: 'app_url is required.' });
+    if (!String(prompt || '').trim()) return res.status(400).json({ error: 'prompt is required.' });
+    try {
+      const credentials = resolveCredentials({ targetUrl, ownerId: scope.userId || undefined });
+      const runId = `TOOLLOOP-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await runTestAuthorAgentAuto({
+        targetUrl, repoPath, prompt: String(prompt).trim(), credentials, runId,
+        workspaceId: scope.projectId, userId: scope.userId || undefined, maxSteps: Number(maxSteps) || undefined,
+      });
+      res.json({ runId, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Tool-loop agent run failed.' });
     }
   });
 
