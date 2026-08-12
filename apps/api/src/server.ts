@@ -18,7 +18,7 @@ import { registerGitAgentRoutes } from '../../../services/git-agent';
 import { registerKnowledgeRoutes, seedDefaultKnowledgeIfEmpty } from '../../../services/knowledge';
 import { registerProjectRoutes, seedDefaultProjectAndBackfill } from '../../../services/projects';
 import { registerRequirementRoutes } from '../../../services/requirements';
-import { registerResourceRoutes } from '../../../services/resources';
+import { registerResourceRoutes, registerRecycleBinRoutes } from '../../../services/resources';
 import { registerAgentRuntimeRoutes, registerConversationalRuntimeRoutes } from '../../../services/runtime';
 import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
@@ -163,6 +163,7 @@ export async function createExpressApp() {
   registerScreenshotRoutes(app);
   registerDashboardRoutes(app);
   registerResourceRoutes(app);
+  registerRecycleBinRoutes(app);
   registerTagRoutes(app);
   registerApiIntelligenceRoutes(app);
   registerAutomationRoutes(app);

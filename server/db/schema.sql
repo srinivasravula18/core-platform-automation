@@ -1643,3 +1643,66 @@ CREATE TABLE IF NOT EXISTS automation_data_profiles (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS automation_data_profiles_owner_idx ON automation_data_profiles(owner_id);
+
+-- Codex thread mapping — the durable link between an application conversation and the Codex
+-- runtime thread that holds its model-side history. Application conversation ids stay the public
+-- identity; this table lets a restarted (or second) worker resume the SAME Codex thread instead
+-- of starting the agent's memory over. One thread per (conversation, agent). Additive + idempotent.
+CREATE TABLE IF NOT EXISTS codex_threads (
+  conversation_id TEXT NOT NULL,
+  agent           TEXT NOT NULL,               -- canonical agent role owning the thread
+  thread_id       TEXT NOT NULL,               -- Codex runtime thread id (~/.codex/sessions)
+  model           TEXT,                        -- model the thread was started with
+  owner_id        TEXT,
+  project_id      TEXT,
+  app_id          TEXT,
+  turn_count      INTEGER NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, agent)
+);
+CREATE INDEX IF NOT EXISTS codex_threads_thread_idx ON codex_threads(thread_id);
+CREATE INDEX IF NOT EXISTS codex_threads_owner_idx ON codex_threads(owner_id, updated_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Recycle bin. Soft delete already stamps deleted_at/deleted_by on every table
+-- below; deleted_batch_id groups the rows removed by ONE user action (a cascade)
+-- so restore can offer "just this item" vs "everything deleted with it".
+-- Additive + idempotent: rows deleted before this existed have a NULL batch and
+-- simply restore individually, which is correct — they had no cascade.
+-- ---------------------------------------------------------------------------
+ALTER TABLE plans               ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE suites              ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE cases               ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE requirements        ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE runs                ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE reports             ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE defects             ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE scripts             ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE recordings          ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE folders             ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE automation_schedules ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+ALTER TABLE git_repositories    ADD COLUMN IF NOT EXISTS deleted_batch_id TEXT;
+
+CREATE INDEX IF NOT EXISTS plans_deleted_idx        ON plans(deleted_at DESC)        WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS suites_deleted_idx       ON suites(deleted_at DESC)       WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS cases_deleted_idx        ON cases(deleted_at DESC)        WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS requirements_deleted_idx ON requirements(deleted_at DESC) WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS runs_deleted_idx         ON runs(deleted_at DESC)         WHERE deleted_at IS NOT NULL;
+
+-- One user-initiated deletion. `detached` records links removed from SURVIVING rows (a shared child
+-- unlinked from the deleted parent) so a batch restore can put them back exactly.
+CREATE TABLE IF NOT EXISTS deletion_batches (
+  id          TEXT PRIMARY KEY,
+  root_type   TEXT NOT NULL,
+  root_id     TEXT NOT NULL,
+  root_label  TEXT NOT NULL DEFAULT '',
+  actor_id    TEXT NOT NULL DEFAULT '',
+  actor_name  TEXT NOT NULL DEFAULT '',
+  detached    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  owner_id    TEXT,
+  project_id  TEXT,
+  app_id      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS deletion_batches_created_idx ON deletion_batches(created_at DESC);

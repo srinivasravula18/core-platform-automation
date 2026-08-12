@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2 } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -25,6 +25,7 @@ import TestCases from '@/src/pages/TestCases';
 import TestRuns from '@/src/pages/TestRuns';
 import Defects from '@/src/pages/Defects';
 import Reports from '@/src/pages/Reports';
+import RecycleBin from '@/src/pages/RecycleBin';
 import SettingsPage from '@/src/pages/Settings';
 import Documentation from '@/src/pages/Documentation';
 import GitAgent from '@/src/pages/GitAgent';
@@ -76,6 +77,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
         { name: 'Traceability', href: '/traceability', icon: Target },
         { name: 'Reports', href: '/reports', icon: ClipboardList },
         { name: 'Defects', href: '/defects', icon: Bug },
+        { name: 'Recycle Bin', href: '/recycle-bin', icon: Trash2 },
       ],
     },
     {
@@ -585,6 +587,7 @@ export default function App() {
           <Route path="/requirements" element={<Requirements />} />
           <Route path="/traceability" element={<Traceability />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/recycle-bin" element={<RecycleBin />} />
           <Route path="/defects" element={<Defects />} />
           <Route path="/agent" element={<AgentConsole />} />
           <Route path="/agent/chat/:chatId" element={<AgentConsole />} />

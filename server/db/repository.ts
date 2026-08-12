@@ -3857,4 +3857,178 @@ export const CanonicalMessages = {
   },
 };
 
+/**
+ * Codex thread mappings — {conversationId, agent} → Codex runtime thread id.
+ *
+ * Application conversation ids remain the public identity; this only records WHICH Codex thread
+ * carries that conversation's model-side history, so a restart or a second worker resumes the
+ * same thread instead of restarting the agent's memory. Falls back to an in-memory array when
+ * Postgres is absent (single-process dev), matching every other module here.
+ */
+export const CodexThreads = {
+  async get(conversationId: string, agent: string): Promise<{ threadId: string; model: string | null; turnCount: number } | null> {
+    if (!isPgEnabled()) {
+      const row = ((db as any).codexThreads ||= []).find((t: any) => t.conversation_id === conversationId && t.agent === agent);
+      return row ? { threadId: row.thread_id, model: row.model || null, turnCount: Number(row.turn_count || 0) } : null;
+    }
+    const row = await queryOne('SELECT * FROM codex_threads WHERE conversation_id = $1 AND agent = $2', [conversationId, agent]);
+    return row ? { threadId: row.thread_id, model: row.model || null, turnCount: Number(row.turn_count || 0) } : null;
+  },
+  /** Record the thread a turn ran on, incrementing its turn count. Idempotent per (conversation, agent). */
+  async record(input: { conversationId: string; agent: string; threadId: string; model?: string; ownerId?: string; projectId?: string; appId?: string }): Promise<void> {
+    const { conversationId, agent, threadId } = input;
+    if (!conversationId || !agent || !threadId) return;
+    if (!isPgEnabled()) {
+      const rows = ((db as any).codexThreads ||= []);
+      const existing = rows.find((t: any) => t.conversation_id === conversationId && t.agent === agent);
+      const now = new Date().toISOString();
+      if (existing) {
+        existing.thread_id = threadId;
+        existing.model = input.model || existing.model;
+        existing.turn_count = Number(existing.turn_count || 0) + 1;
+        existing.updated_at = now;
+        return;
+      }
+      rows.push({
+        conversation_id: conversationId, agent, thread_id: threadId, model: input.model || null,
+        owner_id: input.ownerId || null, project_id: input.projectId || null, app_id: input.appId || null,
+        turn_count: 1, created_at: now, updated_at: now,
+      });
+      return;
+    }
+    await query(
+      `INSERT INTO codex_threads (conversation_id, agent, thread_id, model, owner_id, project_id, app_id, turn_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+       ON CONFLICT (conversation_id, agent) DO UPDATE
+         SET thread_id = EXCLUDED.thread_id,
+             model = COALESCE(EXCLUDED.model, codex_threads.model),
+             turn_count = codex_threads.turn_count + 1,
+             updated_at = now()`,
+      [conversationId, agent, threadId, input.model || null, input.ownerId || null, input.projectId || null, input.appId || null],
+    );
+  },
+  /** Drop a mapping whose thread the runtime no longer knows, so the next turn starts fresh. */
+  async forget(conversationId: string, agent: string): Promise<void> {
+    if (!isPgEnabled()) {
+      const rows = ((db as any).codexThreads ||= []);
+      const i = rows.findIndex((t: any) => t.conversation_id === conversationId && t.agent === agent);
+      if (i >= 0) rows.splice(i, 1);
+      return;
+    }
+    await query('DELETE FROM codex_threads WHERE conversation_id = $1 AND agent = $2', [conversationId, agent]);
+  },
+};
+
+/* ---------- recycle bin ----------
+ * Soft delete already retains every row; this exposes the deleted set and puts rows back.
+ * `deleted_batch_id` groups the rows removed by one user action so restore can be scoped to
+ * "just this item" or "everything deleted with it". Postgres only — the JSON fallback store
+ * hard-deletes, so there is nothing to recover there (callers get an empty list).
+ */
+
+/** Soft-deletable entities, keyed by the type used in recycle-bin URLs. */
+export const RECYCLE_ENTITIES: Record<string, { table: string; labelColumn: string; noun: string }> = {
+  plans: { table: 'plans', labelColumn: 'name', noun: 'Test Plan' },
+  suites: { table: 'suites', labelColumn: 'name', noun: 'Test Suite' },
+  cases: { table: 'cases', labelColumn: 'title', noun: 'Test Case' },
+  requirements: { table: 'requirements', labelColumn: 'title', noun: 'Requirement' },
+  runs: { table: 'runs', labelColumn: 'name', noun: 'Test Run' },
+  reports: { table: 'reports', labelColumn: 'name', noun: 'Report' },
+  defects: { table: 'defects', labelColumn: 'title', noun: 'Defect' },
+  scripts: { table: 'scripts', labelColumn: 'name', noun: 'Script' },
+  recordings: { table: 'recordings', labelColumn: 'name', noun: 'Recording' },
+  folders: { table: 'folders', labelColumn: 'name', noun: 'Folder' },
+  schedules: { table: 'automation_schedules', labelColumn: 'title', noun: 'Schedule' },
+  repositories: { table: 'git_repositories', labelColumn: 'name', noun: 'Repository' },
+};
+
+export interface DeletedItem {
+  type: string;
+  noun: string;
+  id: string;
+  label: string;
+  deletedAt: string;
+  deletedBy: string;
+  batchId: string;
+  projectId: string;
+  appId: string;
+  ownerId: string;
+}
+
+export const RecycleBin = {
+  /** Everything currently soft-deleted, newest first. Scope filtering is applied by the caller. */
+  async list(): Promise<DeletedItem[]> {
+    if (!isPgEnabled()) return [];
+    const items: DeletedItem[] = [];
+    for (const [type, meta] of Object.entries(RECYCLE_ENTITIES)) {
+      const rows = await query(
+        `SELECT id, COALESCE(${meta.labelColumn}, '') AS label, deleted_at, COALESCE(deleted_by_name, '') AS deleted_by_name,
+                COALESCE(deleted_batch_id, '') AS deleted_batch_id, owner_id, project_id, app_id
+           FROM ${meta.table} WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
+      ).catch(() => [] as any[]);
+      for (const row of rows) {
+        items.push({
+          type, noun: meta.noun, id: row.id, label: row.label || row.id,
+          deletedAt: row.deleted_at, deletedBy: row.deleted_by_name || '', batchId: row.deleted_batch_id || '',
+          projectId: row.project_id || '', appId: row.app_id || '', ownerId: row.owner_id || '',
+        });
+      }
+    }
+    return items.sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  },
+
+  /** Put one row back. Returns false when it was not deleted (or does not exist). */
+  async restore(type: string, id: string): Promise<boolean> {
+    const meta = RECYCLE_ENTITIES[type];
+    if (!meta || !isPgEnabled()) return false;
+    const res = await query(
+      `UPDATE ${meta.table} SET deleted_at = NULL, deleted_by = NULL, deleted_by_name = NULL, deleted_batch_id = NULL
+        WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id`, [id]);
+    return res.length > 0;
+  },
+
+  /** Put every row of one deletion back. Returns how many rows were restored. */
+  async restoreBatch(batchId: string): Promise<number> {
+    if (!batchId || !isPgEnabled()) return 0;
+    let restored = 0;
+    for (const meta of Object.values(RECYCLE_ENTITIES)) {
+      const res = await query(
+        `UPDATE ${meta.table} SET deleted_at = NULL, deleted_by = NULL, deleted_by_name = NULL, deleted_batch_id = NULL
+          WHERE deleted_batch_id = $1 AND deleted_at IS NOT NULL RETURNING id`, [batchId]).catch(() => [] as any[]);
+      restored += res.length;
+    }
+    return restored;
+  },
+
+  /** Rows that would come back with a batch restore, so the UI can name them in the prompt. */
+  async batchMembers(batchId: string): Promise<DeletedItem[]> {
+    if (!batchId) return [];
+    return (await RecycleBin.list()).filter((item) => item.batchId === batchId);
+  },
+
+  /** Tag already-soft-deleted rows as one user action (used by the cascade in Phase B). */
+  async stampBatch(type: string, ids: string[], batchId: string): Promise<void> {
+    const meta = RECYCLE_ENTITIES[type];
+    if (!meta || !ids.length || !isPgEnabled()) return;
+    await query(`UPDATE ${meta.table} SET deleted_batch_id = $2 WHERE id = ANY($1::text[])`, [ids, batchId]);
+  },
+
+  async createBatch(input: { rootType: string; rootId: string; rootLabel: string; detached?: any[]; scope?: any }): Promise<string> {
+    const id = uid('DEL');
+    if (!isPgEnabled()) return id;
+    const actor = currentActor();
+    await query(
+      `INSERT INTO deletion_batches (id, root_type, root_id, root_label, actor_id, actor_name, detached, owner_id, project_id, app_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+      [id, input.rootType, input.rootId, input.rootLabel || '', actor.id || '', actor.name || '',
+       JSON.stringify(input.detached || []), input.scope?.userId || null, input.scope?.projectId || null, input.scope?.appId || null]);
+    return id;
+  },
+
+  async getBatch(batchId: string): Promise<any | null> {
+    if (!batchId || !isPgEnabled()) return null;
+    return queryOne('SELECT * FROM deletion_batches WHERE id = $1', [batchId]);
+  },
+};
+
 export { withTransaction };
