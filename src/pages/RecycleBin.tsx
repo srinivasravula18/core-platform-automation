@@ -29,13 +29,15 @@ export default function RecycleBin() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [restoring, setRestoring] = useState('');
   // Set when the chosen item was deleted alongside others — drives the restore-scope prompt.
-  const [scopePrompt, setScopePrompt] = useState<{ item: DeletedItem; related: DeletedItem[] } | null>(null);
+  const [scopePrompt, setScopePrompt] = useState<{ item: DeletedItem; related: DeletedItem[]; missingParents: DeletedItem[] } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
       const data = await fetch('/api/recycle-bin').then((response) => response.json());
       setItems(Array.isArray(data?.items) ? data.items : []);
       setSupported(data?.supported !== false);
+      setSelected(new Set());
       setReason(String(data?.reason || ''));
     } catch {
       setItems([]);
@@ -73,16 +75,43 @@ export default function RecycleBin() {
 
   // Ask the scope question only when the deletion actually removed more than this one row.
   const beginRestore = async (item: DeletedItem) => {
-    if (!item.batchId) return restore(item, 'self');
     try {
       const data = await fetch(`/api/recycle-bin/${item.type}/${encodeURIComponent(item.id)}/restore-scope`).then((r) => r.json());
       const related: DeletedItem[] = Array.isArray(data?.related) ? data.related : [];
-      if (!related.length) return restore(item, 'self');
-      setScopePrompt({ item, related });
+      const missingParents: DeletedItem[] = Array.isArray(data?.missingParents) ? data.missingParents : [];
+      if (!related.length && !missingParents.length) return restore(item, 'self');
+      setScopePrompt({ item, related, missingParents });
     } catch {
       return restore(item, 'self');
     }
   };
+
+  const restoreSelected = async () => {
+    const items = [...selected].map((key) => { const [type, ...rest] = key.split(':'); return { type, id: rest.join(':') }; });
+    if (!items.length) return;
+    setRestoring('bulk');
+    try {
+      const response = await fetch('/api/recycle-bin/restore-many', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || 'Could not restore the selected items.');
+      showToast(`Restored ${data.restored} item(s).`, { tone: 'success' });
+      await load();
+    } catch (error: any) {
+      void showAlert(error?.message || 'Could not restore the selected items.');
+    } finally {
+      setRestoring('');
+    }
+  };
+
+  const rowKey = (item: DeletedItem) => `${item.type}:${item.id}`;
+  const toggle = (item: DeletedItem) => setSelected((current) => {
+    const next = new Set(current);
+    const key = rowKey(item);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col px-4 pb-4">
@@ -115,7 +144,18 @@ export default function RecycleBin() {
           >
             {types.map((type) => <option key={type} value={type}>{type === 'all' ? 'All types' : type}</option>)}
           </select>
-          <span className="ml-auto shrink-0 font-mono text-xs text-[var(--text-muted)]">{visible.length} item(s)</span>
+          {selected.size > 0 ? (
+            <button
+              type="button"
+              onClick={() => void restoreSelected()}
+              disabled={restoring === 'bulk'}
+              className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              {restoring === 'bulk' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />} Restore Selected ({selected.size})
+            </button>
+          ) : (
+            <span className="ml-auto shrink-0 font-mono text-xs text-[var(--text-muted)]">{visible.length} item(s)</span>
+          )}
         </div>
 
         {!supported && (
@@ -137,6 +177,14 @@ export default function RecycleBin() {
             <table className="w-full min-w-[820px] border-collapse text-left text-sm">
               <thead className="sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--bg-secondary)] text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 <tr>
+                  <th className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all deleted items"
+                      checked={visible.length > 0 && visible.every((item) => selected.has(rowKey(item)))}
+                      onChange={(event) => setSelected(event.target.checked ? new Set(visible.map(rowKey)) : new Set())}
+                    />
+                  </th>
                   <th className="px-4 py-3">Item</th>
                   <th className="w-32 px-4 py-3">Type</th>
                   <th className="w-40 px-4 py-3">Deleted</th>
@@ -149,6 +197,14 @@ export default function RecycleBin() {
                   const busy = restoring === `${item.type}:${item.id}`;
                   return (
                     <tr key={`${item.type}-${item.id}`} className="align-top hover:bg-[var(--bg-secondary)]/40">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${item.label}`}
+                          checked={selected.has(rowKey(item))}
+                          onChange={() => toggle(item)}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-[var(--text-primary)] [overflow-wrap:anywhere]">{item.label}</div>
                         <div className="mt-0.5 font-mono text-[10px] text-[var(--text-muted)]">{item.id}</div>
@@ -198,6 +254,13 @@ export default function RecycleBin() {
               <strong>{scopePrompt.item.label}</strong> was deleted together with {scopePrompt.related.length} other item(s).
             </p>
             <p className="text-[var(--text-muted)]">Restoring only this item leaves the rest in the recycle bin.</p>
+            {scopePrompt.missingParents.length > 0 && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-600 dark:text-amber-300">
+                Its parent {scopePrompt.missingParents.map((parent) => parent.noun.toLowerCase()).join(' / ')} is also deleted
+                ({scopePrompt.missingParents.map((parent) => parent.label).join(', ')}), so restoring this on its own leaves it
+                outside any {scopePrompt.missingParents[0].noun.toLowerCase()}.
+              </div>
+            )}
             <div className="max-h-56 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/50">
               <ul className="divide-y divide-[var(--border)]">
                 {scopePrompt.related.map((related) => (

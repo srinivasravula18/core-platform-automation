@@ -8,10 +8,27 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import { RECYCLE_ENTITIES, RecycleBin } from '../../db/repository';
+import { Cases, RECYCLE_ENTITIES, RecycleBin, Suites, type DeletedItem } from '../../db/repository';
 import { isPostgresEnabled } from '../../db/pool';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { addActivity } from '../../shared/storage';
+
+/**
+ * Parents of a deleted item that are themselves still in the recycle bin. Only plans/suites/cases
+ * have a parent hierarchy worth reporting; everything else returns nothing.
+ */
+async function deletedParentsOf(type: string, id: string, deleted: DeletedItem[]): Promise<DeletedItem[]> {
+  if (type !== 'cases' && type !== 'suites') return [];
+  const row: any = type === 'cases' ? await Cases.get(id) : await Suites.get(id);
+  // The row is soft-deleted, so the scoped getters may not return it; fall back to no warning.
+  if (!row) return [];
+  const parentIds = new Set<string>([
+    ...(Array.isArray(row.testPlanIds) ? row.testPlanIds : []),
+    ...(Array.isArray(row.testSuiteIds) ? row.testSuiteIds : []),
+    ...(Array.isArray(row.parentSuiteIds) ? row.parentSuiteIds : []),
+  ].map((value: unknown) => String(value || '')).filter(Boolean));
+  return deleted.filter((item) => (item.type === 'plans' || item.type === 'suites') && parentIds.has(item.id));
+}
 
 export function registerRecycleBinRoutes(app: Express) {
   app.get('/api/recycle-bin', async (req: Request, res: Response) => {
@@ -41,7 +58,28 @@ export function registerRecycleBinRoutes(app: Express) {
     const item = mine.find((entry) => entry.type === type && entry.id === id);
     if (!item) return res.status(404).json({ error: 'That item is not in the recycle bin.' });
     const related = item.batchId ? mine.filter((entry) => entry.batchId === item.batchId && !(entry.type === type && entry.id === id)) : [];
-    res.json({ item, related, batchId: item.batchId || '' });
+    // Restoring a child whose parent is still deleted leaves it unreachable in the tree — surface
+    // those parents so the user can bring them back too instead of hunting for a "missing" item.
+    const missingParents = await deletedParentsOf(type, id, mine);
+    res.json({ item, related, missingParents, batchId: item.batchId || '' });
+  });
+
+  /** Restore several items in one go (recycle-bin multi-select). */
+  app.post('/api/recycle-bin/restore-many', async (req: Request, res: Response) => {
+    const requested: Array<{ type: string; id: string }> = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!requested.length) return res.status(400).json({ error: 'Select at least one item to restore.' });
+    const mine = scopeFilter(await RecycleBin.list(), reqScope(req));
+    let restored = 0;
+    const skipped: string[] = [];
+    for (const entry of requested) {
+      const item = mine.find((row) => row.type === entry.type && row.id === String(entry.id));
+      if (!item) { skipped.push(String(entry.id)); continue; }
+      if (await RecycleBin.restore(item.type, item.id)) restored += 1;
+      else skipped.push(item.id);
+    }
+    const actor = reqScope(req);
+    addActivity(`Restored ${restored} item(s) from the recycle bin`, { ownerId: actor.userId || '', actor: actor.username || '' });
+    res.json({ success: true, restored, skipped });
   });
 
   app.post('/api/recycle-bin/:type/:id/restore', async (req: Request, res: Response) => {
