@@ -845,9 +845,25 @@ export function registerAutomationRoutes(app: Express) {
       progress: headed ? 'Running headed on local agent' : 'Running headless on server',
       triggerMeta: { executionMode: headed ? 'headed' : 'headless' },
     });
-    if (headed) await tryDispatch(job.id);
-    else void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
-    res.status(201).json({ run, jobId: job.id });
+    // An agent runs one headed job at a time, so starting a suite queues all but the first. Say so on
+    // the run instead of leaving it claiming "Running" with a spinner that never resolves.
+    let dispatched = true;
+    if (headed) {
+      dispatched = await tryDispatch(job.id);
+      if (!dispatched) {
+        const waiting = (await AutomationJobs.list()).filter((item: any) =>
+          item.id !== job.id && item.agentId === agentId && ['queued', 'dispatched', 'running', 'awaiting_user', 'uploading'].includes(item.status)).length;
+        await Runs.upsert({
+          ...run,
+          progress: isAgentConnected(agentId)
+            ? `Queued — the local agent is busy${waiting > 1 ? ` (${waiting - 1} other run(s) ahead)` : ''}`
+            : 'Queued — waiting for the local agent to come back online',
+        });
+      }
+    } else {
+      void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
+    }
+    res.status(201).json({ run, jobId: job.id, dispatched });
   }));
 
   /* ---------- schedules (human, scoped) ---------- */
