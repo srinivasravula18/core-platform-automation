@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks, Info } from 'lucide-react';
+import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks, Info, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
@@ -67,11 +67,26 @@ function formatCountdown(iso?: string | null, now = Date.now()): string {
 }
 
 // Shared card shell so every widget reads as one system.
-function Panel({ title, icon: Icon, children }: { title: string; icon?: any; children: any }) {
+// `to` turns the whole card into a link to the page that owns this data; rows inside can still carry
+// their own, more specific destination by stopping propagation.
+function Panel({ title, icon: Icon, to, children }: { title: string; icon?: any; to?: string; children: any }) {
+  const navigate = useNavigate();
+  const open = to ? () => navigate(to) : undefined;
   return (
-    <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
+    <div
+      onClick={open}
+      onKeyDown={open ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } } : undefined}
+      role={open ? 'link' : undefined}
+      tabIndex={open ? 0 : undefined}
+      title={open ? `Open ${title}` : undefined}
+      className={cn(
+        'flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm',
+        open && 'cursor-pointer transition-colors hover:border-[var(--accent)]/50 hover:bg-[var(--bg-secondary)]/40 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]',
+      )}
+    >
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
         {Icon && <Icon className="h-4 w-4 text-[var(--text-muted)]" />} {title}
+        {open && <ChevronRight className="ml-auto h-4 w-4 text-[var(--text-muted)]" />}
       </div>
       <div className="min-h-0 flex-1">{children}</div>
     </div>
@@ -401,7 +416,7 @@ export default function Dashboard() {
 
       {/* Row 4 — scheduled automation (#10 Upcoming, #12 Next countdown, #13 Health, #11 Last run) */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <Panel title="Upcoming Scheduled Runs" icon={CalendarClock}>
+        <Panel title="Upcoming Scheduled Runs" icon={CalendarClock} to="/automation/schedules">
           {(stats?.upcomingSchedules || []).length === 0 ? <EmptyNote>No scheduled runs.</EmptyNote> : (
             <ul className="space-y-2 text-xs">
               {stats.upcomingSchedules.map((s: any) => (
@@ -413,7 +428,7 @@ export default function Dashboard() {
             </ul>
           )}
         </Panel>
-        <Panel title="Next Run In" icon={Clock}>
+        <Panel title="Next Run In" icon={Clock} to="/automation/schedules">
           {stats?.nextScheduledRunAt ? (
             <div>
               <div className="text-2xl font-bold text-[var(--text-primary)]">{formatCountdown(stats.nextScheduledRunAt, nowTick)}</div>
@@ -429,7 +444,7 @@ export default function Dashboard() {
             </div>
           )}
         </Panel>
-        <Panel title="Last Automation Run" icon={CheckCircle2}>
+        <Panel title="Last Automation Run" icon={CheckCircle2} to={stats?.lastAutomationRun?.runId ? `/runs/${stats.lastAutomationRun.runId}` : '/runs'}>
           {stats?.lastAutomationRun ? (() => {
             const r = stats.lastAutomationRun;
             const status = String(r.status || 'unknown');
@@ -450,11 +465,16 @@ export default function Dashboard() {
 
       {/* Row 5 — insights (#14 Top failing, #15 Plan timelines) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Top Failing Features" icon={Bug}>
+        <Panel title="Top Failing Features" icon={Bug} to="/cases">
           {(stats?.topFailing || []).length === 0 ? <EmptyNote>No failures recorded across runs. 🎉</EmptyNote> : (
             <ul className="space-y-2 text-sm">
               {stats.topFailing.map((f: any, i: number) => (
-                <li key={i} className="flex justify-between gap-2">
+                <li
+                  key={i}
+                  onClick={(event) => { event.stopPropagation(); navigate(`/cases?tag=${encodeURIComponent(f.feature)}`); }}
+                  title={`Open test cases tagged ${f.feature}`}
+                  className="flex cursor-pointer justify-between gap-2 hover:text-[var(--accent)]"
+                >
                   <span className="truncate text-[var(--text-primary)]">{f.feature}</span>
                   <span className="whitespace-nowrap font-medium text-red-500">{f.fails} fail{f.fails === 1 ? '' : 's'}</span>
                 </li>
@@ -462,12 +482,12 @@ export default function Dashboard() {
             </ul>
           )}
         </Panel>
-        <Panel title="Test Plan Timelines" icon={ListChecks}>
+        <Panel title="Test Plan Timelines" icon={ListChecks} to="/plans">
           {(stats?.openPlans || []).length === 0 ? <EmptyNote>No active test plans.</EmptyNote> : (
             <>
               <ul className="space-y-2 text-sm">
                 {stats.openPlans.map((p: any) => (
-                  <li key={p.id} onClick={() => navigate('/plans')} className="flex cursor-pointer justify-between gap-2 hover:text-[var(--accent)]">
+                  <li key={p.id} onClick={(event) => { event.stopPropagation(); navigate(`/plans/${p.id}`); }} title={`Open ${p.name}`} className="flex cursor-pointer justify-between gap-2 hover:text-[var(--accent)]">
                     <span className="truncate text-[var(--text-primary)]">{p.name}</span>
                     <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">{p.schedule || p.status}</span>
                   </li>

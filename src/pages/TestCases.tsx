@@ -111,6 +111,8 @@ export default function TestCases() {
   const [filters, setFilters] = useState(() => ({
     ...emptyFilters,
     notInAnyRun: searchParams.get('notInAnyRun') === 'true',
+    // ?tag= lets other pages (e.g. the dashboard's failing features) link straight to a tag's cases.
+    tags: searchParams.get('tag') ? [String(searchParams.get('tag'))] : [],
   }));
   const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
@@ -302,7 +304,10 @@ export default function TestCases() {
   useEffect(() => {
     setSearchTerm(searchParams.get('search') || '');
     const notInAnyRun = searchParams.get('notInAnyRun') === 'true';
-    setFilters((current) => current.notInAnyRun === notInAnyRun ? current : { ...current, notInAnyRun });
+    const tags = searchParams.get('tag') ? [String(searchParams.get('tag'))] : [];
+    setFilters((current) => current.notInAnyRun === notInAnyRun && current.tags.join('|') === tags.join('|')
+      ? current
+      : { ...current, notInAnyRun, tags });
   }, [searchParams]);
 
   useEffect(() => {

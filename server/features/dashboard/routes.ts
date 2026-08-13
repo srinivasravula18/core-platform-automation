@@ -188,7 +188,8 @@ export function registerDashboardRoutes(app: Express) {
       ? runs.find((run: any) => run?.triggerMeta?.automationJobId === lastJob.id)
       : null;
     const lastAutomationRun = lastJob
-      ? { id: lastJob.id, status: lastJob.status, trigger: lastJob.trigger, finishedAt: lastJob.finishedAt, summary: automationOutcome(lastJob, linkedRun) }
+      // runId lets the dashboard card open the run this job produced instead of the run list.
+      ? { id: lastJob.id, runId: linkedRun?.id || '', status: lastJob.status, trigger: lastJob.trigger, finishedAt: lastJob.finishedAt, summary: automationOutcome(lastJob, linkedRun) }
       : null;
 
     // Top failing features (#14): attribute real run-step failures to the case's tags (features).
