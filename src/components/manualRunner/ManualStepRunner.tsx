@@ -31,6 +31,7 @@ export function ManualStepRunner({
   showImages,
   disabled,
   authoringDisabled,
+  commentsEnabled,
   onStepChange,
   onUploadScreenshot,
   onOpenImage,
@@ -42,6 +43,8 @@ export function ManualStepRunner({
   showImages: boolean;
   disabled?: boolean;
   authoringDisabled?: boolean;
+  /** Keeps the comment box usable on a read-only run — an automated result is still worth annotating. */
+  commentsEnabled?: boolean;
   onStepChange: (index: number, patch: Partial<StepResult>) => void;
   onUploadScreenshot: (index: number, dataUrl: string) => void;
   onOpenImage: (url: string) => void;
@@ -82,6 +85,7 @@ export function ManualStepRunner({
               showImages={showImages}
               disabled={disabled}
               authoringDisabled={authoringDisabled}
+              commentsEnabled={commentsEnabled}
               onStepChange={onStepChange}
               onUploadScreenshot={onUploadScreenshot}
               onOpenImage={onOpenImage}
@@ -110,6 +114,7 @@ function StepRow({
   showImages,
   disabled,
   authoringDisabled,
+  commentsEnabled,
   onStepChange,
   onUploadScreenshot,
   onOpenImage,
@@ -121,6 +126,7 @@ function StepRow({
   showImages: boolean;
   disabled?: boolean;
   authoringDisabled?: boolean;
+  commentsEnabled?: boolean;
   onStepChange: (index: number, patch: Partial<StepResult>) => void;
   onUploadScreenshot: (index: number, dataUrl: string) => void;
   onOpenImage: (url: string) => void;
@@ -174,7 +180,7 @@ function StepRow({
         <td className="px-1 py-2 text-right text-xs tabular-nums text-[var(--text-muted)]">{stepDuration(step, now)}</td>
         <td className="px-2 py-2">
           <div className="flex items-center gap-1">
-            <button type="button" disabled={disabled} onClick={() => setShowComment((open) => !open)} title="Add comment" aria-label="Add comment" aria-expanded={showComment}
+            <button type="button" disabled={disabled && !commentsEnabled} onClick={() => setShowComment((open) => !open)} title="Add comment" aria-label="Add comment" aria-expanded={showComment}
               className={`rounded p-1 disabled:opacity-50 ${showComment || step.comment ? 'text-[var(--accent)]' : 'text-[var(--text-muted)] hover:text-[var(--accent)]'}`}>
               <MessageSquare className="h-4 w-4" />
             </button>
@@ -198,7 +204,7 @@ function StepRow({
           <div className="flex items-start gap-2">
             <div className={showComment ? 'min-w-0 flex-1 rounded-md bg-[var(--bg-secondary)] p-2' : 'hidden'}>
               <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Comment</label>
-              <textarea key={`comment-${index}-${step.comment || ''}`} defaultValue={step.comment || ''} disabled={disabled} rows={2} placeholder="Add a comment…"
+              <textarea key={`comment-${index}-${step.comment || ''}`} defaultValue={step.comment || ''} disabled={disabled && !commentsEnabled} rows={2} placeholder="Add a comment…"
                 onBlur={(e) => { if (e.target.value !== (step.comment || '')) onStepChange(index, { comment: e.target.value }); }}
                 className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60" />
             </div>

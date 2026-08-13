@@ -749,6 +749,25 @@ export function registerResourceRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('updated run case summary');
     res.json({ success: true, run: updated });
   });
+  // Per-step comment on an AUTOMATED run. Outcomes there come from the execution and stay read-only,
+  // so this writes only the annotation and never touches step results or the run rollup.
+  app.patch('/api/runs/:id/summary/:caseId/steps/:index', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!uniqueStrings([...(run.caseIds || []), run.testCaseId]).includes(req.params.caseId)) return res.status(404).json({ error: 'Test case is not part of this run.' });
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'Step index out of range.' });
+    if (typeof req.body?.comment !== 'string') return res.status(400).json({ error: 'A comment is required.' });
+    const comment = req.body.comment.slice(0, 4000);
+    const forRun = { ...(run.definition?.caseStepComments || {}) };
+    const forCase = { ...(forRun[req.params.caseId] || {}) };
+    if (comment) forCase[index] = comment; else delete forCase[index];
+    forRun[req.params.caseId] = forCase;
+    const updated = await Runs.upsert({ ...run, definition: { ...(run.definition || {}), caseStepComments: forRun } });
+    if (!isPgEnabled()) persistDataInBackground('updated run step comment');
+    res.json({ success: true, run: updated });
+  });
+
   app.post('/api/runs/:id/close', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
