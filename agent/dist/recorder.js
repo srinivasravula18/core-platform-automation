@@ -19,6 +19,8 @@ const compiledLauncher = path.join(moduleDir, 'codegen.js');
 const codegenLauncher = fs.existsSync(compiledLauncher) ? [compiledLauncher] : ['--import', 'tsx', path.join(moduleDir, 'codegen.ts')];
 /** How long a graceful stop may take to flush the video before we force-kill the tree. */
 const GRACEFUL_STOP_MS = 6000;
+/** Codegen writes LF regardless of platform, so line windows are diffed on LF. */
+const NEWLINE = '\n';
 /** Root for the throwaway profiles codegen needs; nothing under it survives a recording. */
 const PROFILE_ROOT = 'codegen-profiles';
 export function codegenProfileDir(workDir, sessionId) {
@@ -76,6 +78,38 @@ export function codegenArguments(workDir, outputPath, url, browser, rawPermissio
         ...(videoDir ? ['--video-dir', videoDir, '--measure-out', measuredWindowFile(workDir)] : []),
         ...(measuredWindow(workDir) ? ['--video-size', measuredWindow(workDir)] : [])];
 }
+/** The lines the recorder inserted into `before` to produce `after`, as one contiguous window. */
+function insertedWindow(before, after) {
+    const added = after.length - before.length;
+    if (added <= 0)
+        return null;
+    let start = 0;
+    while (start < before.length && before[start] === after[start])
+        start += 1;
+    return { start, lines: after.slice(start, start + added) };
+}
+/**
+ * What the user should see, given the recorder never stops writing.
+ *
+ * Pausing used to disable Playwright's recorder outright, which removed the codegen toolbar and —
+ * worse — left recording switched off after resume, so nothing that followed was captured. The
+ * recorder now stays on and its toolbar stays available; whatever it writes during a pause is
+ * removed here instead, which is what the user asked for in the first place.
+ */
+function visibleScript(state, raw) {
+    const lines = raw.split(NEWLINE);
+    const live = state.paused && state.pausedLines ? insertedWindow(state.pausedLines, lines) : null;
+    // Later windows first: dropping an earlier one would shift every index after it.
+    const windows = [...state.dropped, ...(live ? [live] : [])].sort((a, b) => b.start - a.start);
+    for (const window of windows) {
+        const found = lines.slice(window.start, window.start + window.lines.length);
+        // A window the recorder has since rewritten (it coalesces typing) no longer matches — keep those
+        // lines rather than cut the wrong ones.
+        if (found.join(NEWLINE) === window.lines.join(NEWLINE))
+            lines.splice(window.start, window.lines.length);
+    }
+    return lines.join(NEWLINE);
+}
 function deriveStats(script) {
     const lines = script.split('\n');
     return {
@@ -124,24 +158,29 @@ export class Recorder {
         // than "recording finalized, bytes:0" with no clue why.
         child.stderr?.on('data', (chunk) => this.log.warn({ recordingId }, `codegen: ${String(chunk).trim()}`));
         this.log.info({ recordingId, url, engine }, 'recording started');
-        const state = { child, outputPath, profileDir: codegenProfileDir(this.workDir, recordingId), videoDir, videoJobId, lastScript: '', paused: false, poll: setInterval(() => this.tick(recordingId), 1000) };
+        const state = { child, outputPath, profileDir: codegenProfileDir(this.workDir, recordingId), videoDir, videoJobId, lastScript: '', paused: false, pausedLines: null, dropped: [], poll: setInterval(() => this.tick(recordingId), 1000) };
         this.active.set(recordingId, state);
         this.send('record.status', { recordingId, stats: deriveStats(''), state: 'recording' });
         // If the user closes the codegen window, treat it as a stop.
         child.once('exit', () => void this.finalize(recordingId));
         child.once('error', (err) => { this.log.error({ err: err.message }, 'codegen spawn error'); void this.finalize(recordingId); });
     }
+    readScript(state) {
+        try {
+            return fs.readFileSync(state.outputPath, 'utf-8');
+        }
+        catch {
+            return '';
+        }
+    }
     tick(recordingId) {
         const state = this.active.get(recordingId);
         if (!state)
             return;
-        let script = '';
-        try {
-            script = fs.readFileSync(state.outputPath, 'utf-8');
-        }
-        catch {
+        const raw = this.readScript(state);
+        if (!raw)
             return;
-        }
+        const script = visibleScript(state, raw);
         if (script && script !== state.lastScript) {
             state.lastScript = script;
             this.send('record.chunk', { recordingId, script });
@@ -158,16 +197,12 @@ export class Recorder {
             return false;
         }
     }
-    /**
-     * Real pause: puts Playwright's recorder in mode 'none' so interactions stop producing steps.
-     * Without this the codegen window kept appending actions the user believed were not being recorded.
-     */
+    /** Freeze the script here; anything the recorder writes until resume is discarded (see visibleScript). */
     pause(recordingId) {
         const state = this.active.get(recordingId);
         if (!state || state.paused)
             return;
-        if (!this.command(state, 'pause'))
-            return;
+        state.pausedLines = this.readScript(state).split(NEWLINE);
         state.paused = true;
         this.log.info({ recordingId }, 'recording paused');
         this.send('record.status', { recordingId, stats: deriveStats(state.lastScript), state: 'paused' });
@@ -176,10 +211,14 @@ export class Recorder {
         const state = this.active.get(recordingId);
         if (!state || !state.paused)
             return;
-        if (!this.command(state, 'resume'))
-            return;
+        // The window is remembered so it stays out of every later read too — the recorder rewrites the
+        // whole script on each action, so a one-off truncation would not survive the next one.
+        const window = state.pausedLines ? insertedWindow(state.pausedLines, this.readScript(state).split('\n')) : null;
+        if (window)
+            state.dropped.push(window);
+        state.pausedLines = null;
         state.paused = false;
-        this.log.info({ recordingId }, 'recording resumed');
+        this.log.info({ recordingId, discarded: state.dropped.length }, 'recording resumed');
         this.send('record.status', { recordingId, stats: deriveStats(state.lastScript), state: 'recording' });
     }
     isPaused(recordingId) {
@@ -248,11 +287,8 @@ export class Recorder {
             return;
         clearInterval(state.poll);
         this.active.delete(recordingId);
-        let script = state.lastScript;
-        try {
-            script = fs.readFileSync(state.outputPath, 'utf-8') || script;
-        }
-        catch { /* keep last */ }
+        const raw = this.readScript(state);
+        const script = raw ? visibleScript(state, raw) : state.lastScript;
         this.log.info({ recordingId, bytes: script.length }, 'recording finalized');
         // Upload the live-captured video BEFORE record.done, so by the time the cloud marks the preview
         // job done the artifact is already there — the preview panel never has to poll for a race.

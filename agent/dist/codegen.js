@@ -71,11 +71,9 @@ try {
     let controlling = Promise.resolve();
     const control = (command) => {
         controlling = controlling.then(async () => {
-            if (command === 'pause')
-                await context._disableRecorder(); // sets recorder mode 'none'
-            else if (command === 'resume')
-                await context._enableRecorder(recorderParams);
-            else if (command === 'stop')
+            // Only 'stop' reaches here: pausing is handled by the agent, which drops what the recorder writes
+            // while paused. Disabling the recorder removed its toolbar and left recording off after resume.
+            if (command === 'stop')
                 await context?.close(); // flushes the video container
         }).catch((err) => console.error(`[codegen] ${command} failed:`, err?.message || err));
         return controlling;
