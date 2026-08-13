@@ -21,15 +21,39 @@ const codegenLauncher = fs.existsSync(compiledLauncher) ? [compiledLauncher] : [
 export const RECORD_VIEWPORT = { width: 1280, height: 720 };
 /** How long a graceful stop may take to flush the video before we force-kill the tree. */
 const GRACEFUL_STOP_MS = 6000;
-export function codegenArguments(workDir, outputPath, url, browser, rawPermissions, videoDir) {
+/** Root for the throwaway profiles codegen needs; nothing under it survives a recording. */
+const PROFILE_ROOT = 'codegen-profiles';
+export function codegenProfileDir(workDir, sessionId) {
+    return path.join(workDir, PROFILE_ROOT, Buffer.from(sessionId || 'default').toString('base64url'));
+}
+/** Delete every profile except the ones the given live recordings own. */
+export function purgeCodegenProfiles(workDir, keepSessionIds = []) {
+    const root = path.join(workDir, PROFILE_ROOT);
+    const keep = new Set(keepSessionIds.map((id) => path.basename(codegenProfileDir(workDir, id))));
+    let entries = [];
+    try {
+        entries = fs.readdirSync(root);
+    }
+    catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (keep.has(entry))
+            continue;
+        try {
+            fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+        }
+        catch { /* locked by a stray browser */ }
+    }
+}
+export function codegenArguments(workDir, outputPath, url, browser, rawPermissions, videoDir, sessionId = '') {
     const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
     const permissions = normalizeBrowserPermissionSettings(rawPermissions);
-    let origin = url;
-    try {
-        origin = new URL(url).origin;
-    }
-    catch { /* isolate malformed URLs by their raw value */ }
-    const profileDir = path.join(workDir, 'codegen-profiles', Buffer.from(`${engine}:${origin}`).toString('base64url'));
+    // Codegen runs a persistent context, so its profile keeps cookies/localStorage. Reusing one across
+    // recordings replayed the previous login and the re-recorded script skipped the login steps — every
+    // recording gets its own profile, wiped before use and deleted when it ends.
+    const profileDir = codegenProfileDir(workDir, sessionId || path.basename(outputPath));
+    fs.rmSync(profileDir, { recursive: true, force: true });
     fs.mkdirSync(profileDir, { recursive: true });
     const channel = engine === 'chromium' ? chromiumChannel() : undefined;
     return [...codegenLauncher, url, '--output', outputPath, '--browser', engine, '--user-data-dir', profileDir,
@@ -76,7 +100,9 @@ export class Recorder {
         fs.mkdirSync(videoDir, { recursive: true });
         // Invoke Playwright's installed CLI directly. Going through npx + cmd.exe added seconds to every
         // recording start on Windows and unnecessarily interpreted URL characters in a shell.
-        const args = codegenArguments(this.workDir, outputPath, url, browser, browserPermissions, videoDir);
+        // Drop profiles left behind by a crash/force-kill before launching, so no stale session survives.
+        purgeCodegenProfiles(this.workDir, [...this.active.keys(), recordingId]);
+        const args = codegenArguments(this.workDir, outputPath, url, browser, browserPermissions, videoDir, recordingId);
         const engine = args[args.indexOf('--browser') + 1];
         // stdin is the control channel (pause/resume/stop) — see codegen.ts.
         const child = spawn(process.execPath, args, {
@@ -87,7 +113,7 @@ export class Recorder {
         // than "recording finalized, bytes:0" with no clue why.
         child.stderr?.on('data', (chunk) => this.log.warn({ recordingId }, `codegen: ${String(chunk).trim()}`));
         this.log.info({ recordingId, url, engine }, 'recording started');
-        const state = { child, outputPath, videoDir, videoJobId, lastScript: '', paused: false, poll: setInterval(() => this.tick(recordingId), 1000) };
+        const state = { child, outputPath, profileDir: codegenProfileDir(this.workDir, recordingId), videoDir, videoJobId, lastScript: '', paused: false, poll: setInterval(() => this.tick(recordingId), 1000) };
         this.active.set(recordingId, state);
         this.send('record.status', { recordingId, stats: deriveStats(''), state: 'recording' });
         // If the user closes the codegen window, treat it as a stop.
@@ -234,6 +260,8 @@ export class Recorder {
                 fs.rm(state.videoDir, { recursive: true, force: true }, () => { });
             }
         }
+        // Stop and discard both land here: the session dies with the recording either way.
+        fs.rm(state.profileDir, { recursive: true, force: true }, () => { });
         this.send('record.done', { recordingId, script, stats: deriveStats(script), metadata: { generatedOn: os.hostname() } });
     }
     killTree(child) {

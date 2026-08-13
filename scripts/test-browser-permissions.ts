@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { normalizeBrowserPermissionSettings } from '../core/shared/browserPermissions';
 import { browserPermissionPrelude } from '../agent/src/browserPermissions';
 import { configTemplate } from '../agent/src/runner';
-import { codegenArguments } from '../agent/src/recorder';
+import { codegenArguments, codegenProfileDir, purgeCodegenProfiles } from '../agent/src/recorder';
 
 const settings = normalizeBrowserPermissionSettings({
   permissions: ['camera', 'geolocation', 'camera', 'unsupported'],
@@ -32,5 +34,29 @@ assert.deepEqual(args.slice(args.indexOf('--permissions'), args.indexOf('--permi
 assert.deepEqual(args.slice(args.indexOf('--geolocation'), args.indexOf('--geolocation') + 2), ['--geolocation', '12.97,77.59']);
 assert.ok(args.includes('--fake-media'));
 assert.ok(args.includes('--accept-dialogs'));
+
+// A recording must never inherit the previous session: fresh profile per recording, wiped on reuse.
+const workDir = path.join('.testflow-pw', 'scratch', 'codegen-profile-isolation');
+fs.rmSync(workDir, { recursive: true, force: true });
+const profileOf = (recordingId: string) => {
+  const launch = codegenArguments(workDir, `${recordingId}.spec.ts`, 'https://example.test/path', 'chromium', settings, undefined, recordingId);
+  return launch[launch.indexOf('--user-data-dir') + 1];
+};
+
+const first = profileOf('REC-1');
+const second = profileOf('REC-2');
+assert.notEqual(first, second);
+assert.equal(first, codegenProfileDir(workDir, 'REC-1'));
+
+fs.writeFileSync(path.join(first, 'Cookies'), 'logged-in');
+assert.equal(fs.existsSync(path.join(first, 'Cookies')), true);
+profileOf('REC-1'); // re-recording the same id starts from a clean profile
+assert.equal(fs.existsSync(path.join(first, 'Cookies')), false);
+
+fs.writeFileSync(path.join(second, 'Cookies'), 'logged-in');
+purgeCodegenProfiles(workDir, ['REC-1']);
+assert.equal(fs.existsSync(first), true);
+assert.equal(fs.existsSync(second), false);
+fs.rmSync(workDir, { recursive: true, force: true });
 
 console.log('Browser permission checks passed.');
