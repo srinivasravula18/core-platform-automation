@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
+import { codegenSizing } from './codegenOptions.js';
 const args = process.argv.slice(2);
 const value = (name) => {
     const index = args.indexOf(name);
@@ -10,13 +11,8 @@ const outputFile = path.resolve(value('--output'));
 const userDataDir = path.resolve(value('--user-data-dir'));
 const videoDir = value('--video-dir') ? path.resolve(value('--video-dir')) : undefined;
 const browserName = value('--browser') || 'chromium';
-// Recording must look like the user's own Chrome: a maximized window whose page fills it. A pinned
-// viewport clipped responsive layouts, so the app under test only fitted when zoomed out. An explicit
-// --viewport w,h still pins both the page and the video; without it both follow the window.
-const [pinnedWidth, pinnedHeight] = (value('--viewport') || '').split(',').map(Number);
-const recordSize = Number.isFinite(pinnedWidth) && Number.isFinite(pinnedHeight) && pinnedWidth > 0 && pinnedHeight > 0
-    ? { width: pinnedWidth, height: pinnedHeight }
-    : null;
+// Window/page sizing lives in codegenOptions.ts, where a test locks it against being pinned again.
+const sizing = codegenSizing(value('--viewport'));
 const browserType = browserName === 'firefox' ? firefox : browserName === 'webkit' ? webkit : chromium;
 const permissions = value('--permissions').split(',').filter(Boolean);
 const coordinates = value('--geolocation').split(',').map(Number);
@@ -27,20 +23,17 @@ const launchOptions = {
     headless: false,
     ...(browserName === 'chromium' && value('--channel') ? { channel: value('--channel') } : {}),
     ...(browserName === 'chromium' ? { args: [
-            ...(recordSize ? [`--window-size=${recordSize.width},${recordSize.height + 140}`] : ['--start-maximized']),
+            ...sizing.windowArgs,
             ...(args.includes('--fake-media') ? ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] : []),
         ] } : {}),
 };
 const contextOptions = {
-    // null = the page follows the window, exactly as a normal browser tab does.
-    viewport: recordSize,
+    viewport: sizing.viewport,
     ...(permissions.length ? { permissions } : {}),
     ...(geolocation ? { geolocation } : {}),
     // Codegen's recorder captures the script only, not video — recording it here alongside the live
     // session means the cloud never has to replay the script just to produce a preview.
-    // Without an explicit size Playwright derives the video canvas from the page itself, so the frames
-    // keep the window's aspect ratio and no black bars appear.
-    ...(videoDir ? { recordVideo: { dir: videoDir, ...(recordSize ? { size: recordSize } : {}) } } : {}),
+    ...(videoDir ? { recordVideo: { dir: videoDir, ...(sizing.videoSize ? { size: sizing.videoSize } : {}) } } : {}),
 };
 let context;
 try {

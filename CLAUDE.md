@@ -6,6 +6,7 @@ Project instructions for Claude Code working in this repo.
 
 - **No hardcoding, anywhere.** Never hardcode app/product facts (names like admin/keystone/shockwave, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
 - **Comments: precise and short.** One line where possible; no large multi-line comment blocks. Say why, not what. Match surrounding density.
+- **Never pin a visible browser's viewport.** Every browser the user sees — codegen recording (`agent/src/codegen.ts`) and headed runs (`agent/src/runner.ts`) — must launch maximized with `viewport: null`, so the page fills the window and re-lays-out on resize exactly like a normal tab. A fixed viewport (e.g. `1280x720`) clips the app under test and forces the user to zoom out; it has been reintroduced twice (fixed in `93967a5` for runs, `6fe106d` for recording) and must not come back. Do not pin it for video either — derive the video canvas from the page. Headless server-side contexts (inspection, evidence) may keep their fixed sizes.
 
 ## Architecture-change process ("Principal Architect" mode)
 

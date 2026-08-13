@@ -21,6 +21,7 @@
     "start:frontend": "node scripts/frontend-server.mjs",
     "check:gemini": "node scripts/check-gemini-rest.mjs",
     "test:step-grouping": "tsx scripts/test-step-grouping.ts",
+    "test:recorder-viewport": "tsx scripts/test-recorder-viewport.ts",
     "test:case-versioning": "tsx scripts/test-case-versioning.ts",
     "test:manual-runner": "tsx scripts/test-manual-runner.ts",
     "test:tag-composition": "tsx scripts/test-tag-composition.ts",
