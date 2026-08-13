@@ -5,7 +5,7 @@ import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
-import { ModifierIcon, commandPaletteHint, commandPaletteTitle } from '@/src/components/ShortcutHint';
+import { CommandPaletteHint, commandPaletteTitle } from '@/src/components/ShortcutHint';
 import { useProjects } from '@/src/store/project';
 import { AuthGate, logout, getUsername, getGrants } from '@/src/components/AuthGate';
 import { FEATURES, grantAllows, featureKeyForPath } from '@/src/lib/features';
@@ -347,8 +347,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
           title={commandPaletteTitle}
           className="hidden sm:flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-colors"
         >
-          <ModifierIcon className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">{commandPaletteHint}</span>
+          <CommandPaletteHint iconClassName="w-3.5 h-3.5" />
         </button>
         <button
           onClick={toggleTheme}
