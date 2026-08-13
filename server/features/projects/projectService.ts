@@ -153,6 +153,23 @@ function uniqueSlug(base: string, taken: Set<string>): string {
   return `${base}-${i}`;
 }
 
+// Two projects (or two apps in one project) sharing a name are indistinguishable in every picker,
+// scope chip and run record, so names must be unique. Compared case- and whitespace-insensitively:
+// "Core Platform" and "core  platform" read as the same name to a user.
+const nameKey = (value: string) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+function assertProjectNameFree(name: string, ownerId: string, exceptId = ''): void {
+  const clash = projects().find((p) => p.id !== exceptId
+    && (p.ownerId || '') === (ownerId || '')
+    && nameKey(p.name) === nameKey(name));
+  if (clash) throw new Error(`A project named "${clash.name}" already exists. Pick a different name.`);
+}
+
+function assertAppNameFree(projectId: string, name: string, exceptId = ''): void {
+  const clash = listApps(projectId).find((a) => a.id !== exceptId && nameKey(a.name) === nameKey(name));
+  if (clash) throw new Error(`This project already has an application named "${clash.name}". Pick a different name.`);
+}
+
 // ---- Projects ----
 
 export function listProjects(): Project[] {
@@ -166,6 +183,7 @@ export function getProject(id: string): Project | undefined {
 export function createProject(input: Partial<Project> & { name: string }): Project {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('Project name is required.');
+  assertProjectNameFree(name, input.ownerId || '');
   const kind: RepoKind = input.repoKind === 'remote' ? 'remote' : 'local';
   if (kind === 'local' && !String(input.repoPath || '').trim()) {
     throw new Error('A local repo path is required for a local project.');
@@ -201,6 +219,7 @@ export function updateProject(id: string, input: Partial<Project>): Project {
   if (input.name !== undefined) {
     const name = String(input.name).trim();
     if (!name) throw new Error('Project name cannot be empty.');
+    assertProjectNameFree(name, project.ownerId || '', project.id);
     project.name = name;
   }
   if (input.description !== undefined) project.description = String(input.description).trim();
@@ -243,6 +262,7 @@ export function createApp(projectId: string, input: Partial<AppRecord> & { name:
   if (!getProject(projectId)) throw new Error('Project not found.');
   const name = String(input.name || '').trim();
   if (!name) throw new Error('App name is required.');
+  assertAppNameFree(projectId, name);
   const taken = new Set(listApps(projectId).map((a) => a.slug));
   const now = new Date().toISOString();
   const app: AppRecord = {
@@ -273,6 +293,7 @@ export function updateApp(id: string, input: Partial<AppRecord>): AppRecord {
   if (input.name !== undefined) {
     const name = String(input.name).trim();
     if (!name) throw new Error('App name cannot be empty.');
+    assertAppNameFree(app.projectId, name, app.id);
     app.name = name;
   }
   if (input.description !== undefined) app.description = String(input.description).trim();

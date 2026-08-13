@@ -73,6 +73,10 @@ function applyRemoteStatus(project: Project, check: RemoteCheck) {
 
 export function registerProjectRoutes(app: Express) {
   // ---- Projects ----
+// A duplicate name is a conflict, not a malformed request — the wizard shows it on the name field.
+const failureCode = (message: string) => (/already exists|already has an application/i.test(message) ? 409
+  : /not found/i.test(message) ? 404 : 400);
+
   app.get('/api/projects', (req, res) => {
     res.json({ projects: visibleToScope(listProjectsWithApps(), req).map(withTokenFlag) });
   });
@@ -109,7 +113,8 @@ export function registerProjectRoutes(app: Express) {
       recordAudit('create', 'project', project.id, `Created project "${project.name}"`);
       res.status(201).json(withTokenFlag(getProject(project.id)!));
     } catch (e: any) {
-      res.status(400).json({ error: e?.message || 'Failed to create project.' });
+      const message = e?.message || 'Failed to create project.';
+      res.status(failureCode(message)).json({ error: message });
     }
   });
 
@@ -135,8 +140,8 @@ export function registerProjectRoutes(app: Express) {
       recordAudit('update', 'project', project.id, `Updated project "${project.name}"`);
       res.json(withTokenFlag(getProject(project.id)!));
     } catch (e: any) {
-      const code = /not found/i.test(e?.message || '') ? 404 : 400;
-      res.status(code).json({ error: e?.message || 'Failed to update project.' });
+      const message = e?.message || 'Failed to update project.';
+      res.status(failureCode(message)).json({ error: message });
     }
   });
 
@@ -213,8 +218,8 @@ export function registerProjectRoutes(app: Express) {
       recordAudit('create', 'app', created.id, `Added application "${created.name}"`);
       res.status(201).json(created);
     } catch (e: any) {
-      const code = /not found/i.test(e?.message || '') ? 404 : 400;
-      res.status(code).json({ error: e?.message || 'Failed to create app.' });
+      const message = e?.message || 'Failed to create app.';
+      res.status(failureCode(message)).json({ error: message });
     }
   });
 
@@ -225,8 +230,8 @@ export function registerProjectRoutes(app: Express) {
       recordAudit('update', 'app', updated.id, `Updated application "${updated.name}"`);
       res.json(updated);
     } catch (e: any) {
-      const code = /not found/i.test(e?.message || '') ? 404 : 400;
-      res.status(code).json({ error: e?.message || 'Failed to update app.' });
+      const message = e?.message || 'Failed to update app.';
+      res.status(failureCode(message)).json({ error: message });
     }
   });
 

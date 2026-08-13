@@ -32,7 +32,7 @@ const inputCls =
   'w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors';
 
 export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, onDone }: ProjectWizardProps) {
-  const { createProject, updateProject, createApp, updateApp } = useProjects();
+  const { projects, createProject, updateProject, createApp, updateApp } = useProjects();
   const isEdit = Boolean(editProject || editApp);
 
   // ---- Project form state ----
@@ -80,13 +80,28 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
       ? ['Details', 'Repository', 'Review']
       : ['Details', 'Target', 'Code', 'Review'];
 
+  // Caught here as well as on the server, so the clash shows on the name field instead of after the
+  // last step. Same comparison the server uses: case- and whitespace-insensitive.
+  const nameKey = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+  const duplicateName = (() => {
+    if (kind === 'project') {
+      if (!nameKey(pName)) return '';
+      const clash = projects.find((p) => p.id !== editProject?.id && nameKey(p.name) === nameKey(pName));
+      return clash ? `A project named "${clash.name}" already exists.` : '';
+    }
+    if (!nameKey(aName)) return '';
+    const owner = projects.find((p) => p.id === (projectId || editApp?.projectId));
+    const clash = owner?.apps.find((a) => a.id !== editApp?.id && nameKey(a.name) === nameKey(aName));
+    return clash ? `This project already has an application named "${clash.name}".` : '';
+  })();
+
   const canNext = (() => {
     if (kind === 'project') {
-      if (step === 0) return pName.trim().length > 0;
+      if (step === 0) return pName.trim().length > 0 && !duplicateName;
       if (step === 1) return pRepoKind === 'local' ? pRepoPath.trim().length > 0 : pRepoUrl.trim().length > 0;
       return true;
     }
-    if (step === 0) return aName.trim().length > 0;
+    if (step === 0) return aName.trim().length > 0 && !duplicateName;
     return true;
   })();
 
@@ -201,7 +216,10 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
           {kind === 'project' && step === 0 && (
             <>
               {field('Project Name', 'One project maps to one git repository.', (
-                <input className={inputCls} value={pName} onChange={(e) => setPName(e.target.value)} placeholder="e.g. Core Platform" autoFocus />
+                <>
+                  <input className={cn(inputCls, duplicateName && 'border-red-500/60')} value={pName} onChange={(e) => setPName(e.target.value)} placeholder="e.g. Core Platform" autoFocus />
+                  {duplicateName && <p className="mt-1.5 text-xs text-red-400">{duplicateName}</p>}
+                </>
               ))}
               {field('Description', 'Optional.', (
                 <textarea className={cn(inputCls, 'resize-none h-20')} value={pDesc} onChange={(e) => setPDesc(e.target.value)} placeholder="What this codebase is…" />
@@ -323,7 +341,10 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
           {kind === 'app' && step === 0 && (
             <>
               {field('App Name', 'A testable surface inside the project’s codebase.', (
-                <input className={inputCls} value={aName} onChange={(e) => setAName(e.target.value)} placeholder="e.g. Admin Console" autoFocus />
+                <>
+                  <input className={cn(inputCls, duplicateName && 'border-red-500/60')} value={aName} onChange={(e) => setAName(e.target.value)} placeholder="e.g. Admin Console" autoFocus />
+                  {duplicateName && <p className="mt-1.5 text-xs text-red-400">{duplicateName}</p>}
+                </>
               ))}
               {field('Description', 'Optional.', (
                 <textarea className={cn(inputCls, 'resize-none h-20')} value={aDesc} onChange={(e) => setADesc(e.target.value)} placeholder="What this surface does…" />
