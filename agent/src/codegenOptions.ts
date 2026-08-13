@@ -15,9 +15,12 @@ export interface CodegenSizing {
   viewport: RecordSize | null;
   /** Chromium-only launch args controlling the window itself. */
   windowArgs: string[];
-  /** Omitted unless pinned — Playwright then derives the canvas from the page, keeping its aspect. */
-  videoSize?: RecordSize;
+  /** Always set. Left unset, Playwright falls back to 800x600 and pads the 16:9 page into 4:3. */
+  videoSize: RecordSize;
 }
+
+/** Video canvas before this machine's real window size is known — a maximized window is near 16:9. */
+export const DEFAULT_VIDEO_CANVAS: RecordSize = { width: 1280, height: 720 };
 
 export function parseRecordSize(raw: string): RecordSize | null {
   const [width, height] = String(raw || '').split(',').map(Number);
@@ -25,11 +28,13 @@ export function parseRecordSize(raw: string): RecordSize | null {
   return valid ? { width, height } : null;
 }
 
-export function codegenSizing(rawViewport: string): CodegenSizing {
+export function codegenSizing(rawViewport: string, rawVideo = ''): CodegenSizing {
   const pinned = parseRecordSize(rawViewport);
   return {
     viewport: pinned,
     windowArgs: pinned ? [`--window-size=${pinned.width},${pinned.height + 140}`] : ['--start-maximized'],
-    ...(pinned ? { videoSize: pinned } : {}),
+    // A pinned page records at its own size; otherwise the canvas comes from the last measured window
+    // (see recorder.ts), so the page fills the frame instead of being letterboxed into it.
+    videoSize: pinned || parseRecordSize(rawVideo) || DEFAULT_VIDEO_CANVAS,
   };
 }

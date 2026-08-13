@@ -1,6 +1,6 @@
 {
   "name": "testflow-agent",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "private": true,
   "description": "TestFlow Desktop Agent — runs Playwright recording & execution locally and connects outbound to TestFlow AI.",
   "type": "module",

@@ -7,14 +7,21 @@
  */
 
 import assert from 'node:assert/strict';
-import { codegenSizing, parseRecordSize } from '../agent/src/codegenOptions';
+import { codegenSizing, parseRecordSize, DEFAULT_VIDEO_CANVAS } from '../agent/src/codegenOptions';
 import { configTemplate } from '../agent/src/runner';
 
 // Recording: nothing pinned unless a caller explicitly asks.
 const live = codegenSizing('');
 assert.equal(live.viewport, null, 'recording viewport must follow the window, never a fixed size');
 assert.deepEqual(live.windowArgs, ['--start-maximized'], 'recording window must open maximized');
-assert.equal(live.videoSize, undefined, 'video canvas must be derived from the page, not pinned');
+// Left unset, Playwright records at 800x600 and pads the 16:9 page into 4:3 — the grey band bug.
+assert.deepEqual(live.videoSize, DEFAULT_VIDEO_CANVAS, 'video canvas must always be set explicitly');
+
+// Once a window has been measured, the canvas matches it exactly and the page fills the frame.
+const measured = codegenSizing('', '1536,872');
+assert.equal(measured.viewport, null, 'measuring the window must not pin the page');
+assert.deepEqual(measured.videoSize, { width: 1536, height: 872 });
+assert.deepEqual(codegenSizing('', 'nonsense').videoSize, DEFAULT_VIDEO_CANVAS);
 
 for (const junk of ['0,0', '1280', 'abc', '-100,-100', ' ']) {
   assert.equal(codegenSizing(junk).viewport, null, `unusable --viewport ${JSON.stringify(junk)} must fall back to the window`);

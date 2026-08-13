@@ -44,6 +44,19 @@ export function purgeCodegenProfiles(workDir: string, keepSessionIds: string[] =
   }
 }
 
+/** Last window this machine recorded at. The video canvas is sized from it, so frames aren't padded. */
+export function measuredWindowFile(workDir: string): string {
+  return path.join(workDir, 'codegen-window.json');
+}
+
+function measuredWindow(workDir: string): string {
+  try {
+    const { width, height } = JSON.parse(fs.readFileSync(measuredWindowFile(workDir), 'utf-8'));
+    if (width > 0 && height > 0) return `${width},${height}`;
+  } catch { /* first recording on this machine falls back to the default canvas */ }
+  return '';
+}
+
 export function codegenArguments(workDir: string, outputPath: string, url: string, browser: string, rawPermissions?: BrowserPermissionSettings, videoDir?: string, sessionId = ''): string[] {
   const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
   const permissions = normalizeBrowserPermissionSettings(rawPermissions);
@@ -60,7 +73,8 @@ export function codegenArguments(workDir: string, outputPath: string, url: strin
     ...(permissions.fakeMedia ? ['--fake-media'] : []),
     ...(permissions.acceptDialogs ? ['--accept-dialogs'] : []),
     ...(channel ? ['--channel', channel] : []),
-    ...(videoDir ? ['--video-dir', videoDir] : [])];
+    ...(videoDir ? ['--video-dir', videoDir, '--measure-out', measuredWindowFile(workDir)] : []),
+    ...(measuredWindow(workDir) ? ['--video-size', measuredWindow(workDir)] : [])];
 }
 
 export interface RecorderStats {

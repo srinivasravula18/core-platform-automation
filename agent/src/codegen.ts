@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, firefox, webkit, type BrowserContext, type BrowserContextOptions, type BrowserType } from 'playwright';
 import { codegenSizing } from './codegenOptions.js';
@@ -14,7 +15,7 @@ const userDataDir = path.resolve(value('--user-data-dir'));
 const videoDir = value('--video-dir') ? path.resolve(value('--video-dir')) : undefined;
 const browserName = value('--browser') || 'chromium';
 // Window/page sizing lives in codegenOptions.ts, where a test locks it against being pinned again.
-const sizing = codegenSizing(value('--viewport'));
+const sizing = codegenSizing(value('--viewport'), value('--video-size'));
 const browserType: BrowserType = browserName === 'firefox' ? firefox : browserName === 'webkit' ? webkit : chromium;
 const permissions = value('--permissions').split(',').filter(Boolean);
 const coordinates = value('--geolocation').split(',').map(Number);
@@ -35,7 +36,7 @@ const contextOptions: BrowserContextOptions = {
   ...(geolocation ? { geolocation } : {}),
   // Codegen's recorder captures the script only, not video — recording it here alongside the live
   // session means the cloud never has to replay the script just to produce a preview.
-  ...(videoDir ? { recordVideo: { dir: videoDir, ...(sizing.videoSize ? { size: sizing.videoSize } : {}) } } : {}),
+  ...(videoDir ? { recordVideo: { dir: videoDir, size: sizing.videoSize } } : {}),
 };
 
 let context: BrowserContext | undefined;
@@ -89,6 +90,14 @@ try {
   // whole recording session — the recorder is already attached, so leave the window open and let
   // the user see the browser's own error page and retry the navigation themselves.
   if (url) await page.goto(url).catch((err: any) => console.error('[codegen] initial navigation failed:', err?.message || err));
+  // Report this window's real page size so the next recording's video canvas matches it exactly.
+  const measureOut = value('--measure-out');
+  if (measureOut) {
+    // globalThis, not window: the agent's tsconfig has no DOM lib.
+    void page.evaluate(() => ({ width: (globalThis as any).innerWidth, height: (globalThis as any).innerHeight }))
+      .then((size) => fs.writeFileSync(measureOut, JSON.stringify(size)))
+      .catch(() => { /* a page that never loaded simply leaves the previous measurement in place */ });
+  }
   await new Promise<void>((resolve) => (context as any).once('close', resolve));
 } finally {
   await context?.close().catch(() => {});
