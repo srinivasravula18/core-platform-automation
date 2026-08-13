@@ -17,8 +17,6 @@ import { uploadArtifact } from './cloud.js';
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const compiledLauncher = path.join(moduleDir, 'codegen.js');
 const codegenLauncher = fs.existsSync(compiledLauncher) ? [compiledLauncher] : ['--import', 'tsx', path.join(moduleDir, 'codegen.ts')];
-/** Recorded viewport + video canvas. Identical by construction so video frames carry no black bars. */
-export const RECORD_VIEWPORT = { width: 1280, height: 720 };
 /** How long a graceful stop may take to flush the video before we force-kill the tree. */
 const GRACEFUL_STOP_MS = 6000;
 /** Root for the throwaway profiles codegen needs; nothing under it survives a recording. */
@@ -62,7 +60,6 @@ export function codegenArguments(workDir, outputPath, url, browser, rawPermissio
         ...(permissions.fakeMedia ? ['--fake-media'] : []),
         ...(permissions.acceptDialogs ? ['--accept-dialogs'] : []),
         ...(channel ? ['--channel', channel] : []),
-        '--viewport', `${RECORD_VIEWPORT.width},${RECORD_VIEWPORT.height}`,
         ...(videoDir ? ['--video-dir', videoDir] : [])];
 }
 function deriveStats(script) {
@@ -98,10 +95,10 @@ export class Recorder {
         fs.writeFileSync(outputPath, '');
         const videoDir = path.join(dir, `${recordingId}-video`);
         fs.mkdirSync(videoDir, { recursive: true });
-        // Invoke Playwright's installed CLI directly. Going through npx + cmd.exe added seconds to every
-        // recording start on Windows and unnecessarily interpreted URL characters in a shell.
         // Drop profiles left behind by a crash/force-kill before launching, so no stale session survives.
         purgeCodegenProfiles(this.workDir, [...this.active.keys(), recordingId]);
+        // Invoke Playwright's installed CLI directly. Going through npx + cmd.exe added seconds to every
+        // recording start on Windows and unnecessarily interpreted URL characters in a shell.
         const args = codegenArguments(this.workDir, outputPath, url, browser, browserPermissions, videoDir, recordingId);
         const engine = args[args.indexOf('--browser') + 1];
         // stdin is the control channel (pause/resume/stop) — see codegen.ts.
