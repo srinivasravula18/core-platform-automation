@@ -209,6 +209,39 @@ export function parseRecordingSteps(script: string): Omit<RecordingStep, 'id' | 
   return steps.length ? steps : missionRunnerRecordingSteps(script);
 }
 
+
+/** What an `expect(...)` line actually asserts. Every assertion used to read "is visible", so a
+ *  not-visible / value / text check was mislabelled everywhere it surfaced (steps, reports, exports). */
+function describeAssertion(line: string, phrase: string): { action: string; expected: string } {
+  const negated = /\.not\./.test(line);
+  const text = line.match(/\.(?:toHaveText|toContainText)\(\s*(['"`])([\s\S]*?)\1/)?.[2] || '';
+  const value = line.match(/\.toHaveValue\(\s*(['"`])([\s\S]*?)\1/)?.[2] || '';
+  if (/\.toBeHidden\(/.test(line) || (negated && /\.toBeVisible\(/.test(line))) {
+    return { action: `Verify ${phrase} is no longer visible`, expected: 'The element is not shown on the page.' };
+  }
+  if (/\.toHaveValue\(/.test(line)) {
+    return negated
+      ? { action: `Verify ${phrase} does not contain "${value}"`, expected: `The field does not hold "${value}".` }
+      : { action: `Verify ${phrase} contains "${value}"`, expected: `The field holds "${value}".` };
+  }
+  if (/\.toBeEmpty\(/.test(line)) return { action: `Verify ${phrase} is empty`, expected: 'The field holds no value.' };
+  if (/\.(?:toHaveText|toContainText)\(/.test(line)) {
+    return negated
+      ? { action: `Verify ${phrase} does not show "${text}"`, expected: `"${text}" is not shown.` }
+      : { action: `Verify ${phrase} shows "${text}"`, expected: `"${text}" is shown.` };
+  }
+  if (/\.toBeChecked\(/.test(line)) {
+    return negated
+      ? { action: `Verify ${phrase} is not selected`, expected: 'The option is cleared.' }
+      : { action: `Verify ${phrase} is selected`, expected: 'The option is set.' };
+  }
+  if (/\.toBeEnabled\(/.test(line)) return { action: `Verify ${phrase} is ${negated ? 'disabled' : 'enabled'}`, expected: `The element is ${negated ? 'disabled' : 'enabled'}.` };
+  if (/\.toBeDisabled\(/.test(line)) return { action: `Verify ${phrase} is ${negated ? 'enabled' : 'disabled'}`, expected: `The element is ${negated ? 'enabled' : 'disabled'}.` };
+  return negated
+    ? { action: `Verify ${phrase} is no longer visible`, expected: 'The element is not shown on the page.' }
+    : { action: `Verify ${phrase} is visible`, expected: 'The element is present and visible.' };
+}
+
 // Parse a codegen spec line-by-line into atomic steps with a kind/locator tag per step so we can
 // coalesce and group. waitForURL is a nav because scriptHardening rewrites post-login gotos to it.
 export function parseAtomicSteps(script: string): AtomicStep[] {
@@ -237,9 +270,10 @@ export function parseAtomicSteps(script: string): AtomicStep[] {
       const kind: StepKind = /\.check\(/.test(line) ? 'check' : /\.press\(/.test(line) ? 'press' : 'select';
       const action = `${verb} ${elementPhrase(d)}`;
       steps.push({ action, expected: concreteExpectedResult(action, 'The input is applied successfully.'), kind, locator: locatorKey(d), line: lineIndex });
-    } else if (/expect\(/.test(line) && /getBy\w+\(/.test(line)) {
+    } else if (/expect\(/.test(line) && /getBy\w+\(|\.locator\(/.test(line)) {
       const d = describeLocator(line);
-      steps.push({ action: `Verify ${elementPhrase(d)} is visible`, expected: 'The element is present and visible.', kind: 'verify', locator: locatorKey(d), line: lineIndex });
+      const assertion = describeAssertion(line, elementPhrase(d));
+      steps.push({ action: assertion.action, expected: assertion.expected, kind: 'verify', locator: locatorKey(d), line: lineIndex });
     }
   }
   return steps;

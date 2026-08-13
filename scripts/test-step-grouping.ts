@@ -66,6 +66,26 @@ function main() {
   ok(bigGroups === 6, `306 interactions -> ${bigGroups} groups`);
   ok(bigGrouped.length === 306, `no meaningful steps lost (${bigGrouped.length} steps)`);
 
+  // Assertions must read as what they assert. Every expect() line used to be labelled "is visible",
+  // so a delete-then-verify-gone flow claimed the element WAS visible — the opposite of the check.
+  console.log('\nassertions read as what they assert');
+  const assertions = parseAtomicSteps([
+    "await expect(page.getByRole('row', { name: 'Acme' })).not.toBeVisible();",
+    "await expect(page.getByRole('row', { name: 'Acme' })).toBeHidden();",
+    "await expect(page.getByLabel('Email')).toHaveValue('qa@example.com');",
+    "await expect(page.getByRole('status')).toContainText('Saved');",
+    "await expect(page.getByLabel('Active')).not.toBeChecked();",
+    "await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();",
+  ].join('\n'));
+  ok(assertions.length === 6, `every assertion parsed (${assertions.length})`);
+  ok(/no longer visible/i.test(assertions[0].action), `not.toBeVisible reads as gone: ${assertions[0].action}`);
+  ok(/no longer visible/i.test(assertions[1].action), `toBeHidden reads as gone: ${assertions[1].action}`);
+  ok(/contains "qa@example.com"/.test(assertions[2].action), `value assertion keeps its value: ${assertions[2].action}`);
+  ok(/shows "Saved"/.test(assertions[3].action), `text assertion keeps its text: ${assertions[3].action}`);
+  ok(/not selected/i.test(assertions[4].action), `negated checked reads as cleared: ${assertions[4].action}`);
+  ok(/is visible/i.test(assertions[5].action), `plain visibility still reads as visible: ${assertions[5].action}`);
+  ok(assertions.every((step) => step.kind === 'verify'), 'assertions stay verify steps');
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 }

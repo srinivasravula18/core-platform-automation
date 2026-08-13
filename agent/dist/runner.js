@@ -94,13 +94,16 @@ export function configTemplate(engine, headed, hasPauses = false, settings = { p
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
-  // No per-test ceiling — a script runs until its own steps finish (or the user cancels it).
+  // No per-test ceiling — a script runs until its own steps finish (or the user cancels it) — but each
+  // ACTION is bounded: with both unset, a step waiting on an element that never appears hangs the whole
+  // run instead of failing, which is what blocked flows midway with no error.
   timeout: 0,
+  expect: { timeout: 15000 },
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'},${headed ? ' viewport: null,' : ''} trace: 'on', video: 'on', screenshot: 'on'${geolocation}${launchOptions} },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'},${headed ? ' viewport: null,' : ''} actionTimeout: 30000, navigationTimeout: 60000, trace: 'on', video: 'on', screenshot: 'on'${geolocation}${launchOptions} },
 });
 `;
 }

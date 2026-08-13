@@ -90,9 +90,12 @@ export function configTemplate(engine: string, hasPauses = false, settings: Brow
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
+  // Pauses wait on a human, so those runs get no test ceiling — but every action stays bounded, or a
+  // step waiting on an element that never appears hangs the run instead of failing.
   timeout: ${hasPauses ? 0 : 60000},
+  expect: { timeout: 15000 },
   reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
-  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on'${storageStatePath ? `, storageState: ${JSON.stringify(storageStatePath)}` : ''}${geolocation}${fakeMediaArgs} },
+  use: { browserName: '${browserName}', headless: true, actionTimeout: 30000, navigationTimeout: 60000, trace: 'on', video: 'on', screenshot: 'on'${storageStatePath ? `, storageState: ${JSON.stringify(storageStatePath)}` : ''}${geolocation}${fakeMediaArgs} },
 });
 `;
 }
