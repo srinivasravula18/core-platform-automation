@@ -375,8 +375,10 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const passed = Number(summary.passed || 0);
   const failed = Number(summary.failed || 0);
   const skipped = Number(summary.skipped || 0);
+  // A cancelled job is the user pressing Stop, so the run reads 'Stopped' — the same word manual runs
+  // use for the same action. 'Cancelled' read like the system abandoned the run.
   const cancelled = status === 'cancelled';
-  const runStatus = cancelled ? 'Cancelled' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
+  const runStatus = cancelled ? 'Stopped' : `${failed > 0 || status === 'failed' ? 'Failed' : 'Passed'} — Pending Review`;
   const onlyCaseId = Array.isArray(run.caseIds) && run.caseIds.length === 1 ? run.caseIds[0] : '';
   // Persist the run's own QA-grade step record (Reports, exports, CSV all read run.steps directly, not
   // the live job summary) — the case's real authored action/expected text with the real per-step outcome,
@@ -400,7 +402,7 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   await Runs.upsert({
     ...run,
     status: runStatus,
-    state: cancelled ? 'Cancelled' : 'Pending Review',
+    state: cancelled ? 'Stopped' : 'Pending Review',
     approvalState: cancelled ? '' : 'pending_review',
     passed,
     failed,

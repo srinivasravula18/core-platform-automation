@@ -527,7 +527,7 @@ export default function TestRuns() {
     // End the local running state immediately. The cancellation request then terminates the agent
     // process in the background; the UI must not remain stuck on “Stopping all…” if that process
     // takes time to exit or its connection is reconnecting.
-    setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Cancelled', state: 'Cancelled', completedAt: new Date().toISOString(), progress: 'Stopped by user' } : item));
+    setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Stopped', state: 'Stopped', completedAt: new Date().toISOString(), progress: 'Stopped by user' } : item));
     try {
       const jobId = String(run.triggerMeta?.automationJobId || '');
       const url = jobId
