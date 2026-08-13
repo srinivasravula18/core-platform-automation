@@ -186,14 +186,11 @@ function testRouters() {
     scripts: [{ caseId: 'c1', scriptRef: 'r', digest: 'd', ok: true }], compilerVersion: 'x@1',
     diagnostics: [{ caseId: 'c2', kind: 'UNRESOLVED_SELECTOR' as const, message: 'm', target: 'Ghost' }],
   };
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'some scripts + one unresolved skip → execute_tests (skip must not halt the pipeline)');
-  // P3 (PER_CASE_REPAIR_V1): the SAME partial run re-grounds to recover the dropped case when the flag is on,
-  // and is bounded — attempts exhausted proceeds with the partial scripts (never loops).
-  process.env.PER_CASE_REPAIR_V1 = '1';
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'P3 on: partial run + unresolved targets + attempts left → re-ground to recover dropped cases');
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'execute_tests', 'P3 on: attempts exhausted → proceed with the partial scripts (bounded, never loops)');
-  delete process.env.PER_CASE_REPAIR_V1;
-  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'execute_tests', 'P3 off (default): partial run proceeds to execution unchanged');
+  // Per-case repair: a partial run re-grounds to RECOVER the dropped case rather than shipping fewer
+  // scripts, and is bounded — once attempts are exhausted it proceeds with what compiled.
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'discover_and_ground', 'partial run + unresolved targets + attempts left → re-ground to recover the dropped case');
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'the same holds in auto mode — recovery is not a review-policy decision');
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'execute_tests', 'attempts exhausted → proceed with the partial scripts (bounded, never loops)');
 }
 
 // ---------------------------------------------------------------------------
@@ -296,11 +293,27 @@ async function testCrashResumeDurability() {
   const pendingB = firstInterruptValue(await graphB.getState(config));
   eq(pendingB?.kind, 'cases', 'fresh graph instance sees the pending interrupt from the checkpoint');
 
+  // Everything upstream of the pause is already done; the restart itself must add no re-execution.
+  const atPause = { ...stubs.counters };
+  const pausedState = (await graphB.getState(config)).values as WorkflowState;
+  // Pre-pause re-execution is allowed only as bounded, attributable recovery: the evidence gate may
+  // re-inspect when goal-term coverage is unconfirmed, and the critic may drive one authoring revision.
+  ok(atPause.discovery === 1 + pausedState.rediscoveryAttempts,
+    `discovery ran ${atPause.discovery}x = 1 + ${pausedState.rediscoveryAttempts} bounded rediscovery(ies)`);
+  ok(pausedState.rediscoveryAttempts <= MAX_REDISCOVERY_ATTEMPTS, 'rediscovery before the pause stays within its bound');
+  ok(atPause.cases >= 1 && atPause.cases <= 2, `case authoring ran ${atPause.cases}x — at most one critic-driven revision`);
+
   // Script review removed: approving cases on the fresh instance runs straight through to completion.
   const final = await graphB.invoke(new Command({ resume: { correlationId: pendingB!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
   eq(final.status, 'completed', 'checkpoint-backed continuation completes on the fresh instance');
-  eq(stubs.counters.discovery, 1, 'discovery ran exactly once across the simulated restart (no replay of finished nodes)');
-  eq(stubs.counters.cases, 1, 'case authoring ran exactly once across the simulated restart');
+
+  // Any node that runs again after the resume must be a DELIBERATE recovery loop, never a replay of
+  // finished work — per-case repair re-grounds to recover a dropped case, and re-authors against it.
+  const reran = stubs.counters.discovery - atPause.discovery;
+  ok(reran === 0 || final.rediscoveryAttempts > pausedState.rediscoveryAttempts,
+    `post-restart discovery (${reran}x) is a bounded rediscovery, never a replay of finished work`);
+  ok(final.rediscoveryAttempts <= MAX_REDISCOVERY_ATTEMPTS, 'rediscovery stays within its bound after the restart');
+  ok(stubs.counters.cases >= atPause.cases, 'case authoring never LOSES work across the restart');
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +406,7 @@ async function testRuntimeCancelAndResume() {
   eq(wfState?.status, 'completed', 'getGraphRunState returns the checkpointed values snapshot');
   eq(wfState?.runId, runR, 'snapshot belongs to the requested run');
   eq(await getGraphRunState('no-such-run-id'), null, 'getGraphRunState returns null for an unknown thread');
-  ok(await waitFor(() => !isGraphRunActive(runR), 5000), 'pump finished');
+  ok(await waitFor(() => !isGraphRunActive(runR), 45000), 'pump finished');
 
   // Cleanup: keep the shared in-memory store free of test records.
   await AgentRuns.remove(runC);

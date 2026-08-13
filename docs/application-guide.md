@@ -219,17 +219,21 @@ flowchart TB
 
     API --> Scope["Authentication and workspace scope"]
     Scope --> QA["QA workspace services"]
-    Scope --> AI["Agent and intelligence services"]
+    Scope --> Orch["Agent orchestration"]
     Scope --> Exec["Playwright and automation services"]
     Scope --> Source["Git and API intelligence"]
 
+    Orch --> Coord["Coordinator<br/>plans · dispatches · accepts"]
+    Coord --> Specialists["Specialist agents<br/>isolated model threads"]
+    Coord --> Gates["Deterministic gates<br/>evidence · critique · compile · review"]
+    Specialists --> Providers["AI providers and authenticated local tools"]
+
     QA --> DB[("PostgreSQL")]
-    AI --> DB
+    Coord --> DB
     Exec --> DB
     Source --> DB
 
     Exec --> Files["Evidence and artifact storage"]
-    AI --> Providers["AI providers and authenticated local tools"]
     Source --> Repos["Source repositories and target APIs"]
     Exec --> Apps["Target applications and desktop agents"]
 
@@ -250,28 +254,194 @@ The Express service authenticates sessions, applies owner/project/application sc
 
 Feature services manage QA resources, requirements, traceability, conversations, agent workflows, browser inspection, script generation, Playwright execution, automation, repository analysis, and API intelligence.
 
+### Orchestration layer
+
+The orchestration layer turns a request into a planned mission and runs it. It owns four things the rest of the system depends on:
+
+| Component | Responsibility |
+| --- | --- |
+| **Mission profiles** | Map the request to a roster, the gates it must pass, the artifacts it may write, and where it stops. |
+| **Coordinator** | The only authority that dispatches a task, accepts a result, promotes a fact, or retries work. |
+| **Task ledger** | The checkpointed record of who was asked to do what, its status, attempt, and dependencies. |
+| **Shared facts** | Append-only evidence. A fact is `proposed` until the coordinator accepts it; only accepted facts reach a downstream agent. |
+
+Each specialist reasons on its own isolated model thread with its own tool permissions, so one agent can never read another's private reasoning or reach tools it was not granted. Compiling, executing, and persisting are never on an agent's tool belt — they are coordinator-initiated capabilities.
+
+### Layered view
+
+```mermaid
+flowchart TB
+    subgraph UI["Presentation"]
+        Console["Agent Console"]
+        Pages["Test management · runs · reports"]
+    end
+
+    subgraph Edge["API and scope"]
+        Routes["Feature APIs · event streams"]
+        Guard["Auth · project/app scope · RBAC"]
+    end
+
+    subgraph Brain["Orchestration"]
+        Profiles["Mission profiles"]
+        Coordinator["Coordinator · task ledger"]
+        Roster["Agent registry<br/>prompts · tools · permissions"]
+    end
+
+    subgraph Truth["Deterministic authority"]
+        Evidence["Evidence graph"]
+        Compiler["Compiler"]
+        Runner["Runner"]
+        Review["Human review gate"]
+    end
+
+    subgraph Store["Persistence"]
+        PG[("PostgreSQL<br/>records · ledger · checkpoints")]
+        Artifacts[("Evidence and artifacts")]
+    end
+
+    UI --> Edge --> Brain
+    Coordinator --> Truth
+    Brain --> Store
+    Truth --> Store
+    Store -. "status, evidence, results" .-> UI
+```
+
+Reading it top to bottom: the UI states intent, the edge decides who may do what and in which workspace, orchestration decides which agents run, deterministic authority decides what is true, and persistence makes it survive a restart. Nothing below a layer trusts a claim from above it without a gate.
+
+### LangGraph and the Codex SDK
+
+Two engines with one boundary between them: **LangGraph schedules, Codex reasons.**
+
+```mermaid
+flowchart LR
+    subgraph LG["LangGraph — the scheduler"]
+        Nodes["Graph nodes"]
+        State["Checkpointed state<br/>plan · ledger · budget"]
+        Interrupt["interrupt() for human review"]
+    end
+
+    subgraph CX["Codex SDK — the reasoning"]
+        T1["Scout thread"]
+        T2["Forge thread"]
+        T3["Sentinel thread"]
+        Tools["Scoped tools<br/>via in-process MCP bridge"]
+    end
+
+    Nodes --> State
+    Nodes -->|"one task, minimal context"| T1
+    Nodes --> T2
+    Nodes --> T3
+    T1 & T2 & T3 -->|"structured result"| Nodes
+    T1 & T2 & T3 -.->|"read-only inspection"| Tools
+    State --> PGC[("PostgreSQL checkpointer")]
+    Interrupt --> PGC
+```
+
+**LangGraph owns** durable scheduling and checkpointing, routing from accepted results, retry and loop bounds, interrupt/resume/cancel, and terminal-state truth. Because state is checkpointed in PostgreSQL, a run paused at a review gate can be resumed by a different process — a restart does not lose it.
+
+**The Codex SDK owns** reasoning inside one assigned task. Each specialist gets its own persistent thread (`startThread` / `resumeThread`), its own model and reasoning effort, and a read-only sandbox. Structured output is validated against the agent's contract; an invalid result gets exactly one correction turn, then fails the task visibly rather than being read as prose.
+
+Two deliberate boundaries:
+
+- **Codex never schedules.** It cannot decide which agent runs next, retry itself, or extend the run. That is the graph's job, which is why one wrong model answer cannot derail a pipeline.
+- **State-changing work is never a model tool.** Agents call read/inspect tools in-turn through a scoped in-process bridge — the tools keep their normal database access and permission checks, and each agent only sees the tools it was granted. Compiling, executing, and persisting run as coordinator-initiated capabilities under an idempotency key.
+
+Model and reasoning effort are configurable per agent in **Settings → AI Runtime**.
+
 ### Persistence and connected systems
 
 PostgreSQL stores application records, workspace scope, settings, agent checkpoints, and automation state. The server filesystem stores evidence and execution artifacts. Connected systems include AI providers, source repositories, target applications/APIs, and paired desktop agents.
 
-## Agent runtime flow
+## Agent orchestration
 
-```text
-User request
-  → classify intent
-  → assemble conversation and workspace context
-  → resolve selected application
-  → inspect source, metadata, or live DOM when required
-  → plan or answer
-  → validate generated work
-  → request approval when required
-  → save or execute
-  → persist results, evidence, and conversation memory
+A request is planned as a **mission**. The request decides which agents wake and where the run stops, so asking for a test plan does not pay for a full execution pipeline.
+
+```mermaid
+flowchart LR
+    Req["Your request"] --> Target{"Target chosen<br/>and responding?"}
+    Target -- "no" --> Ask["Ask which target<br/>— no run is started"]
+    Target -- "yes" --> Mission["Select mission profile"]
+    Mission --> Plan["Pin plan + agent roster<br/>(versions frozen for the run)"]
+    Plan --> Coord["Coordinator"]
+
+    Coord --> Agents["Specialists<br/>each on its own thread"]
+    Agents --> Gates{"Evidence · critique<br/>compile · review"}
+    Gates -- "accepted" --> Ledger[("Task ledger<br/>+ accepted facts")]
+    Gates -- "rejected" --> Coord
+    Ledger --> Deliverable["Mission deliverable"]
 ```
 
-The runtime uses the selected workspace, canonical conversation history, requirements, application knowledge, repository evidence, credentials, metadata, and observed browser evidence. Generated cases and scripts pass validation gates before they are persisted or executed.
+Three rules hold throughout:
 
-Long-running work exposes status and event endpoints so the UI can resume and inspect an active run.
+- **The coordinator is the only authority.** Agents propose; deterministic gates accept or reject. A result that fails its schema or proposes something the agent is not permitted to write never updates state.
+- **Agents read accepted facts, never each other's reasoning.** Each specialist gets the minimum context for its task, plus the facts it is permitted to read.
+- **A dead target stops the run before it starts.** If the address returns 404, is not responding, or refuses the connection, you are told what it returned and asked to pick another. Cases authored against an error page describe the error page.
+
+### The roster
+
+| Agent | Role | Owns |
+| --- | --- | --- |
+| **Maestro** | Supervisor | Scope ambiguity, repair-vs-escalate, budget breach. Never routes nodes — deterministic edges do that. |
+| **Atlas** | Repo cartographer | Reads the codebase once; produces the map every other agent depends on. |
+| **Compass** | Scope resolver | Reduces that map to the minimal slice needed to test the target. |
+| **Scout** | Live grounding | Grounds evidence against the running application: DOM, selectors, API. |
+| **Scribe** | Requirements analyst | Testable requirements with acceptance criteria and source references. |
+| **Charter** | Test plan author | Scope, strategy, risk, entry/exit criteria, case selection. |
+| **Curator** | Suite curator | Suites composed from accepted cases and tag queries. |
+| **Forge** | Case designer | Executable cases from one approved requirement, using only inventory selectors. |
+| **Sentinel** | Critic | Refutes ungrounded, duplicate, unverifiable, or unsafe drafts before compile. |
+| **Anvil** | Script engineer | Playwright specs from approved cases; evidence capture comes from the shared fixture. |
+| **Sleuth** | Triage analyst | Classifies a failure, ruling out the test before blaming the product. |
+| **Herald** | Report composer | Verdict, counts, new defects, regressions, suite health, coverage. |
+
+Compiling and executing are **deterministic capabilities**, not agents. They are invoked by the coordinator under an idempotency key, so a retried or resumed run cannot compile or execute the same work twice.
+
+Every agent's system prompt is editable in **Settings → System Prompts**.
+
+### What a mission runs
+
+| You ask for | Agents that wake | Run ends at |
+| --- | --- | --- |
+| Requirements | Atlas → Compass → Scribe → Sentinel | Accepted requirements |
+| A test plan | Atlas → Compass → Charter → Sentinel | Accepted test plan |
+| A suite | Curator → Sentinel | Accepted suite |
+| Test cases | Atlas/Scout → Compass → Scribe → Forge → Sentinel | Cases awaiting your review |
+| A full test run | The above, then Anvil → Compiler → Runner → Sleuth → Herald | Evidence, verdicts, and a report |
+| An investigation | Sleuth → Herald | Classified failures |
+| A question | Atlas/Scout (read-only) → Herald | A grounded answer, no artifacts written |
+
+A mission cannot write an artifact it does not declare — asking a question never creates test cases. A short mission can be promoted to a longer one (cases → automation) only after you approve it.
+
+## Agent runtime flow
+
+```mermaid
+sequenceDiagram
+    participant You
+    participant Coord as Coordinator
+    participant Scout
+    participant Forge
+    participant Sentinel
+    participant Cap as Compiler / Runner
+
+    You->>Coord: Test the list view
+    Coord->>Scout: Ground the target
+    Scout-->>Coord: Proposed evidence
+    Coord->>Coord: Evidence gate — accept or reject
+    Coord->>Forge: Design cases from accepted evidence
+    Forge-->>Coord: Draft cases
+    Coord->>Sentinel: Refute what the evidence does not support
+    Sentinel-->>Forge: Critique (one bounded revision)
+    Forge-->>Coord: Revised cases
+    Coord->>You: Review gate — approve, edit, or reject
+    You-->>Coord: Approved
+    Coord->>Cap: Compile, then execute (exactly once)
+    Cap-->>Coord: Scripts, verdicts, evidence
+    Coord->>You: Report
+```
+
+The run is checkpointed at every step, so it survives a restart: a resumed run recovers its evidence and compiled scripts rather than re-deriving them, and picks up from the last accepted task instead of repeating finished work.
+
+Long-running work exposes status and event endpoints so the UI can resume and inspect an active run. The Agent Console shows the mission, the task ledger with each agent's status, and the messages the agents actually exchanged.
 
 ## Data and storage
 

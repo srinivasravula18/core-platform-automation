@@ -17,11 +17,6 @@ let cached: BaseCheckpointSaver | null = null;
 let cachedPostgres: PostgresSaver | null = null;
 let pending: Promise<BaseCheckpointSaver> | null = null;
 
-/** The LangGraph workflow runtime is the engine — hardcoded on (no env flag); AGENT_GRAPH_V2=0 remains as an emergency kill switch only. */
-export function isWorkflowGraphEnabled(): boolean {
-  return !['0', 'false'].includes(String(process.env.AGENT_GRAPH_V2 || '').toLowerCase());
-}
-
 /** Mirrors apps/api/src/server.ts's inline deployment-mode check; not imported from there to avoid a backwards dependency. */
 function isProductionDeployment(): boolean {
   const explicit = (process.env.DEPLOYMENT_MODE || '').toLowerCase() === 'production';
@@ -37,10 +32,10 @@ async function construct(): Promise<BaseCheckpointSaver> {
     return saver;
   }
 
-  if (isProductionDeployment() && isWorkflowGraphEnabled()) {
+  if (isProductionDeployment()) {
     throw new Error(
-      'AGENT_GRAPH_V2 is enabled in a production deployment but no DATABASE_URL is configured — the workflow ' +
-        'runtime requires a durable PostgreSQL checkpointer in production and refuses to start with a non-durable fallback.'
+      'No DATABASE_URL is configured — the workflow runtime requires a durable PostgreSQL checkpointer in ' +
+        'production and refuses to start with a non-durable fallback.'
     );
   }
 

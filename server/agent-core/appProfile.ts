@@ -1,8 +1,4 @@
-/**
- * AppProfile (Phase 7) — target-app identity as DATA (surfaces, auth, metadata endpoint, routing, storage
- * namespace) supplied per-run, replacing closed unions + TARGET_* globals. App-agnostic (no app/surface
- * names here); onboarding a target = "provide an AppProfile". Additive, gated by AGENT_NATIVE_V1.
- */
+/** Learned per-target app profile. Onboarding a target = providing an AppProfile; nothing app-specific is hardcoded. */
 
 /** A surface is any distinct entry point of a target app (an admin console, a runtime UI, an API host).
  * `kind` is a free-form, app-defined label — deliberately NOT a closed union. */

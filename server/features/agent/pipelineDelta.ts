@@ -442,7 +442,7 @@ export interface FieldMeta {
   max?: string | number | null;
   required?: boolean | null;
   /**
-   * Observed live-DOM state at discovery time — the oracle for state assertions (EVIDENCE_ORACLE_V1).
+   * Observed live-DOM state at discovery time — the oracle for state assertions.
    * Present only when the flag is on; absent = unknown (assertion validation fails open). Lets the
    * compiler check DISABLED/ENABLED/HAS_VALUE against reality instead of trusting the LLM's guess.
    */

@@ -55,6 +55,7 @@ export function MessageMeta({ createdAt, execution }: { createdAt?: string; exec
         <Timestamp value={createdAt} mode="absolute" seconds />
         {ex.durationMs != null && <span>· {humanizeDuration(ex.durationMs)}</span>}
         {ex.model && <span>· {ex.model}</span>}
+        {ex.totalTokens != null && <span>· {ex.totalTokens.toLocaleString()} tokens</span>}
         {hasDetails && (
           <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-0.5 hover:text-[var(--text-primary)]">
             Details <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />

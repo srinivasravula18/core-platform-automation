@@ -18,7 +18,6 @@ const CATALOG = ['New Button', 'Accounts Grid', 'Account Name Field', 'Save Butt
 async function main() {
   console.log('Critic — accepts a clean, grounded, distinct draft');
   {
-    process.env.AGENT_NATIVE_V1 = '1';
     setMessageBus(new InMemoryMessageBus());
     setBlackboard(new InMemoryBlackboard());
     const cases = [
@@ -55,11 +54,12 @@ async function main() {
     ok(byTitle('Hallucinated flow')[0].issues.some((i) => /ungrounded/i.test(i)), 'a case disconnected from the catalog is flagged ungrounded');
     ok(/Revise ONLY these/.test(r.feedback), 'actionable revision feedback is produced for the author');
 
+    // The critic computes verdicts only. The coordinator owns the CRITIQUE/RESULT traffic so the exchange
+    // is causally linked and voiced by display names — see test-agent-critic-exchange.
     const history = await getMessageBus().history('r-bad');
-    ok(history.some((m) => m.type === 'CRITIQUE' && m.from === 'CriticAgent' && m.to === 'TestGenerationAgent'), 'CRITIQUE messages flow from the critic to the author');
-    ok(history.some((m) => m.type === 'RESULT' && m.from === 'CriticAgent'), 'the critic RESULTs its verdict');
-    const fact = await getBlackboard().latest<{ refuted: number }>('r-bad', 'critique.cases');
-    ok(!!fact && fact.value.refuted >= 5, 'the critique is recorded as a shared blackboard fact');
+    ok(history.length === 0, 'the critic publishes nothing itself — no duplicate traffic under raw agent keys');
+    const facts = await getBlackboard().all('r-bad');
+    ok(facts.length === 0, 'the critic writes no facts itself — the coordinator promotes critique.findings');
   }
 
   console.log('Critic — no catalog → never refutes on grounding (no false positives on a real run)');

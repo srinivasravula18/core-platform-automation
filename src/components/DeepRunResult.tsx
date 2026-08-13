@@ -294,6 +294,27 @@ type AIChangeMarker = {
   steps: Set<number>;
 };
 
+/** Accepted is the only status that means a downstream task may rely on it. */
+const FACT_STATUS_STYLE: Record<string, string> = {
+  accepted: 'bg-emerald-500/15 text-emerald-400',
+  proposed: 'bg-amber-500/15 text-amber-400',
+  rejected: 'bg-rose-500/15 text-rose-400',
+  superseded: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
+  legacy: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
+};
+
+const TASK_STATUS_STYLE: Record<string, string> = {
+  accepted: 'bg-emerald-500/15 text-emerald-400',
+  running: 'bg-sky-500/15 text-sky-400',
+  dispatched: 'bg-sky-500/15 text-sky-400',
+  awaiting_input: 'bg-amber-500/15 text-amber-400',
+  rejected: 'bg-amber-500/15 text-amber-400',
+  failed: 'bg-rose-500/15 text-rose-400',
+  cancelled: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
+  skipped: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
+  queued: 'bg-[var(--bg-secondary)] text-[var(--text-muted)]',
+};
+
 export function DeepRunResult({
   taskId,
   initialSaved,
@@ -449,12 +470,14 @@ export function DeepRunResult({
   const messages = run?.messages || [];
   const visibleMessages = messages.filter((message: any) => !containsPrivateFileActivity(message));
   // P2 — the REAL agent-to-agent substrate for this run (typed bus messages + blackboard facts), present
-  // only when AGENT_NATIVE_V1 is on. When it exists, the "Background communication" panel renders the
+  // When it exists, the "Background communication" panel renders the
   // actual conversation agents had, not the templated chip log; otherwise it falls back to the legacy view.
   const conversation = run?.conversation;
   const a2aMessages: any[] = Array.isArray(conversation?.messages) ? conversation.messages : [];
   const a2aFacts: any[] = Array.isArray(conversation?.facts) ? conversation.facts : [];
-  const hasA2A = a2aMessages.length > 0;
+  const orchestration = run?.orchestration;
+  const ledger: any[] = Array.isArray(orchestration?.tasks) ? orchestration.tasks : [];
+  const hasA2A = a2aMessages.length > 0 || ledger.length > 0;
   const latestAgentMessage = (agent: string) => messages.filter((m: any) => m.agent === agent).pop();
   const hasPhase = (...agents: string[]) => agents.some((agent) => messages.some((m: any) => m.agent === agent));
 
@@ -1237,6 +1260,31 @@ export function DeepRunResult({
             <div><span className="text-[var(--text-muted)]">Provider:</span> {run?.provider || 'default'}</div>
             <div><span className="text-[var(--text-muted)]">Status:</span> {run?.status || 'working'}</div>
           </div>
+          {ledger.length > 0 && (
+            <div className="mb-3 rounded border border-[var(--border)] bg-[var(--bg-primary)] p-2">
+              <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="font-semibold text-[var(--accent)]">Mission</span>
+                <span className="font-mono text-[var(--text-primary)]">{orchestration?.missionKind}</span>
+                {(orchestration?.mandatoryGates || []).map((g: string) => (
+                  <span key={g} className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--text-muted)]">{g} gate</span>
+                ))}
+                {orchestration?.budgetSpent?.codexTurns != null && (
+                  <span className="ml-auto text-[var(--text-muted)]">{orchestration.budgetSpent.codexTurns} turns · {orchestration.budgetSpent.toolCalls} tool calls</span>
+                )}
+              </div>
+              <div className="space-y-1">
+                {ledger.map((t: any) => (
+                  <div key={t.taskId} className="flex flex-wrap items-center gap-2 text-[11px]" title={t.objective}>
+                    <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${TASK_STATUS_STYLE[t.status] || 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>{t.status}</span>
+                    <span className="font-semibold text-[var(--text-primary)]">{t.displayName}</span>
+                    <span className="font-mono text-[10px] text-[var(--text-muted)]">v{t.agentDefinitionVersion}</span>
+                    {t.attempt > 1 && <span className="text-[10px] text-[var(--text-muted)]">attempt {t.attempt}/{t.maxAttempts}</span>}
+                    {t.dependsOn?.length > 0 && <span className="text-[10px] text-[var(--text-muted)]">after {t.dependsOn.join(', ')}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {hasA2A ? (
             <div className="space-y-1.5">
               {a2aMessages.map((m: any, index: number) => {
@@ -1275,6 +1323,9 @@ export function DeepRunResult({
                       <div key={f.id || i} className="flex flex-wrap items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[11px]">
                         <span className="font-mono font-semibold text-[var(--text-primary)]">{f.kind}{f.key ? `:${f.key}` : ''}</span>
                         <span className="text-[var(--text-muted)]">by {f.by}</span>
+                        {f.status && (
+                          <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${FACT_STATUS_STYLE[f.status] || 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>{f.status}</span>
+                        )}
                       </div>
                     ))}
                   </div>

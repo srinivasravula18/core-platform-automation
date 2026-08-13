@@ -15,7 +15,6 @@ import type { VerifiedElement } from '../../domExplorer';
 import type { VerifiedSelector } from '../../pipelineDelta';
 import { mapSelectorEvidenceType } from '../../evidence/provenance';
 import { buildEvidenceGraphFromRun, type EvidenceGraph } from '../../graph/evidenceGraph';
-import { isEvidenceOracleEnabled } from '../../evidenceOracleFlag';
 import { goalTermCoverage } from '../goalTerms';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { EvidenceGateDecision, TargetCatalogEntry, WorkflowEvidence } from '../state';
@@ -94,8 +93,8 @@ function toVerifiedSelector(el: VerifiedElement): VerifiedSelector {
       min: el.min ?? null,
       max: el.max ?? null,
       required: el.state?.required ?? null,
-      // Observed live-DOM state — the assertion oracle (EVIDENCE_ORACLE_V1). Off = absent (byte-for-byte legacy).
-      observed: isEvidenceOracleEnabled()
+      // Observed live-DOM state — the assertion oracle.
+      observed: true
         ? { disabled: el.state?.disabled ?? null, readonly: el.state?.readonly ?? null, value: el.value ?? null }
         : null,
     },

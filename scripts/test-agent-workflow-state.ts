@@ -29,12 +29,14 @@ import {
   type WorkflowEvent, type NodeAttemptIdentity,
 } from '../server/features/agent/workflow/events';
 import {
-  isWorkflowGraphEnabled, getWorkflowCheckpointer, closeWorkflowCheckpointer,
+  getWorkflowCheckpointer, closeWorkflowCheckpointer,
 } from '../server/features/agent/workflow/checkpointer';
 import {
   createInitialWorkflowState, parseWorkflowState, assertNoSecretLeakage, SecretLeakageError,
   WorkflowStateAnnotation, type WorkflowState, type CasePlanResult, type ExecutionAttempt,
 } from '../server/features/agent/workflow/state';
+import { captureRegistrySnapshot } from '../server/agent-core/registry/agents';
+import { agentTaskSchema, digestOf } from '../server/agent-core/orchestration/contracts';
 import { isPostgresEnabled, migrate } from '../server/db/pool';
 import { AgentRunEvents } from '../server/db/repository';
 import { db } from '../server/shared/storage';
@@ -247,33 +249,16 @@ function testEventContract() {
 }
 
 // ---------------------------------------------------------------------------
-async function testCheckpointerAndFlag() {
-  console.log('5. Checkpointer + AGENT_GRAPH_V2 flag');
-
-  const savedFlag = process.env.AGENT_GRAPH_V2;
-  try {
-    // The LangGraph engine is hardcoded ON — unset/any value is enabled; only '0'/'false' kill-switch disables.
-    for (const truthy of [undefined, '1', 'true', 'TRUE']) {
-      if (truthy === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = truthy;
-      ok(isWorkflowGraphEnabled(), `AGENT_GRAPH_V2=${JSON.stringify(truthy)} reads as enabled`);
-    }
-    for (const falsy of ['0', 'false']) {
-      process.env.AGENT_GRAPH_V2 = falsy;
-      ok(!isWorkflowGraphEnabled(), `AGENT_GRAPH_V2=${JSON.stringify(falsy)} reads as disabled`);
-    }
-  } finally {
-    if (savedFlag === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = savedFlag;
-  }
+async function testCheckpointer() {
+  console.log('5. Checkpointer selection + fail-closed guard');
 
   const savedDbUrl = process.env.DATABASE_URL;
   const savedDeployMode = process.env.DEPLOYMENT_MODE;
   const savedNodeEnv = process.env.NODE_ENV;
-  const savedFlag2 = process.env.AGENT_GRAPH_V2;
   try {
     delete process.env.DATABASE_URL;
     delete process.env.DEPLOYMENT_MODE;
     process.env.NODE_ENV = 'test';
-    delete process.env.AGENT_GRAPH_V2;
     await closeWorkflowCheckpointer();
     const saver = await getWorkflowCheckpointer();
     ok(typeof (saver as any).put === 'function' && typeof (saver as any).getTuple === 'function' && typeof (saver as any).putWrites === 'function',
@@ -283,30 +268,22 @@ async function testCheckpointerAndFlag() {
     if (savedDbUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDbUrl;
     if (savedDeployMode === undefined) delete process.env.DEPLOYMENT_MODE; else process.env.DEPLOYMENT_MODE = savedDeployMode;
     if (savedNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedNodeEnv;
-    if (savedFlag2 === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = savedFlag2;
     await closeWorkflowCheckpointer();
   }
 
   // Fail-closed guard — the single most safety-critical behavior in this module.
   const savedDbUrl2 = process.env.DATABASE_URL;
   const savedDeployMode2 = process.env.DEPLOYMENT_MODE;
-  const savedFlag3 = process.env.AGENT_GRAPH_V2;
   try {
     delete process.env.DATABASE_URL;
     process.env.DEPLOYMENT_MODE = 'production';
-    process.env.AGENT_GRAPH_V2 = '1';
     await closeWorkflowCheckpointer();
     let threw = false;
-    try {
-      await getWorkflowCheckpointer();
-    } catch {
-      threw = true;
-    }
-    ok(threw, 'getWorkflowCheckpointer() REJECTS when AGENT_GRAPH_V2=1 + DEPLOYMENT_MODE=production + no DATABASE_URL (fail-closed)');
+    try { await getWorkflowCheckpointer(); } catch { threw = true; }
+    ok(threw, 'getWorkflowCheckpointer() REJECTS in production with no DATABASE_URL (fail-closed)');
   } finally {
     if (savedDbUrl2 === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDbUrl2;
     if (savedDeployMode2 === undefined) delete process.env.DEPLOYMENT_MODE; else process.env.DEPLOYMENT_MODE = savedDeployMode2;
-    if (savedFlag3 === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = savedFlag3;
     await closeWorkflowCheckpointer();
   }
 }
@@ -394,12 +371,71 @@ async function testAgentRunEvents() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Section 8 — orchestration ledger channel (full multi-agent orchestration, Phase 1).
+// ---------------------------------------------------------------------------
+const sampleTask = agentTaskSchema.parse({
+  taskId: 't1', runId: 'run-o', planId: 'plan-1', missionKind: 'cases',
+  agentRoleId: 'specialist.case_designer', agentKey: 'TestGenerationAgent', displayName: 'Forge',
+  agentDefinitionVersion: 1, objective: 'draft cases', status: 'queued',
+  outputContract: 'cases.draft', idempotencyKey: 'idem-t1',
+  budget: { maxCodexTurns: 4, maxToolCalls: 20, maxTokens: null },
+  createdAt: '2026-08-13T00:00:00.000Z',
+});
+
+function testOrchestrationLedger() {
+  console.log('\nSection 8 — orchestration ledger channel');
+
+  const fresh = createInitialWorkflowState({
+    runId: 'run-o', threadId: 'thread-o', requestId: 'req-o', tenantId: 't', workspaceId: 'w',
+    projectId: 'p', requestedBy: 'u',
+    request: { goal: 'test the list view', requestedCaseCount: 0, reviewPolicy: 'auto', executionPolicy: 'auto' },
+    mission: null,
+  });
+  ok(fresh.orchestration.plan === null && Object.keys(fresh.orchestration.tasks).length === 0, 'the ledger starts empty');
+  ok(fresh.orchestration.budgetSpent.codexTurns === 0, 'the shared run budget starts at zero');
+
+  // Old checkpoints predate the channel entirely and must still rehydrate.
+  const { orchestration, ...legacy } = fresh as Record<string, unknown> & { orchestration: unknown };
+  const reparsed = parseWorkflowState(legacy);
+  ok(reparsed !== null, 'a pre-Phase-1 checkpoint (no orchestration key) still parses');
+  ok(Object.keys(reparsed?.orchestration.tasks ?? {}).length === 0, 'a rehydrated legacy checkpoint defaults to an empty ledger');
+
+  // Round-trip through JSON: the ledger must survive the checkpointer's serialization.
+  const snapshot = captureRegistrySnapshot();
+  const withLedger = {
+    ...fresh,
+    orchestration: {
+      ...fresh.orchestration,
+      registrySnapshot: snapshot,
+      tasks: { 't1': { ...sampleTask, status: 'accepted' as const } },
+      acceptedFactRefs: [{ factId: 'f1', kind: 'evidence.selectors', digest: digestOf(['#a']) }],
+      budgetSpent: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0, codexTurns: 1, toolCalls: 2 },
+    },
+  };
+  const round = parseWorkflowState(JSON.parse(JSON.stringify(withLedger)));
+  ok(round !== null, 'a populated ledger round-trips through JSON');
+  ok(round?.orchestration.registrySnapshot?.registryDigest === snapshot.registryDigest, 'the pinned registry digest survives serialization');
+  ok(round?.orchestration.tasks['t1'].status === 'accepted', 'task status survives serialization');
+  ok(round?.orchestration.budgetSpent.codexTurns === 1, 'budget spend survives serialization');
+
+  // The ledger must not become a secret-leak vector.
+  assertNoSecretLeakage(withLedger);
+  ok(true, 'a populated ledger passes the secret-leakage guard');
+  let leaked = false;
+  try {
+    assertNoSecretLeakage({ ...withLedger, orchestration: { ...withLedger.orchestration, tasks: { t1: { ...sampleTask, apiKey: 'sk-live-x' } } } });
+  } catch { leaked = true; }
+  ok(leaked, 'a secret smuggled into a task row trips the guard');
+}
+
 async function main() {
   testStateRoundTripAndSecretLeakage();
+  testOrchestrationLedger();
   testReducers();
   testErrorTaxonomy();
   testEventContract();
-  await testCheckpointerAndFlag();
+  await testCheckpointer();
   await testPostgresRestartSurvival();
   await testAgentRunEvents();
 

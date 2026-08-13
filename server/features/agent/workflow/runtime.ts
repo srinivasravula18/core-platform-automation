@@ -15,7 +15,7 @@ import { mergeScriptsByCase } from '../caseCollection';
 import { Command, isInterrupted } from '@langchain/langgraph';
 import { AgentRuns, AgentRunEvents, Defects } from '../../../db/repository';
 import { db } from '../../../shared/storage';
-import { readArtifacts } from './artifactStash';
+import { hydrateRunArtifacts, readArtifacts } from './artifactStash';
 import { specFilenameFromTitle } from './specFilename';
 import { getWorkflowCheckpointer } from './checkpointer';
 import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLogEntry } from './defectReporter';
@@ -625,7 +625,7 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
       await projectAndPersist(runId, entry, lastState, null);
       // Phase 1 cutover (shadow): project each stage transition onto the coordination bus + blackboard at
       // full fidelity (HANDOFF + prior stage's RESULT with the real artifact it produced + blackboard fact).
-      // No-op unless AGENT_NATIVE_V1 is on; best-effort; changes no decision. First live A2A consumer.
+      // Best-effort; changes no decision.
       if (state.stage && state.stage !== lastEmittedStage) {
         await recordRunStageProgress(runId, state, state.stage, String(state.status ?? ''), lastEmittedStage);
         lastEmittedStage = state.stage;
@@ -766,6 +766,8 @@ export async function resumeGraphRun(runId: string, resolution: ReviewResolution
     registry.set(runId, entry);
   }
   if (entry.pumping) throw new Error(`Run ${runId} is still executing — cannot resume until it pauses or finishes.`);
+  // A second process starts with a cold stash; without this the resumed run re-grounds from nothing.
+  await hydrateRunArtifacts(runId);
   if (entry.controller.signal.aborted) entry.controller = new AbortController();
   entry.cancelled = false;
   const { reviewedCases, ...reviewResolution } = resolution;

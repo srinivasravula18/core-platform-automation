@@ -1,17 +1,4 @@
-/**
- * discoverAppProfile — the control-inversion agent (agent-native cutover).
- *
- * Replaces the deterministic app classifiers (platformTypeFromSurface / detectSurfaceKind / the
- * ADMIN|RUNTIME + ?nav= assumptions): instead of code deciding the connected app's shape from literals,
- * the AGENT explores the connected app with tools, REASONS about its structure, and emits a typed
- * AppProfile. The decision is published to the blackboard (A2A) and remembered per connected repo, so a
- * second run recalls it instead of re-discovering, and a brand-new repo triggers exactly one discovery.
- *
- * Provider-neutral: rides the existing AIProvider tool-loop (runToolLoop) + strict-output seam
- * (generateStrictObject) — NO Anthropic/OpenAI SDK here. App-agnostic: nothing about any specific app is
- * hardcoded; every fact comes from what the agent observed in the connected repo + live app + its API.
- * Additive + gated by AGENT_NATIVE_V1 at call sites — nothing consumes this until cutover.
- */
+/** Learns an AppProfile from the connected repo/URL/OpenAPI at run time. */
 import { z } from 'zod';
 import type { AgentRunResult, RunToolLoopOptions } from '../../ai/tools/types';
 import { defineAppProfile, resolveAppProfile, type AppProfile } from '../appProfile';
@@ -87,7 +74,6 @@ async function defaultSynthesize(agent: string, understanding: string, app: Conn
     node: 'discover_app_profile',
     agent,
     schema: profileWireSchema,
-    schemaName: 'app_profile',
     system: SYNTHESIZE_SYSTEM,
     prompt: `CONNECTED APP: ${app.appLabel || app.appId || app.appUrl || 'unknown'}\nEXPLORATION NOTES:\n${understanding.slice(0, 8000)}`,
     validate: (raw: unknown) => {

@@ -1,44 +1,43 @@
 import path from 'path';
 import fs from 'fs/promises';
-import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/providers/types';
+import { DEFAULT_MODELS, type ProviderName } from '../ai/providers/types';
 import { isPostgresEnabled, query } from '../db/pool';
 
-const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
-const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }> = {
-  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true, effort: 'medium' },
-  openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
-  anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
+const PROVIDERS: ProviderName[] = ['codex'];
+type ProviderSetting = { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' };
+const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, ProviderSetting> = {
+  codex: { apiKey: '', model: '', authMode: 'account', enabled: true, effort: 'medium' },
 };
 
-function isProviderName(value: unknown): value is ProviderName {
-  return PROVIDERS.includes(value as ProviderName);
-}
-
+/**
+ * Normalize stored AI settings onto the single Codex runtime. Databases written before the
+ * migration carry gemini/openai/anthropic blocks and per-agent provider maps; those keys are
+ * dropped here rather than deleted from history, and an OpenAI key found in the old block is
+ * carried over so an API-key deployment keeps working without re-entry.
+ */
 function normalizeProviderSettings(settings: any) {
   const existing = settings?.providerSettings || {};
-  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }>;
-  for (const provider of PROVIDERS) {
-    const stored = existing[provider] || {};
-    providerSettings[provider] = {
-      ...DEFAULT_PROVIDER_SETTINGS[provider],
-      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
+  const stored = existing.codex || {};
+  const legacyOpenAiKey = typeof existing.openai?.apiKey === 'string' ? existing.openai.apiKey : '';
+  const apiKey = typeof stored.apiKey === 'string' && stored.apiKey ? stored.apiKey : legacyOpenAiKey;
+  const providerSettings = {
+    codex: {
+      ...DEFAULT_PROVIDER_SETTINGS.codex,
+      apiKey,
       model: typeof stored.model === 'string' ? stored.model : '',
-      authMode: stored.authMode === 'account' ? 'account' : 'api_key',
-      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_PROVIDER_SETTINGS[provider].enabled,
+      authMode: apiKey && stored.authMode !== 'account' ? 'api_key' : 'account',
+      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : true,
       effort: ['low', 'medium', 'high'].includes(stored.effort) ? stored.effort : 'medium',
-    };
-  }
+    } as ProviderSetting,
+  } as Record<ProviderName, ProviderSetting>;
 
-  const defaultProvider = isProviderName(settings?.defaultProvider) ? settings.defaultProvider : 'gemini';
-  const agentProviderMap = Object.fromEntries(
-    Object.entries(settings?.agentProviderMap || {}).filter(([, provider]) => isProviderName(provider)),
-  ) as Record<string, ProviderName>;
-  const validModels = new Set(PROVIDERS.flatMap((provider) => listAvailableModels(provider, { includeLocalOnly: true })));
+  // Any non-empty id is kept: the runtime serves more models than the static registry lists, and
+  // the UI only ever writes ids it got from the runtime. Codex itself rejects a genuinely bad id.
   const agentModelMap = Object.fromEntries(
-    Object.entries(settings?.agentModelMap || {}).filter(([, model]) => typeof model === 'string' && validModels.has(model)),
+    Object.entries(settings?.agentModelMap || {}).filter(([, model]) => typeof model === 'string' && !!model),
   ) as Record<string, string>;
 
-  return { providerSettings, defaultProvider, agentProviderMap, agentModelMap };
+  return { providerSettings, defaultProvider: 'codex' as ProviderName, agentProviderMap: {} as Record<string, ProviderName>, agentModelMap };
 }
 
 export const db: any = {
@@ -56,10 +55,9 @@ export const db: any = {
   agentRunEvents: [] as any[],
   recentActivity: [] as any[],
   settings: {
-    geminiModel: 'gemini-2.5-flash',
     siteCredentials: [] as any[],
     providerSettings: DEFAULT_PROVIDER_SETTINGS,
-    defaultProvider: 'gemini' as ProviderName,
+    defaultProvider: 'codex' as ProviderName,
     agentProviderMap: {} as Record<string, ProviderName>,
     agentModelMap: {} as Record<string, string>,
     dailyCostLimit: 50,

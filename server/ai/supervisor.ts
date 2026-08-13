@@ -7,9 +7,9 @@
  * until the goal is met. Each tool is backed by the EXISTING per-intent handler
  * (controller.executeIntent → executeStep), so behaviour is reused, not rewritten.
  *
- * Provider + model come from Settings (getOrchestrator). Native function-calling only.
+ * Model + effort come from Settings (getOrchestrator). Tools are called natively by the runtime.
  */
-import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent, getProviderCredentials } from './orchestrator';
+import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent } from './orchestrator';
 import { assembleConversationContext } from './memory/contextAssembler';
 import { executeIntent, stripReasoningPreamble } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
@@ -18,6 +18,7 @@ import { corePlatformDataTools } from './tools/corePlatformData';
 import { corePlatformMetaTools } from './tools/corePlatformMeta';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
+import { draftRequirement } from '../features/requirements/requirementService';
 import { expandByReferences } from './exploration/referenceGraph';
 import { z } from 'zod';
 
@@ -42,7 +43,6 @@ export async function answerViaConversationalRuntime(userMessage: string, opts: 
 }): Promise<string | null> {
   const conversationId = String(opts.conversationId || '').trim();
   if (!conversationId) return null;
-  if (String(process.env.CONVERSATIONAL_RUNTIME_V1 ?? 'true').toLowerCase() === 'false') return null;
   try {
     const { routeTurn } = await import('../../services/runtime/src/application/routeTurn');
     const scope = { workspaceId: opts.workspaceId || 'default', ownerId: opts.userId || '', projectId: opts.projectId || null, appId: opts.appId || null };
@@ -82,12 +82,14 @@ const strArr = { type: 'array', items: { type: 'string' } };
 // The actionable capabilities the supervisor can choose from. Param schemas mirror what
 // executeStep's handlers consume (controller.ts). Read-only "explain" is handled as the
 // loop's final text, so it is not a tool.
-const INTENT_TOOLS: IntentToolDef[] = [
+export const INTENT_TOOLS: IntentToolDef[] = [
   { kind: 'navigate', description: 'Navigate the UI to a path (e.g. /test-cases).', params: obj({ path: str }, ['path']) },
   { kind: 'create_plan', description: 'Create a test plan. Needs a name and a scope.', params: obj({ name: str, scope: str, objectives: str, folderId: str }, ['name', 'scope']) },
   { kind: 'create_suite', description: 'Create a test suite. Needs a name.', params: obj({ name: str, description: str, testPlanId: str, module: str, folderId: str }, ['name']) },
+  { kind: 'draft_requirement', description: 'Research the selected application code and prepare a reviewable requirement draft. Use this when the user asks to create, write, draft, or discover requirements.', params: obj({ query: str }, ['query']) },
   { kind: 'create_cases', description: 'Generate test cases for a feature/scope. Resolve suiteId via query_workspace when the user references an existing suite.', params: obj({ count: int, planId: str, suiteId: str, folderId: str, scope: str, requirements: str }) },
-  { kind: 'create_run', description: 'Create/execute a run for a suite or set of cases. Resolve ids via query_workspace.', params: obj({ name: str, suiteId: str, testPlanId: str, caseIds: strArr, folderId: str }) },
+  { kind: 'prepare_test_scope', description: 'Prepare the reviewable list of behaviors and scenarios to test for a requested application feature. Always use this for actionable requests such as testing or verifying a feature; the Console will perform evidence discovery and present the scope before execution.', params: obj({ scope: str, targetUrl: str }, ['scope']) },
+  { kind: 'create_run', description: 'Create a pending run artifact for an existing suite or set of cases. Resolve ids via query_workspace. This does not directly test a live app.', params: obj({ name: str, suiteId: str, testPlanId: str, caseIds: strArr, folderId: str }) },
   { kind: 'generate_script', description: 'Generate a Playwright script for one or more existing test cases. Resolve caseIds via query_workspace.', params: obj({ caseId: str, caseIds: strArr, framework: str, language: str }) },
   { kind: 'generate_report', description: 'Generate a report for a run. Resolve runId via query_workspace.', params: obj({ runId: str }) },
   { kind: 'create_defect', description: 'File a defect.', params: obj({ title: str, description: str, severity: str, linkedCaseId: str, linkedRunId: str }, ['title']) },
@@ -101,7 +103,17 @@ const INTENT_TOOLS: IntentToolDef[] = [
 function buildIntentTool(def: IntentToolDef, ctx: ToolContext): AgentTool {
   return {
     spec: { name: def.kind, description: def.description, parameters: def.params },
-    execute: (args) => executeIntent(def.kind, args, { workspaceId: ctx.workspaceId, userId: ctx.userId, userMessage: String(ctx.userMessage || '') }),
+    execute: (args) => def.kind === 'draft_requirement'
+      ? draftRequirement(String(args.query || ctx.userMessage || ''), {
+          workspaceId: ctx.workspaceId,
+          userId: ctx.userId,
+          projectId: String(ctx.projectId || ''),
+          appId: String(ctx.appId || ''),
+          requirementsOnly: true,
+        })
+      : def.kind === 'prepare_test_scope'
+        ? Promise.resolve({ scope: String(args.scope || ctx.userMessage || ''), targetUrl: String(args.targetUrl || '') })
+      : executeIntent(def.kind, args, { workspaceId: ctx.workspaceId, userId: ctx.userId, userMessage: String(ctx.userMessage || '') }),
   };
 }
 
@@ -115,6 +127,10 @@ Operating rules:
 - Decompose the request and call the tools needed, in order. A later step may depend on an id produced by an earlier one — read the tool results and pass real ids forward.
 - Questions about persisted workspace artifacts or results MUST call query_workspace before answering. The repository describes application behavior; it cannot prove which artifacts or values actually exist in the database.
 - When the user refers to existing work ("those cases", "the last run", "the login suite"), FIRST call query_workspace to resolve concrete ids, then act on them. Never invent ids.
+- A request to test, verify, validate, or exercise an application feature is actionable. You MUST call prepare_test_scope; never replace that action with a paragraph about unavailable source code or browser access. The downstream discovery workflow determines what evidence is available and presents the behaviors and scenarios to test.
+- Use create_cases only when the user asks to write or generate persisted case artifacts without running the reviewed application-test workflow.
+- TARGET MUST BE ALIVE. To find out whether a target is serving, call check_url — one HTTP request. NEVER open or inspect a browser page just to check whether a server is up. If a tool result says the target is not responding, returned 404/502/503/504, refused the connection, or could not be resolved, STOP. Say plainly that the server is not responding (name the address and what it returned) and ask the user to start it or pick another target. NEVER continue to prepare_test_scope, create_cases, or any authoring step against a target that is not answering — cases written against an error page describe the error page, not the product.
+- Use draft_requirement when the user asks to create or draft requirements; return its reviewable draft and do not silently create test cases instead.
 - When unsure how a feature behaves, search_codebase for the relevant terms, then read_code_file on the most relevant matches, and base your answer on what the code actually says.
 - When asked WHAT TO TEST, for a feature/area list, or "list the features to test": explore adaptively — search_codebase, read the core files, then FOLLOW_IMPORTS to the connected modules and read the ones that implement the logic — and answer at EDGE level: organize by sub-feature and, for each, include its validations, boundary/limit values & caps, empty/loading/error states, permission/role gates, special tokens/flags, and failure branches. Do not stop at the happy path or a single file.
 - When the user asks what coverage is MISSING, wants edge/negative cases, or asks "what are we not testing?", call find_untested_edges with the feature — it researches the real codebase and returns gap scenarios not already covered by existing cases.
@@ -129,7 +145,10 @@ export interface SupervisorResult {
   steps: AgentStep[];
   toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown }>;
   accepted: boolean;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number };
 }
+
+export const hasSupervisorToolCall = (steps: AgentStep[]) => steps.some((step) => step.toolCalls.length > 0);
 
 // Only GRAMMATICAL fillers — NOT product nouns. Words like "list", "view", "features",
 // "page", "app", "table", "test" are exactly what we want to grep the codebase for, so they
@@ -282,6 +301,8 @@ function harvestReferenceTerms(content: string): string[] {
 // to edge-level depth, using the model's native tool-calling.
 const ADAPTIVE_CODE_EXPLORER_SYSTEM = `You are a senior engineer + QA expert exploring THIS application's REAL source code with tools, to answer the user's question at EDGE-LEVEL depth — never a shallow happy-path summary.
 
+This is a SOURCE-CODE-ONLY step. You have no live browser or page-state evidence here. Never claim that a target currently shows a login/sign-in page, never ask the user to open or sign in to a visible browser, and never block script/test-scope generation on browser availability. Authentication and deployed-app verification are handled later by the downstream headless runner using stored Settings credentials.
+
 Tools: search_codebase (grep terms → file paths), read_code_file (read a file), follow_imports (from a file, get the connected child/nth-child files it imports). Use them in an ADAPTIVE loop, deciding each next step from what the previous step returned — the way a human actually reads an unfamiliar codebase:
 
 1. SEARCH for the feature with precise terms (identifiers, route fragments, UI labels, file-name hints), and read the strongest hit.
@@ -289,6 +310,7 @@ Tools: search_codebase (grep terms → file paths), read_code_file (read a file)
 3. READ the core file(s), then FOLLOW_IMPORTS on them to pull in the modules that actually implement the logic, and read the important ones.
 4. HUNT THE EDGES on purpose — keep searching/reading until you have found: input validations & required fields, boundary/limit values and caps (e.g. max rows, per-lane limits), empty / loading / error states, permission & role gates, special tokens / flags / enums, and failure/exception branches. These are what make an answer edge-level.
 5. Do NOT answer from a single file or stop at the happy path. Keep going (search → read → follow → read) until the feature AND its edges are covered.
+6. Treat executable/configuration keys as exact contracts. Never infer a required field, allowed value, step field, disabled control, persistence rule, or runtime configuration from a label, description, or common product convention. Report mismatches between descriptive text and executable keys as discrepancies, and label configuration-dependent behavior as conditional.
 
 When done, STOP calling tools and give the final answer:
 - Ground every point ONLY in code you actually read; never invent behaviour.
@@ -297,21 +319,12 @@ When done, STOP calling tools and give the final answer:
 - Be concrete; surface the non-obvious edges, not just the obvious controls.`;
 
 /**
- * Whether the active provider can handle the decomposition fan-out (many concurrent model calls)
- * without becoming unusably slow. Account/CLI providers (codex/claude) spawn a process per call
- * (~15-100s each), so the worker fan-out takes 10-40 min; we skip it for them. API-key providers
- * answer in seconds, so fan-out is fine.
+ * Deep decomposition fans out into many parallel model/tool-loop calls. It is useful for offline
+ * exhaustive analysis, but too slow and opaque to be the production chat default, so it stays
+ * opt-in behind AGENT_DEEP_DECOMPOSITION.
  */
 function providerSupportsDecomposition(_opts?: { workspaceId?: string; userId?: string }): boolean {
-  // Deep decomposition fans out into many parallel model/tool-loop calls. It is useful for
-  // offline exhaustive analysis, but too slow and opaque for the production chat default.
-  // Keep it opt-in so API-key production behaves like the fast local single-pass path.
-  if (String(process.env.AGENT_DEEP_DECOMPOSITION || '').toLowerCase() !== 'true') return false;
-  try {
-    const provider = resolveProviderForAgent('chatAssistant');
-    const creds = getProviderCredentials(provider);
-    return !!creds && creds.authMode !== 'account';
-  } catch { return false; }
+  return String(process.env.AGENT_DEEP_DECOMPOSITION || '').toLowerCase() === 'true';
 }
 
 /**
@@ -462,7 +475,9 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     // (`{"action":"tool_call","name":"search_codebase",...}`) instead of a native call, which the
     // loop can't execute and returns verbatim as finalText. Never surface that raw JSON as the
     // answer — fall through to the parallel-research synthesis, which returns readable prose.
-    if (loopAnswer && !looksLikeRawToolCall(loopAnswer)) return stripCodebaseLocationsForAgentConsole(loopAnswer);
+    if (loopAnswer && !looksLikeRawToolCall(loopAnswer) && hasCodebaseEvidence(loop.toolResults)) {
+      return stripCodebaseLocationsForAgentConsole(loopAnswer);
+    }
   } catch {
     // provider without tool-calling, or the loop failed → fall through to parallel research.
   }
@@ -501,6 +516,7 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
       const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real codebase files; Markdown/documentation files are excluded).
 Speak to the user as a product/QA expert. Do not invent behaviour beyond the findings. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
+This source-code step has no live browser evidence. Never claim a current page/login state or ask the user to sign in to a visible browser; downstream verification is headless and uses stored Settings credentials.
 
 ${INTENT_DRIVEN_ANSWER_RULES}
 
@@ -566,6 +582,7 @@ ${notes}\n`;
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
   const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real codebase files provided below (your source of truth). Markdown/documentation files are excluded. Be specific and concrete. If the provided codebase files do not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
 Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
+This source-code step has no live browser evidence. Never claim a current page/login state or ask the user to sign in to a visible browser; downstream verification is headless and uses stored Settings credentials.
 
 ${INTENT_DRIVEN_ANSWER_RULES}
 
@@ -575,6 +592,17 @@ APPLICATION CODEBASE FILES (${top.length} file(s)):
 ${excerpts || '(no matching files found — the repo may be unavailable or the terms too specific)'}\n`;
   const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
   return stripCodebaseLocationsForAgentConsole(shortCircuit || text || 'I could not find that in the codebase.');
+}
+
+export function hasCodebaseEvidence(toolResults: Array<{ name: string; result: unknown }>): boolean {
+  return toolResults.some(({ name, result }) => {
+    const value = result as Record<string, unknown> | null;
+    if (!value) return false;
+    if (name === 'search_codebase') return Number(value.matchCount) > 0;
+    if (name === 'read_code_file') return Boolean(String(value.content || '').trim());
+    if (name === 'follow_imports') return Number(value.connectedFileCount) > 0;
+    return false;
+  });
 }
 
 export async function runSupervisor(input: {
@@ -608,8 +636,10 @@ export async function runSupervisor(input: {
     model: resolveModelForAgent('chatAssistant', provider),
     path: 'controller.supervisor',
   });
-  const accountMode = getProviderCredentials(provider)?.authMode === 'account';
-  const historyBlock = accountMode ? assembled.promptBlock : assembled.memoryBlock;
+  // The runtime carries real conversation threads, so history rides as seed messages and only the
+  // memory block goes into the task text. (The flattened prompt block existed for the old CLI
+  // transport, which had no message history at all.)
+  const historyBlock = assembled.memoryBlock;
   const pageBlock = input.pageContext?.path ? `\n\nThe user is currently on: ${input.pageContext.path}` : '';
   // Selected apps are explicit target context so the agent never lacks the app/URL data.
   const appsBlock = (input.apps || []).length
@@ -621,7 +651,7 @@ export async function runSupervisor(input: {
   const result = await orch.runToolLoop({
     task,
     guardrailInput: input.userMessage,
-    seedMessages: accountMode ? undefined : assembled.history,
+    seedMessages: assembled.history,
     system: SUPERVISOR_SYSTEM,
     tools,
     toolContext: ctx,
@@ -629,8 +659,12 @@ export async function runSupervisor(input: {
     maxTotalTokens: 120_000,
     contextManifestId: assembled.manifest.id,
     temperature: 0.2,
+    accept: ({ steps }) => hasSupervisorToolCall(steps)
+      ? { ok: true }
+      : { ok: false, feedback: 'You answered without using a capability. Call the tool that fulfills or grounds the request, then answer from its result.' },
+    maxAcceptRetries: 1,
     onStep: input.onStep,
     signal: input.signal,
   });
-  return { finalText: result.finalText, steps: result.steps, toolResults: result.toolResults, accepted: result.accepted };
+  return { finalText: result.finalText, steps: result.steps, toolResults: result.toolResults, accepted: result.accepted, usage: result.totalUsage };
 }

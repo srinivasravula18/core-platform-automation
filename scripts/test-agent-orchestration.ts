@@ -24,19 +24,8 @@ async function main() {
     rationale: 'ground, then author',
   });
 
-  console.log('Flag OFF — orchestration is inert');
+  console.log('A registry-validated delegation is published');
   {
-    delete process.env.AGENT_NATIVE_V1;
-    setMessageBus(new InMemoryMessageBus());
-    setBlackboard(new InMemoryBlackboard());
-    const plan = await orchestrateRunStart({ runId: RUN, goal: 'Test the List View', classify });
-    ok(plan === null, 'returns null when AGENT_NATIVE_V1 is off');
-    ok((await getMessageBus().history(RUN)).length === 0, 'no messages published when the flag is off');
-  }
-
-  console.log('Flag ON — a registry-validated delegation is published');
-  {
-    process.env.AGENT_NATIVE_V1 = '1';
     setMessageBus(new InMemoryMessageBus());
     setBlackboard(new InMemoryBlackboard());
     const plan = await orchestrateRunStart({ runId: RUN, goal: 'Test the List View', classify });

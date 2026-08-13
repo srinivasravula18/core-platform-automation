@@ -1,16 +1,4 @@
-/**
- * Shared run store (Phase 5) — durable, process-independent run artifacts for horizontal resume.
- *
- * Today heavy artifacts (evidence graph, plans, compiled sources, metadata map) live only in one
- * process's in-memory `artifactStash` Map, so `reconcileOrphanedRunsOnStartup` can only FAIL an in-flight
- * run after a restart — the run is process-bound. This store keeps the same artifacts keyed by
- * (runId, artifactKey) in Postgres, so a SECOND worker can re-hydrate and resume. Values must be
- * JSON-serializable (the graph/plans/sources already are).
- *
- * Persistence-agnostic: Postgres `agent_run_artifacts` when configured, in-memory otherwise. Additive +
- * gated by AGENT_NATIVE_V1 — the in-process stash stays the default authority until the flag flips, so
- * this changes no current behavior. See runStoreMirror.ts for the opt-in write-through from artifactStash.
- */
+/** Durable shared run-artifact store — what lets a second process resume a run. */
 import { isPostgresEnabled, query } from '../../db/pool';
 
 export interface RunArtifactStore {

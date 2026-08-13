@@ -17,6 +17,7 @@ export interface FailureAnalysis {
     | 'element-unstable'
     | 'assertion-failed'
     | 'ambiguous-locator'
+    | 'tooling-obscured'
     | 'navigation'
     | 'timeout'
     | 'unknown';
@@ -101,6 +102,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
 
   // --- shared extractions -----------------------------------------------------------------
   const target =
+    cap(e, /TOOLING_OBSCURED[^\n]*target "([^"]+)"/i) ??
     cap(e, /waiting for locator\('([^']+)'\)/) ??
     cap(e, /Locator:\s*locator\('([^']+)'\)/) ??
     cap(e, /locator\('([^']+)'\)/);
@@ -124,6 +126,23 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   const doWord = action && !isAssertion ? plainAction(action, null, false).replace(/ the thing it needed$/, '') : 'use';
 
   // --- classification, most specific first ------------------------------------------------
+
+  if (/TOOLING_OBSCURED/i.test(e)) {
+    const generatedSelector = cap(e, /generated locator:\s*(.+?);\s*resolved to/i);
+    return {
+      kind: 'tooling-obscured', label: 'Test Chose a Background Control',
+      attempted: `use the “${target || 'unknown'}” field in the open form`, target, resolvedElement,
+      expected: `The test uses the visible “${target || 'requested'}” control inside the open form.`,
+      actual: generatedSelector
+        ? `Generated locator ${generatedSelector} matched a same-named control behind the open form.`
+        : 'The generated locator matched a same-named control behind the open form instead of the visible field.',
+      likelyCause: 'The generated locator was scoped to the background list/grid instead of the open dialog. This is a generated-test locator defect, not an application defect.',
+      suggestedFixes: [
+        `Replace the generated locator with the verified control inside the open dialog${target ? ` for “${target}”` : ''}.`,
+        'Regenerate the script after refreshing live UI evidence; do not report this as a product bug.',
+      ],
+    };
+  }
 
   // Typed into something that can't be typed into (a dropdown, checkbox, button…). Very common when a
   // test uses "type text" on a <select>; the raw error is unreadable, so name the real control + fix.

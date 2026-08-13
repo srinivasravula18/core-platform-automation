@@ -1,35 +1,9 @@
 import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
-import { runSupervisor, answerAppQuestionFromCode, answerViaConversationalRuntime } from '../../ai/supervisor';
-import { isWorkspaceDataQuestion, quickWorkspaceAnswer } from '../../ai/tools/registry';
+import { runSupervisor } from '../../ai/supervisor';
 import { reqScope } from '../../shared/scope';
 import { normalizeInput, preLLMPolicyCheck } from '../../ai/guardrails';
 import { ChatConversations } from '../../db/repository';
-import { assembleConversationContext } from '../../ai/memory/contextAssembler';
-import { getProviderCredentials, resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
-
-// An action request mutates/creates/runs something → needs the full tool loop. A plain
-// question can be answered with the FAST single-call git-grounded path.
-const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
-
-async function assembleFastContext(message: string, conversationId: unknown, history: unknown) {
-  const provider = resolveProviderForAgent('chatAssistant');
-  return assembleConversationContext({
-    conversationId: typeof conversationId === 'string' ? conversationId : undefined,
-    fallbackHistory: history,
-    currentMessage: message,
-    model: resolveModelForAgent('chatAssistant', provider),
-    path: 'controller.fast-question',
-  });
-}
-
-function nativeReplayOptions(assembled: Awaited<ReturnType<typeof assembleFastContext>>) {
-  const provider = resolveProviderForAgent('chatAssistant');
-  const accountMode = getProviderCredentials(provider)?.authMode === 'account';
-  return accountMode
-    ? { questionPrefix: assembled.promptBlock, seedMessages: undefined, memoryBlock: undefined }
-    : { questionPrefix: '', seedMessages: assembled.history, memoryBlock: assembled.memoryBlock };
-}
 
 async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string, scope?: { userId?: string; projectId?: string; appId?: string | null }) {
   if (typeof conversationId !== 'string' || !conversationId) return;
@@ -212,41 +186,10 @@ export function registerControllerRoutes(app: Express) {
         await persistExchange(conversationId, workspaceId, userMessage, smallTalk, scope);
         return res.json({ reply: smallTalk, accepted: true, fast: true, actions: [], trace: [] });
       }
-      // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
-      const quick = await quickWorkspaceAnswer(userMessage, scope);
-      if (quick) {
-        await persistExchange(conversationId, workspaceId, userMessage, quick, scope);
-        return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
-      }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
       // done deterministically), instead of the slow multi-step tool loop. Include the recent
       // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
       // or a pasted case that follows a prior instruction — instead of being answered blind.
-      if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
-        // Phase 6 cutover: diagnostic/recall questions answer from REAL run evidence via the
-        // Conversational Runtime (it persists its own canonical exchange); null → legacy path.
-        const runtimeReply = await answerViaConversationalRuntime(userMessage, {
-          conversationId, workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
-        });
-        if (runtimeReply) {
-          return res.json({ reply: runtimeReply, accepted: true, fast: true, actions: [], trace: [] });
-        }
-        const assembled = await assembleFastContext(userMessage, conversationId, history);
-        const replay = nativeReplayOptions(assembled);
-        const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {
-          workspaceId,
-          userId: effectiveUserId,
-          projectId: scope.projectId,
-          appId: scope.appId,
-          apps,
-          contextManifestId: assembled.manifest.id,
-          conversationId,
-          seedMessages: replay.seedMessages,
-          memoryBlock: replay.memoryBlock,
-        });
-        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
-        return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
-      }
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -262,7 +205,8 @@ export function registerControllerRoutes(app: Express) {
       res.json({
         reply: result.finalText,
         accepted: result.accepted,
-        actions: result.toolResults.map((t) => ({ tool: t.name, arguments: t.arguments })),
+        usage: result.usage,
+        actions: result.toolResults.map((t) => ({ tool: t.name, arguments: t.arguments, result: t.result })),
         trace: result.steps.map((s) => ({
           index: s.index,
           text: s.text,
@@ -298,47 +242,8 @@ export function registerControllerRoutes(app: Express) {
         await sendFinalReply(res, send, smallTalk, { fast: true });
         return res.end();
       }
-      // Instant path: simple count/list answered from the DB, no steps.
-      const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
-      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick, scope); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
-      if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
-        let i = 0;
-        // Phase 6 cutover (streaming): evidence-first runtime answers diagnostic/recall
-        // questions; progress lines keep the UI animating. null → legacy code-grounded path.
-        const runtimeReply = await answerViaConversationalRuntime(userMessage, {
-          conversationId, workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
-          onProgress: (label) => {
-            send({ type: 'step', index: i++, toolCalls: [{ name: 'get_run', arguments: {} }], text: label });
-            flushStream(res);
-          },
-        });
-        if (runtimeReply) {
-          await sendFinalReply(res, send, runtimeReply, { fast: true });
-          return res.end();
-        }
-        const assembled = await assembleFastContext(userMessage, conversationId, history);
-        const replay = nativeReplayOptions(assembled);
-        const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {
-          workspaceId,
-          userId: effectiveUserId,
-          projectId: scope.projectId,
-          appId: scope.appId,
-          apps,
-          contextManifestId: assembled.manifest.id,
-          conversationId,
-          seedMessages: replay.seedMessages,
-          memoryBlock: replay.memoryBlock,
-          onProgress: (label) => {
-            send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label });
-            flushStream(res);
-          },
-        });
-        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
-        await sendFinalReply(res, send, reply, { fast: true });
-        return res.end();
-      }
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -360,7 +265,11 @@ export function registerControllerRoutes(app: Express) {
         },
       });
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
-      await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
+      await sendFinalReply(res, send, result.finalText, {
+        accepted: result.accepted,
+        usage: result.usage,
+        actions: result.toolResults.map((tool) => ({ tool: tool.name, arguments: tool.arguments, result: tool.result })),
+      });
     } catch (err: any) {
       send({ type: 'error', error: err?.message || 'supervisor failed' });
     } finally {

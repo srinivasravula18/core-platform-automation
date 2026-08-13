@@ -5,8 +5,8 @@
  * (message budget + causation-depth). Pure — no browser/network/DB (in-memory stores only).
  *   npx tsx scripts/test-agent-bus.ts
  */
-import { InMemoryBlackboard } from '../server/agent-core/bus/blackboard';
-import { InMemoryMessageBus, BusBudgetExceededError, AGENT_MESSAGE_TYPES } from '../server/agent-core/bus/messageBus';
+import { InMemoryBlackboard, FactLifecycleError } from '../server/agent-core/bus/blackboard';
+import { InMemoryMessageBus, BusBudgetExceededError, ProtocolViolationError, AGENT_MESSAGE_TYPES } from '../server/agent-core/bus/messageBus';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -124,6 +124,62 @@ async function main() {
     ok(threw, 'a runaway causation chain is stopped by the depth guard');
     ok(lastOk >= 3 && lastOk <= 4, `the chain is cut at the configured depth (stopped after ${lastOk})`);
     process.env.AGENT_BUS_MAX_CAUSATION_DEPTH = prevD;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  console.log('Bus — protocol validation + orchestration correlation (Phase 1)');
+  {
+    const bus = new InMemoryMessageBus();
+    const req = await bus.publish({ runId: 'run-p', from: 'Maestro', to: 'Forge', type: 'REQUEST', payload: {}, taskId: 'task-1', agentInstanceId: 'maestro:run-p:task-0:1', traceId: 'trace-1' });
+    eq(req.taskId, 'task-1', 'a message carries its task id');
+    eq(req.agentInstanceId, 'maestro:run-p:task-0:1', 'a message carries the emitting agent instance');
+    eq(req.traceId, 'trace-1', 'a message carries its trace id');
+
+    const res = await bus.publish({ runId: 'run-p', from: 'Forge', to: 'Maestro', type: 'RESULT', payload: {}, causationId: req.id, taskId: 'task-1' });
+    eq(res.causationId, req.id, 'a RESULT links to the request it answers');
+
+    for (const t of ['RESULT', 'CRITIQUE', 'ANSWER'] as const) {
+      await throws(
+        () => bus.publish({ runId: 'run-p', from: 'Forge', to: 'Maestro', type: t, payload: {}, taskId: 'task-9' }),
+        (e) => e instanceof ProtocolViolationError,
+        `an orphan task-bound ${t} (no causationId) is rejected, not silently logged`,
+      );
+    }
+    const legacyProjection = await bus.publish({ runId: 'run-p', from: 'Scout', to: 'Maestro', type: 'RESULT', payload: {} });
+    ok(!!legacyProjection.id, 'a legacy stage projection (no taskId) is still accepted — Phase 1 changes no live behavior');
+    const broadcast = await bus.publish({ runId: 'run-p', from: 'Maestro', to: null, type: 'HANDOFF', payload: {} });
+    ok(!!broadcast.id, 'a HANDOFF does not require causation — it opens a chain rather than answering one');
+    eq((await bus.history('run-p')).length, 4, 'rejected messages are never persisted');
+  }
+
+  console.log('Blackboard — fact lifecycle: proposed by agents, promoted only by the coordinator');
+  {
+    const bb = new InMemoryBlackboard();
+    const f = await bb.put('run-f', 'evidence.selectors', ['#a'], 'Scout', { taskId: 'task-2' });
+    eq(f.status, 'proposed', 'a fact an agent writes starts as proposed, never authoritative');
+    ok(f.digest.startsWith('sha256:'), 'every fact carries a content digest');
+    eq(f.historical, false, 'a run fact is not historical memory by default');
+    eq(f.taskId, 'task-2', 'a fact records the task that produced it');
+
+    eq(await bb.latestAccepted('run-f', 'evidence.selectors'), null, 'a proposed fact does NOT satisfy an authoritative read');
+    await bb.setStatus(f.id, 'accepted');
+    eq((await bb.latestAccepted<string[]>('run-f', 'evidence.selectors'))?.value, ['#a'], 'once accepted, the fact is readable by a gate');
+
+    await throws(() => bb.setStatus(f.id, 'proposed'), (e) => e instanceof FactLifecycleError, 'an accepted fact cannot go back to proposed');
+
+    const f2 = await bb.put('run-f', 'evidence.selectors', ['#b'], 'Scout', { supersedesFactId: f.id });
+    await bb.setStatus(f.id, 'superseded');
+    await bb.setStatus(f2.id, 'accepted');
+    eq((await bb.latestAccepted<string[]>('run-f', 'evidence.selectors'))?.value, ['#b'], 'the newer accepted fact wins after supersession');
+    eq(f2.supersedesFactId, f.id, 'the replacement records what it superseded');
+
+    const rejected = await bb.put('run-f', 'evidence.api', { x: 1 }, 'Scout');
+    await bb.setStatus(rejected.id, 'rejected');
+    await throws(() => bb.setStatus(rejected.id, 'accepted'), (e) => e instanceof FactLifecycleError, 'a rejected fact can never be re-accepted');
+    eq(await bb.latestAccepted('run-f', 'evidence.api'), null, 'a rejected fact never satisfies a gate');
+
+    const recalled = await bb.put('run-f', 'memory.selectorHistory', { seen: 3 }, 'Scout', { historical: true, status: 'accepted' });
+    eq(recalled.historical, true, 'recalled memory is labelled historical so a live evidence gate can exclude it');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

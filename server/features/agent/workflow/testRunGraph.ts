@@ -32,16 +32,15 @@ import { runInvestigationNode, isInvestigationEnabled, type InvestigationSummary
 import { diffRunSteps, isVisualRegressionEnabled } from '../validation/visualBaseline';
 import { executePlaywrightScripts } from '../../playwright/executionService';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
-import { stashArtifacts, readArtifacts } from './artifactStash';
+import { stashArtifactsDurable, stashArtifacts, readArtifacts } from './artifactStash';
 import { renderBehaviorForPrompt } from '../behaviorOracle';
 import { classifyOutcomes } from '../outcomeValidator';
-import { isOutcomeValidatorEnabled } from '../outcomeValidatorFlag';
 import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
-import { isAgentNativeEnabled } from '../../../agent-core/agentNativeFlag';
-import { critiqueCases } from '../../../agent-core/critic/caseCritic';
+import { advanceLedgerForStage, planMissionForRun, runCriticExchange, settleOpenTasks } from './nodes/agentCoordination';
+import type { WorkflowOrchestration } from './state';
+import type { MissionKind } from '../../../agent-core/orchestration/contracts';
 import { publishGroundingFacts } from '../../../agent-core/grounding/groundingFacts';
-import { recordCapabilityDelegation } from '../../../agent-core/registry/capabilities';
-import { isPerCaseRepairEnabled } from './perCaseRepairFlag';
+import { invokeCapability } from '../../../agent-core/registry/capabilities';
 import { extractGoalTerms } from './goalTerms';
 import { specFilenameFromTitle } from './specFilename';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
@@ -184,9 +183,9 @@ export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 're
   const hasTargets = rediscoveryTargetsFromCompilation(state.compilation).length > 0;
   const attemptsLeft = (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS;
   // Default: only re-ground when NOTHING compiled — a skipped case must never halt a run that already has
-  // runnable scripts. P3 (PER_CASE_REPAIR_V1): also re-ground on a PARTIAL run to recover the dropped cases,
+  // runnable scripts. P3: also re-ground on a PARTIAL run to recover the dropped cases,
   // bounded by MAX_REDISCOVERY_ATTEMPTS. Flag off → legacy behavior (the scriptCount===0 path only).
-  if (hasTargets && attemptsLeft && (scriptCount === 0 || isPerCaseRepairEnabled())) {
+  if (hasTargets && attemptsLeft) {
     return 'discover_and_ground';
   }
   if (scriptCount === 0) return 'finalize';
@@ -294,12 +293,18 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         if (schema.length) stashArtifacts(state.runId, { objectSchema: schema });
       } catch { /* schema is an enhancement — its absence just falls back to DOM-semantic generation */ }
     }
+    // Pin the mission plan + registry snapshot for this run, so every downstream task is version-stable.
+    // A review-first run terminates at accepted cases; approving at the gate promotes it to a full run.
+    const reviewFirst = state.request.reviewPolicy === 'manual' || state.request.executionPolicy === 'skip';
+    const missionKind: MissionKind = reviewFirst ? 'cases' : 'deep_test_run';
+    const orchestration = planMissionForRun({ runId: state.runId, goal: state.request.goal, missionKind });
     return {
       context: { ...(state.context ?? { metadata: null, repository: null, roles: [], budget: [] }), metadata: result.context.metadata },
       status: 'running',
       startedAt: state.startedAt ?? nowIso(),
       updatedAt: nowIso(),
       stage: 'load_context',
+      ...(orchestration ? { orchestration } : {}),
       errors: result.errors,
     };
   };
@@ -348,22 +353,22 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       discoveryAttempts,
     });
     // Full graph/registry go to the run stash for authoring/compilation; state gets refs/digests only.
-    stashArtifacts(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
-    // Observe-then-assert (BEHAVIOR_ORACLE_V1): stash the probed form behaviour for the author + critic.
+    await stashArtifactsDurable(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
+    // Observe-then-assert: stash the probed form behaviour for the author + critic.
     if (discovery.behavior?.probed) stashArtifacts(state.runId, { behaviorOracle: discovery.behavior });
     // P5 (shadow, flag-gated): publish the verified catalog + gate as SHARED facts so the author/critic read
     // one grounding fact instead of re-deriving it. Fire-and-forget; never affects the grounding result.
-    if (isAgentNativeEnabled()) {
-      void publishGroundingFacts({
-        runId: state.runId,
-        catalogLabels: (grounding.evidenceGraph.nodes ?? []).flatMap((n) => [n.semanticName, n.label]).filter((l): l is string => typeof l === 'string'),
-        liveCount: grounding.evidence.countsByProvenance?.live ?? 0,
-        gate: grounding.evidence.gate,
-      }).catch(() => undefined);
-    }
+    void publishGroundingFacts({
+      runId: state.runId,
+      catalogLabels: (grounding.evidenceGraph.nodes ?? []).flatMap((n) => [n.semanticName, n.label]).filter((l): l is string => typeof l === 'string'),
+      liveCount: grounding.evidence.countsByProvenance?.live ?? 0,
+      gate: grounding.evidence.gate,
+    }).catch(() => undefined);
+    const groundLedger = advanceLedgerForStage(state.orchestration, 'discover_and_ground', 'accepted');
     return {
       evidence: grounding.evidence,
       rediscoveryAttempts: attempts,
+      ...(groundLedger ? { orchestration: groundLedger } : {}),
       stage: 'discover_and_ground',
       updatedAt: nowIso(),
       errors: [...discovery.errors, ...grounding.errors],
@@ -402,7 +407,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       evidenceGraph: evidenceGraph ?? null,
       // RC-0: authoritative backend required/readonly field truth (empty string when no app/metadata resolved).
       metadataHint: renderMetadataForPrompt(metadataMap),
-      // Observe-then-assert (BEHAVIOR_ORACLE_V1): measured form behaviour so validation cases are authored the
+      // Observe-then-assert: measured form behaviour so validation cases are authored the
       // one correct way (single-field isolation) instead of guessing which fields are required. Empty when off.
       behaviorHint: renderBehaviorForPrompt(behaviorOracle),
       overrides: deps.modelOverrides,
@@ -411,21 +416,30 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       avoidCaseTitles: deps.avoidCaseTitles,
     };
     let result = await authorCases(authorInput);
+    let casesLedger: Partial<WorkflowOrchestration> | null = null;
+    let reviewLedger: Partial<WorkflowOrchestration> | null = null;
 
-    // P4 — author ↔ critic negotiation (flag-gated by AGENT_NATIVE_V1). The CriticAgent adversarially reviews
+    // P4 — author ↔ critic negotiation. The CriticAgent adversarially reviews
     // the draft against the verified evidence catalog and refutes ungrounded/duplicate/empty cases; the author
     // then does exactly ONE revision addressing the objections. Flag off → authoring is byte-identical.
-    if (isAgentNativeEnabled() && result.cases.length) {
+    if (result.cases.length) {
       const catalogLabels = (evidenceGraph?.nodes ?? []).flatMap((n) => [n.semanticName, n.label]);
       console.log(`[behavior-critic] author drafted ${result.cases.length} case(s): ${result.cases.map((c) => c.title).join(' | ')}`);
-      const critique = await critiqueCases({ runId: state.runId, goal: state.request.goal, cases: result.cases, catalogLabels, behavior: behaviorOracle });
-      if (critique.hasIssues) {
-        const refuted = critique.verdicts.filter((v) => !v.accepted);
+      const exchange = await runCriticExchange({
+        runId: state.runId, goal: state.request.goal, cases: result.cases, catalogLabels,
+        behavior: behaviorOracle, plan: state.orchestration?.plan ?? null,
+        revise: async (feedback) => {
+          const revised = await authorCases({ ...authorInput, critique: feedback });
+          if (revised.cases.length) result = { cases: revised.cases, usage: [...result.usage, ...revised.usage], errors: revised.errors };
+          return { cases: revised.cases, accepted: revised.cases.length > 0 };
+        },
+      });
+      casesLedger = advanceLedgerForStage(state.orchestration, 'author_cases', 'accepted');
+      reviewLedger = advanceLedgerForStage(state.orchestration, 'review_cases', exchange.revised || !exchange.critique.hasIssues ? 'accepted' : 'rejected');
+      if (exchange.critique.hasIssues) {
+        const refuted = exchange.critique.verdicts.filter((v) => !v.accepted);
         console.log(`[behavior-critic] refuted ${refuted.length}: ${refuted.map((v) => `${v.title}[${v.codes.join(',')}]`).join('; ')}`);
-        const revised = await authorCases({ ...authorInput, critique: critique.feedback });
-        // Only accept the revision if it produced cases — never regress to an empty set on a critic pass.
-        if (revised.cases.length) result = { cases: revised.cases, usage: [...result.usage, ...revised.usage], errors: revised.errors };
-        console.log(`[behavior-critic] after revision ${result.cases.length} case(s): ${result.cases.map((c) => c.title).join(' | ')}`);
+        console.log(`[behavior-critic] after revision ${result.cases.length} case(s) (revision ${exchange.revised ? 'accepted' : 'rejected'})`);
       }
     }
     // Blocked contract (see buildCasesPrompt): an all-@blocked result means the verified catalog lacks the
@@ -451,7 +465,11 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       description: c.description || undefined,
       tags: c.tags?.length ? c.tags : undefined,
     }));
-    return { cases, stage: 'author_cases', updatedAt: nowIso(), errors: result.errors, usage: result.usage };
+    // Merge both ledger patches: the author's task and the critic's verdict on it.
+    const ledger = casesLedger || reviewLedger
+      ? { orchestration: { tasks: { ...(casesLedger?.tasks ?? {}), ...(reviewLedger?.tasks ?? {}) } } }
+      : {};
+    return { cases, stage: 'author_cases', updatedAt: nowIso(), ...ledger, errors: result.errors, usage: result.usage };
   };
 
   const reviewCasesNode = (state: WorkflowState): WorkflowStateUpdate => {
@@ -528,7 +546,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     return { plansByCase: planResults, stage: 'author_plans', updatedAt: nowIso(), errors, usage };
   };
 
-  const compileAndValidate = (state: WorkflowState): WorkflowStateUpdate => {
+  const compileAndValidate = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
     if (!state.mission) {
       return {
         compilation: { scripts: [], diagnostics: [], compilerVersion: null },
@@ -547,24 +565,25 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       verifiedSelectors: artifacts.verifiedSelectors ?? [],
       objectSchema: artifacts.objectSchema, // stashed at load_context — threaded to the compiler for API-conformant data.
     });
-    if (Object.keys(result.compiledSources).length) stashArtifacts(state.runId, { compiledSources: result.compiledSources });
+    if (Object.keys(result.compiledSources).length) await stashArtifactsDurable(state.runId, { compiledSources: result.compiledSources });
     // P6 (shadow, flag-gated): record the deterministic compiler as a DELEGATED capability (agents decide,
     // the compiler executes). Fire-and-forget; never affects the compilation result.
-    if (isAgentNativeEnabled()) {
-      const okScripts = (result.compilation.scripts ?? []).filter((s) => s.ok).length;
-      void recordCapabilityDelegation({
-        runId: state.runId, capability: 'compile_scripts',
-        requestSummary: `Compile ${state.cases.length} planned case(s) into verified Playwright.`,
-        resultSummary: `Compiled ${okScripts} script(s); ${(result.compilation.diagnostics ?? []).length} diagnostic(s).`,
-        resultValue: { compiled: okScripts, diagnostics: (result.compilation.diagnostics ?? []).length },
-      }).catch(() => undefined);
-    }
+    const okScripts = (result.compilation.scripts ?? []).filter((s) => s.ok).length;
+    await invokeCapability({
+      runId: state.runId, capability: 'compile_scripts',
+      idempotencyKey: `compile:${state.cases.map((c) => c.id).join(',')}`,
+      requestSummary: `Compile ${state.cases.length} planned case(s) into verified Playwright.`,
+      handler: async () => ({ compiled: okScripts, diagnostics: (result.compilation.diagnostics ?? []).length }),
+      summarize: (v) => ({ summary: `Compiled ${v.compiled} script(s); ${v.diagnostics} diagnostic(s).`, value: v }),
+    }).catch((err) => console.warn('[capabilities] compile delegation:', (err as Error)?.message));
+    const anvil = advanceLedgerForStage(state.orchestration, 'compile_and_validate', okScripts > 0 ? 'accepted' : 'rejected');
     return {
       coveragePlan: result.coveragePlan,
       riskScores: result.riskScores,
       compilation: result.compilation,
       stage: 'compile_and_validate',
       updatedAt: nowIso(),
+      ...(anvil ? { orchestration: anvil } : {}),
       errors: result.errors,
     };
   };
@@ -619,15 +638,14 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // Per-test records feed the defect reporter / investigation downstream — stash only (state carries refs).
     if (result.tests?.length) stashArtifacts(state.runId, { executionTests: result.tests });
     // P6 (shadow, flag-gated): record the deterministic executor as a DELEGATED capability. Fire-and-forget.
-    if (isAgentNativeEnabled()) {
-      const agg = result.aggregate;
-      void recordCapabilityDelegation({
-        runId: state.runId, capability: 'execute_scripts',
-        requestSummary: `Execute ${scripts.length} compiled script(s) against ${state.mission?.targetUrl ?? 'the target'}.`,
-        resultSummary: agg ? `Ran ${agg.totalCases}: ${agg.passed} passed, ${agg.failed} failed.` : `Executed ${scripts.length} script(s).`,
-        resultValue: agg ? { total: agg.totalCases, passed: agg.passed, failed: agg.failed } : { scripts: scripts.length },
-      }).catch(() => undefined);
-    }
+    const agg = result.aggregate;
+    await invokeCapability({
+      runId: state.runId, capability: 'execute_scripts',
+      idempotencyKey: `execute:${scriptSetDigest}:${(state.execution?.attempts ?? []).length}`,
+      requestSummary: `Execute ${scripts.length} compiled script(s) against ${state.mission?.targetUrl ?? 'the target'}.`,
+      handler: async () => (agg ? { total: agg.totalCases, passed: agg.passed, failed: agg.failed } : { scripts: scripts.length }),
+      summarize: (v) => ({ summary: agg ? `Ran ${agg.totalCases}: ${agg.passed} passed, ${agg.failed} failed.` : `Executed ${scripts.length} script(s).`, value: v }),
+    }).catch((err) => console.warn('[capabilities] execute delegation:', (err as Error)?.message));
     // Phase 7 (VISUAL_REGRESSION, report-only): diff step screenshots vs the baseline store; seed on first run.
     if (isVisualRegressionEnabled() && result.tests?.length) {
       try {
@@ -655,9 +673,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       const arts = readArtifacts(state.runId);
       const fullCases = getAuthoredCases(state.runId);
 
-      // Phase B (VALIDATE_OUTCOME_V1): classify each failure against the behaviour oracle so an assertion-defect
+      // Phase B: classify each failure against the behaviour oracle so an assertion-defect
       // (bad test) and an app-defect (real bug) are never confused. Report-only; stashed for the analyst.
-      if (isOutcomeValidatorEnabled() && arts.behaviorOracle) {
+      if (arts.behaviorOracle) {
         const failures = (arts.executionTests ?? []).filter((t) => t.status !== 'passed').map((t) => ({ title: t.title, error: t.error, status: t.status }));
         if (failures.length) {
           const outcome = classifyOutcomes(failures, arts.behaviorOracle);
@@ -714,7 +732,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       });
       if (summary) stashArtifacts(state.runId, { investigation: summary });
     } catch { /* report-only: never blocks finalize */ }
-    return { stage: 'investigate_failures', updatedAt: nowIso() };
+    const sleuth = advanceLedgerForStage(state.orchestration, 'investigate_failures', 'accepted');
+    return { stage: 'investigate_failures', updatedAt: nowIso(), ...(sleuth ? { orchestration: sleuth } : {}) };
   };
 
   const finalize = (state: WorkflowState): WorkflowStateUpdate => {
@@ -735,11 +754,15 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       ? `${state.cases.length} case(s), ${state.compilation?.scripts?.length ?? 0} compiled script(s)`
         + (agg ? `, execution ${agg.passed}/${agg.totalCases} passed` : ', execution result reused from a prior attempt')
       : `Run ${status}: ${reason}`;
+    const herald = advanceLedgerForStage(state.orchestration, 'finalize', status === 'completed' ? 'accepted' : 'cancelled');
+    // Nothing may still read "queued" on a terminal run — a stage that never ran is skipped, not pending.
+    const settled = settleOpenTasks(state.orchestration, herald);
     return {
       status,
       stage: 'finalize',
       completedAt: nowIso(),
       updatedAt: nowIso(),
+      ...(settled ? { orchestration: settled } : {}),
       output: { summary: summary.slice(0, 500), reportRef: null, ...(reason ? { reason: reason.slice(0, 500) } : {}) },
     };
   };

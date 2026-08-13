@@ -177,7 +177,9 @@ export class MissionRunner {
       return !!hit && hit !== el && !el.contains(hit) && !hit.contains(el); // a different element is on top of the target
     }).catch(() => false);
     if (!obscured) return e;
-    return new Error('TOOLING_OBSCURED [tooling] - target "' + String(spec.label || spec.selector) + '" resolved to an element behind an open overlay (a background control such as a grid header under the modal); this is a locator/tooling fault, not a product defect.');
+    return new Error('TOOLING_OBSCURED [tooling] - target "' + String(spec.label || spec.selector)
+      + '" with generated locator: ' + String(spec.selector || 'unknown')
+      + '; resolved to an element behind an open overlay (a background control such as a grid header under the modal); this is a locator/tooling fault, not a product defect.');
   }
 
   // ---- Reveal-then-act interaction helpers (the compiler emits these instead of raw locator calls) ----

@@ -1,17 +1,11 @@
-/**
- * Blackboard — the typed, append-only, per-run shared reasoning surface (A2A Contract §4.2).
- *
- * Replaces the mutable `run: any` object + `resolveUnderstanding` reconciliation shim: two agents that
- * need the same fact read ONE key instead of re-deriving it and diverging. Every fact is stamped with
- * provenance (who wrote it, when, which message caused it) and an append-only per-run sequence, so the
- * board is an auditable history, never an overwrite.
- *
- * Persistence-agnostic by design: DB-backed (`agent_blackboard`) when Postgres is configured — which is
- * what lets a second worker resume a run in Phase 4 — and an in-memory store otherwise, so dev and unit
- * tests run with no database. Additive + inert: nothing on the live path reads this until an agent is
- * migrated onto it (gated by AGENT_NATIVE_V1), so it cannot change current behavior.
- */
+/** Blackboard — the typed, append-only per-run fact surface with an acceptance lifecycle. Postgres-backed when configured, in-memory otherwise. */
 import { isPostgresEnabled, query, uid, withTransaction } from '../../db/pool';
+import { canTransitionFact, digestOf, type FactStatus } from '../orchestration/contracts';
+
+/** Thrown on an illegal lifecycle move (re-accepting a rejected fact, promoting a legacy row). */
+export class FactLifecycleError extends Error {
+  constructor(message: string) { super(message); this.name = 'FactLifecycleError'; }
+}
 
 /** Who/when/why a fact was written — carried on every entry so the board stays auditable. */
 export interface BlackboardProvenance {
@@ -30,6 +24,16 @@ export interface BlackboardFact<T = unknown> {
   key: string | null;
   value: T;
   provenance: BlackboardProvenance;
+  /** Lifecycle. Agents write `proposed`; only the coordinator promotes. Pre-Phase-1 rows read as `legacy`. */
+  status: FactStatus;
+  /** Content digest — how a downstream task detects it is reading a different version of the same fact. */
+  digest: string;
+  schemaVersion: number;
+  /** The accepted fact this one replaces, set when that fact transitions to `superseded`. */
+  supersedesFactId: string | null;
+  taskId: string | null;
+  /** Historical/recalled memory: readable, but can never satisfy a live evidence gate. */
+  historical: boolean;
 }
 
 export interface PutOptions {
@@ -37,6 +41,12 @@ export interface PutOptions {
   causationId?: string | null;
   /** ISO timestamp override (tests/determinism); defaults to now. */
   at?: string;
+  /** Defaults to `proposed` — nothing becomes authoritative without an explicit coordinator promotion. */
+  status?: FactStatus;
+  schemaVersion?: number;
+  supersedesFactId?: string | null;
+  taskId?: string | null;
+  historical?: boolean;
 }
 
 /** The blackboard contract — same surface whether backed by Postgres or the in-memory store. */
@@ -47,6 +57,10 @@ export interface Blackboard {
   latest<T>(runId: string, kind: string, key?: string | null): Promise<BlackboardFact<T> | null>;
   /** All facts for a run, optionally filtered to one kind, in append order. */
   all(runId: string, kind?: string): Promise<BlackboardFact[]>;
+  /** The most recent ACCEPTED fact — the only read an authoritative gate may use. */
+  latestAccepted<T>(runId: string, kind: string, key?: string | null): Promise<BlackboardFact<T> | null>;
+  /** Move a fact along the one-way lifecycle. Rejects illegal transitions rather than coercing them. */
+  setStatus(factId: string, status: FactStatus): Promise<BlackboardFact | null>;
   /** Remove all facts for a run (cleanup / test isolation). */
   clear(runId: string): Promise<void>;
 }
@@ -74,6 +88,12 @@ export class InMemoryBlackboard implements Blackboard {
       key: opts.key ?? null,
       value,
       provenance: { by, at: opts.at ?? new Date().toISOString(), causationId: opts.causationId ?? null },
+      status: opts.status ?? 'proposed',
+      digest: digestOf(value ?? null),
+      schemaVersion: opts.schemaVersion ?? 1,
+      supersedesFactId: opts.supersedesFactId ?? null,
+      taskId: opts.taskId ?? null,
+      historical: opts.historical ?? false,
     };
     const list = this.facts.get(runId) ?? [];
     list.push(fact);
@@ -93,6 +113,29 @@ export class InMemoryBlackboard implements Blackboard {
   async all(runId: string, kind?: string): Promise<BlackboardFact[]> {
     const list = this.facts.get(runId) ?? [];
     return (kind ? list.filter((f) => f.kind === kind) : list).slice();
+  }
+
+  async latestAccepted<T>(runId: string, kind: string, key?: string | null): Promise<BlackboardFact<T> | null> {
+    const list = this.facts.get(runId) ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const f = list[i];
+      if (f.status !== 'accepted') continue;
+      if (f.kind === kind && (key === undefined || (f.key ?? null) === (key ?? null))) return f as BlackboardFact<T>;
+    }
+    return null;
+  }
+
+  async setStatus(factId: string, status: FactStatus): Promise<BlackboardFact | null> {
+    for (const list of this.facts.values()) {
+      const fact = list.find((f) => f.id === factId);
+      if (!fact) continue;
+      if (!canTransitionFact(fact.status, status)) {
+        throw new FactLifecycleError(`Illegal fact transition ${fact.status} -> ${status} for ${factId}.`);
+      }
+      fact.status = status;
+      return fact;
+    }
+    return null;
   }
 
   async clear(runId: string): Promise<void> {
@@ -115,6 +158,12 @@ interface BlackboardRow {
   by_agent: string;
   causation_id: string | null;
   created_at: string;
+  status: string | null;
+  digest: string | null;
+  schema_version: number | null;
+  supersedes_fact_id: string | null;
+  task_id: string | null;
+  historical: boolean | null;
 }
 
 function rowToFact(r: BlackboardRow): BlackboardFact {
@@ -126,14 +175,24 @@ function rowToFact(r: BlackboardRow): BlackboardFact {
     key: r.sub_key,
     value: r.value,
     provenance: { by: r.by_agent, at: new Date(r.created_at).toISOString(), causationId: r.causation_id },
+    // A NULL status is a pre-Phase-1 row: visible for audit, never promotable to authoritative.
+    status: (r.status as FactStatus | null) ?? 'legacy',
+    digest: r.digest ?? digestOf(r.value ?? null),
+    schemaVersion: Number(r.schema_version ?? 0),
+    supersedesFactId: r.supersedes_fact_id ?? null,
+    taskId: r.task_id ?? null,
+    historical: r.historical ?? false,
   };
 }
 
 export class PostgresBlackboard implements Blackboard {
   async put<T>(runId: string, kind: string, value: T, by: string, opts: PutOptions = {}): Promise<BlackboardFact<T>> {
     const id = uid('bbf');
-    // Per-run monotonic seq computed under the row lock so concurrent writers never collide on order.
     const row = await withTransaction(async (client) => {
+      // Serialize seq allocation per RUN. MAX(seq)+1 alone races: two concurrent writers read the same
+      // max and collide on agent_blackboard_run_seq_idx. The advisory lock is transaction-scoped and
+      // run-scoped, so unrelated runs never wait on each other.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`agent_blackboard:${runId}`]);
       const seqRes = await client.query(
         'SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM agent_blackboard WHERE run_id = $1',
         [runId],
@@ -141,9 +200,12 @@ export class PostgresBlackboard implements Blackboard {
       const seq = Number(seqRes.rows[0]?.next ?? 1);
       const at = opts.at ?? new Date().toISOString();
       const ins = await client.query(
-        `INSERT INTO agent_blackboard (id, run_id, seq, kind, sub_key, value, by_agent, causation_id, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING *`,
-        [id, runId, seq, kind, opts.key ?? null, JSON.stringify(value ?? null), by, opts.causationId ?? null, at],
+        `INSERT INTO agent_blackboard (id, run_id, seq, kind, sub_key, value, by_agent, causation_id, created_at,
+                                       status, digest, schema_version, supersedes_fact_id, task_id, historical)
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        [id, runId, seq, kind, opts.key ?? null, JSON.stringify(value ?? null), by, opts.causationId ?? null, at,
+         opts.status ?? 'proposed', digestOf(value ?? null), opts.schemaVersion ?? 1,
+         opts.supersedesFactId ?? null, opts.taskId ?? null, opts.historical ?? false],
       );
       return ins.rows[0] as BlackboardRow;
     });
@@ -162,6 +224,27 @@ export class PostgresBlackboard implements Blackboard {
       ? await query<BlackboardRow>('SELECT * FROM agent_blackboard WHERE run_id=$1 AND kind=$2 ORDER BY seq ASC', [runId, kind])
       : await query<BlackboardRow>('SELECT * FROM agent_blackboard WHERE run_id=$1 ORDER BY seq ASC', [runId]);
     return rows.map(rowToFact);
+  }
+
+  async latestAccepted<T>(runId: string, kind: string, key?: string | null): Promise<BlackboardFact<T> | null> {
+    const rows = key === undefined
+      ? await query<BlackboardRow>("SELECT * FROM agent_blackboard WHERE run_id=$1 AND kind=$2 AND status='accepted' ORDER BY seq DESC LIMIT 1", [runId, kind])
+      : await query<BlackboardRow>("SELECT * FROM agent_blackboard WHERE run_id=$1 AND kind=$2 AND sub_key IS NOT DISTINCT FROM $3 AND status='accepted' ORDER BY seq DESC LIMIT 1", [runId, kind, key ?? null]);
+    return rows[0] ? (rowToFact(rows[0]) as BlackboardFact<T>) : null;
+  }
+
+  async setStatus(factId: string, status: FactStatus): Promise<BlackboardFact | null> {
+    // Read-check-write under one transaction so two coordinators cannot both promote the same fact.
+    return withTransaction(async (client) => {
+      const cur = await client.query<BlackboardRow>('SELECT * FROM agent_blackboard WHERE id=$1 FOR UPDATE', [factId]);
+      if (!cur.rows[0]) return null;
+      const from = rowToFact(cur.rows[0]).status;
+      if (!canTransitionFact(from, status)) {
+        throw new FactLifecycleError(`Illegal fact transition ${from} -> ${status} for ${factId}.`);
+      }
+      const upd = await client.query<BlackboardRow>('UPDATE agent_blackboard SET status=$2 WHERE id=$1 RETURNING *', [factId, status]);
+      return rowToFact(upd.rows[0]);
+    });
   }
 
   async clear(runId: string): Promise<void> {

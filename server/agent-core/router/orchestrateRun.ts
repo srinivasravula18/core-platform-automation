@@ -1,18 +1,4 @@
-/**
- * Run orchestration (Phase 3) — the orchestrator DELEGATES the run's plan over the bus instead of a stage
- * label being stamped on a switch.
- *
- * At run start the orchestrator asks the router agent to produce a routing plan, VALIDATES it against the
- * agent registry (unknown agents are dropped, never dispatched — killing the "declared-but-no-handler"
- * drift), then publishes the plan as real A2A traffic: a REQUEST to the router, the router's RESULT, and one
- * DELEGATE per planned specialist, plus a `routing.plan` blackboard fact any agent can read. This is a
- * genuine decision-bearing exchange the console renders — the orchestrator deciding who does what.
- *
- * Deterministic executor preserved: the LangGraph pipeline still RUNS the stages (correctness stays
- * deterministic); this layer makes the DELEGATION explicit and observable. Flag-gated by AGENT_NATIVE_V1
- * (off → no-op) and best-effort — it is fired at run start and never blocks or fails the run.
- */
-import { isAgentNativeEnabled } from '../agentNativeFlag';
+/** Publishes the router plan as explicit, observable delegation traffic. */
 import { getMessageBus } from '../bus/messageBus';
 import { getBlackboard } from '../bus/blackboard';
 import { routeRequest, type RoutingClassifier, type RoutingPlan } from './routerAgent';
@@ -37,7 +23,6 @@ export interface OrchestrateRunStartInput {
  * the deterministic graph, which is the executor regardless.
  */
 export async function orchestrateRunStart(input: OrchestrateRunStartInput): Promise<RoutingPlan | null> {
-  if (!isAgentNativeEnabled()) return null;
   try {
     const bus = getMessageBus();
     const blackboard = getBlackboard();
@@ -66,7 +51,7 @@ export async function orchestrateRunStart(input: OrchestrateRunStartInput): Prom
         payload: { summary: step.task, task: step.task }, causationId: result.id,
       });
     }
-    await blackboard.put(input.runId, 'routing.plan', { steps: plan.steps, droppedAgents: plan.droppedAgents, rationale: plan.rationale }, ORCHESTRATOR, { causationId: result.id });
+    await blackboard.put(input.runId, 'routing.plan', { steps: plan.steps, droppedAgents: plan.droppedAgents, rationale: plan.rationale }, ORCHESTRATOR, { causationId: result.id, status: 'accepted' });
 
     return plan;
   } catch (err) {

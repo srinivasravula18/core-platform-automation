@@ -850,6 +850,7 @@ Search keywords used: ${keywords.join(', ')}
 ${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}${surfaceScopeBlock}${conversationContextBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names; let the code tell you. When a RESOLVED SURFACE is given above, scope the requirement to THAT surface and name it as the code names it (still infer its architecture from the evidence — do not invent). Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
+CONFIGURATION FIDELITY — executable keys and runtime branches override prose descriptions. Never infer that a field is required, present on a step/layout, writable, disabled, persisted, or configured merely because a label/help text/description suggests it. Compare exact field keys, required-field arrays, layout/form placement, permission records, and active runtime configuration. Surface any mismatch as a discrepancy and describe absent runtime configuration as conditional rather than active behavior.
 ${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
 SCOPE DISCIPLINE — write the requirement at the altitude the query actually asks for; do not narrow it to a subject the user did not name:
 - If the query NAMES a specific object, section, module, or screen, scope the requirement to THAT subject.
@@ -1381,6 +1382,29 @@ export async function confirmRequirementDraft(
   };
 }
 
+/**
+ * Collapse duplicate drafts before they are persisted. The author can emit the same case several times
+ * (one target, several phrasings); nothing downstream de-duplicates, so four identical rows reach the
+ * workspace. Keyed on the normalized title plus the step actions, so a genuinely different scenario
+ * that happens to share a title still survives.
+ */
+function dedupeProposedCases<T extends { title?: string; steps?: Array<{ action?: string }> }>(cases: T[]): T[] {
+  const seen = new Set<string>();
+  const kept: T[] = [];
+  for (const c of cases) {
+    const title = String(c?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const steps = (c?.steps || []).map((s) => String(s?.action || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()).join('|');
+    const key = `${title}::${steps}`;
+    if (!title || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(c);
+  }
+  if (kept.length !== cases.length) {
+    console.log(`[requirements] dropped ${cases.length - kept.length} duplicate case draft(s) before persisting.`);
+  }
+  return kept;
+}
+
 export async function discoverRequirement(
   query: string,
   opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean; persistRequirement?: boolean; onProgress?: (label: string) => void } = {},
@@ -1412,6 +1436,7 @@ export async function discoverRequirement(
   const reconciliation = await reconcileRequirementCoverage(understanding, existingCases, opts, requirementsOnly);
 
   // 3) Persist the requirement. Reuse an existing near-duplicate's id (same owner+project+surface)
+  // (see dedupeProposedCases above — identical drafts must never reach the workspace four times.)
   // so re-running the same discovery UPDATES the requirement in place instead of duplicating it.
   const duplicateOf = findDuplicateRequirement(understanding, cleanQuery, await Requirements.list(), { ownerId, projectId: opts.projectId, appId: opts.appId }) || undefined;
   const requirementId = duplicateOf ? duplicateOf.id : genId('REQ');
@@ -1420,7 +1445,7 @@ export async function discoverRequirement(
 
   // Create the gap cases (pending review) and remember them for linking.
   const generatedCases: Array<{ id: string; title: string }> = [];
-  const proposedCases = requirementsOnly ? [] : (reconciliation.proposedCases || []);
+  const proposedCases = dedupeProposedCases(requirementsOnly ? [] : (reconciliation.proposedCases || []));
   opts.onProgress?.(proposedCases.length ? 'Creating cases for uncovered behavior...' : 'Saving the grounded requirement...');
   for (const pc of proposedCases) {
     const caseId = await nextArtifactId('TC', { ownerId, sourceText: cleanQuery });

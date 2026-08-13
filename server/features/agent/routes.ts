@@ -32,10 +32,11 @@ import { agentSetupReadiness } from './setupReadiness';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
-import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
+import { resolveCredentials, maskPassword, listWebsites, canUseWebsite } from '../credentials/credentialsService';
+import type { EffectiveGrants } from '../auth/groupStore';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isMutationIntent,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, targetMatchesAdminSurface, resolveAdminModuleFromRefs, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -46,11 +47,9 @@ import {
 } from './mission/missionContext';
 // Evidence-Graph Phase 5: deterministic compiler path (flag-gated by AIQA_COMPILER; legacy path is default).
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
-// LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
-import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
+// LangGraph workflow runtime — the engine for every run.
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getGraphRunState, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
 // Agent-native substrate (P2): the console renders the REAL A2A bus + blackboard for a run. Flag-gated.
-import { isAgentNativeEnabled } from '../../agent-core/agentNativeFlag';
 import { getMessageBus } from '../../agent-core/bus/messageBus';
 import { getBlackboard } from '../../agent-core/bus/blackboard';
 import { orchestrateRunStart } from '../../agent-core/router/orchestrateRun';
@@ -65,12 +64,13 @@ import { pushInboxItem } from '../inbox/routes';
 import { agentRunStatusForList, isPendingReviewTestRun } from '../../../core/shared/testRunStatus';
 import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, Plans, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
+import { subjectChanged } from './workflow/goalTerms';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
 import { classifyFailure } from '../../ai/recovery';
 import { isProjectOverQuota } from '../../ai/costTracker';
 import { retrieveRunMemories, summarizeMemoriesForPrompt } from '../../ai/memory/runMemory';
-import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
+import { reqScope, reqGrants, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
@@ -693,23 +693,55 @@ function lightPayload(value: any) {
 
 /**
  * P2 — the live agent-to-agent CONVERSATION for a run: the real typed messages exchanged on the bus plus
- * the append-only blackboard facts, straight from the substrate P1 populates. Flag-gated by AGENT_NATIVE_V1
+ * the append-only blackboard facts, straight from the substrate P1 populates.
  * (off → null, so the console falls back to the legacy chips and nothing changes). Best-effort: any substrate
  * read error yields null rather than failing the status endpoint. This is what makes the console "real" —
  * it renders what agents actually said, not a template.
  */
 async function attachConversation(snapshot: any, runId: string): Promise<void> {
-  if (!snapshot || !isAgentNativeEnabled()) return;
+  if (!snapshot) return;
   try {
     const [messages, facts] = await Promise.all([
       getMessageBus().history(runId),
       getBlackboard().all(runId),
     ]);
-    if (!messages.length && !facts.length) return; // nothing on the substrate yet — keep chips as the view
+    // The checkpointed plan/ledger is the orchestration truth; messages and facts are how it was reached.
+    const graph = await getGraphRunState(runId).catch(() => null);
+    const orchestration = graph?.orchestration ?? null;
+    if (!messages.length && !facts.length && !orchestration?.plan) return; // nothing yet — keep chips as the view
     snapshot.conversation = {
-      messages: messages.map((m) => ({ id: m.id, seq: m.seq, from: m.from, to: m.to, type: m.type, at: m.at, causationId: m.causationId, payload: lightPayload(m.payload) })),
-      facts: facts.map((f) => ({ id: f.id, seq: f.seq, kind: f.kind, key: f.key, at: f.provenance.at, by: f.provenance.by, value: lightPayload(f.value) })),
+      messages: messages.map((m) => ({
+        id: m.id, seq: m.seq, from: m.from, to: m.to, type: m.type, at: m.at, causationId: m.causationId,
+        taskId: m.taskId, agentInstanceId: m.agentInstanceId, payload: lightPayload(m.payload),
+      })),
+      // `status` is what separates an accepted fact from one an agent merely proposed.
+      facts: facts.map((f) => ({
+        id: f.id, seq: f.seq, kind: f.kind, key: f.key, at: f.provenance.at, by: f.provenance.by,
+        status: f.status, digest: f.digest, taskId: f.taskId, value: lightPayload(f.value),
+      })),
     };
+    if (orchestration?.plan) {
+      snapshot.orchestration = {
+        missionKind: orchestration.plan.missionKind,
+        planId: orchestration.plan.planId,
+        planDigest: orchestration.plan.digest,
+        registryDigest: orchestration.plan.registryDigest,
+        mandatoryGates: orchestration.plan.mandatoryGates,
+        // Real spend for the run: the graph records one usage row per model call.
+        budgetSpent: (graph?.usage ?? []).reduce((acc: any, u: any) => ({
+          inputTokens: acc.inputTokens + (u.inputTokens ?? 0),
+          outputTokens: acc.outputTokens + (u.outputTokens ?? 0),
+          codexTurns: acc.codexTurns + 1,
+          toolCalls: orchestration.budgetSpent?.toolCalls ?? 0,
+        }), { inputTokens: 0, outputTokens: 0, codexTurns: 0, toolCalls: 0 }),
+        tasks: Object.values(orchestration.tasks ?? {}).map((t: any) => ({
+          taskId: t.taskId, displayName: t.displayName, agentRoleId: t.agentRoleId,
+          agentDefinitionVersion: t.agentDefinitionVersion, agentInstanceId: t.agentInstanceId,
+          status: t.status, attempt: t.attempt, maxAttempts: t.maxAttempts,
+          dependsOn: t.dependsOn, objective: String(t.objective ?? '').slice(0, 300),
+        })),
+      };
+    }
   } catch {
     /* substrate read failed — leave the snapshot on its legacy chips */
   }
@@ -1599,10 +1631,11 @@ function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): b
 
 // Keywords that describe what this run is about  -  drawn from the prompt and the
 // source understanding  -  used to find existing test cases that already cover it.
-function canReusePriorCodeGrounding(source: string, grounding: string): boolean {
+export function canReusePriorCodeGrounding(source: string, grounding: string): boolean {
   const normalized = String(source || '').toLowerCase();
-  // 'requirement' source already has deep code grounding baked into the context string.
-  return /^(codebase|conversation_context|requirement)$/.test(normalized) && String(grounding || '').trim().length >= 120;
+  // A reviewed chat summary is scope, not evidence. Only a requirement produced by the dedicated
+  // source-analysis pipeline may bypass a fresh repository read during case generation.
+  return normalized === 'requirement' && String(grounding || '').trim().length >= 120;
 }
 
 function meaningfulGroundingLines(value: string, limit = 40): string[] {
@@ -1969,6 +2002,49 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
 // CASE_MATCH_STOP, and scoreCaseReuse surfaces a candidate on >=2 keyword hits + a phrase anchor. The
 // IDF ranker (rankReuseCandidates) diluted the prompt boilerplate ("User follow-up/request: ... Resolved
 // scope from router: ...") below its 0.34 threshold, so genuinely-related cases stopped surfacing.
+/**
+ * Can this URL actually be tested? An auth wall (401/403) is fine — the run signs in. A 404/410 means
+ * there is no app at that path, and 5xx means it is broken: inspecting either grounds the whole run on
+ * an error page, which is how five cases end up asserting a "404 Not Found" heading.
+ */
+async function checkTarget(url: string): Promise<{ up: boolean; error: string; status?: number }> {
+  if (!url) return { up: false, error: 'no target URL was selected' };
+  try {
+    const r = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
+    if (r.status === 404 || r.status === 410) return { up: false, error: `the server returned ${r.status} — nothing is served at that address`, status: r.status };
+    if (r.status === 502 || r.status === 503 || r.status === 504) return { up: false, error: `the server is not responding (${r.status})`, status: r.status };
+    if (r.status >= 500) return { up: false, error: `the server is failing (${r.status})`, status: r.status };
+    return { up: true, error: '', status: r.status };
+  } catch (err: any) {
+    const code = String(err?.cause?.code || err?.name || '');
+    if (/TimeoutError|ETIMEDOUT|ABORT/i.test(code)) return { up: false, error: 'the server is not responding (timed out)' };
+    if (/ENOTFOUND|EAI_AGAIN/i.test(code)) return { up: false, error: 'the address could not be resolved' };
+    if (/ECONNREFUSED/i.test(code)) return { up: false, error: 'the server refused the connection — it is not running' };
+    return { up: false, error: `the server is unreachable (${code || 'unknown error'})` };
+  }
+}
+
+/**
+ * Every target THIS user may test: the selected app plus the websites they own or were granted,
+ * deduped by URL. Scoped exactly like Settings → Credentials; an unscoped list would show (and let
+ * the agent run against) another user's targets.
+ */
+function listConfiguredTargets(
+  selectedApp: { id?: string; name?: string; baseUrl?: string } | undefined,
+  userId: string,
+  grants: EffectiveGrants,
+): Array<{ id: string; name: string; url: string }> {
+  // A target the agent cannot actually navigate to is noise in the picker — require a real http(s) URL.
+  const navigable = (u: string) => { try { return /^https?:$/.test(new URL(u).protocol); } catch { return false; } };
+  const visible = listWebsites().filter((w: any) => (userId ? canUseWebsite(w, userId, grants) : true));
+  const all = [
+    ...(selectedApp?.baseUrl ? [{ id: String(selectedApp.id || ''), name: String(selectedApp.name || ''), url: String(selectedApp.baseUrl) }] : []),
+    ...visible.map((w: any) => ({ id: String(w.id), name: String(w.name || w.baseUrl), url: String(w.baseUrl || '').trim() })),
+  ];
+  const seen = new Set<string>();
+  return all.filter((t) => navigable(t.url) && !seen.has(t.url) && seen.add(t.url));
+}
+
 async function findRelatedExistingCases(run: any): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
@@ -2371,7 +2447,8 @@ async function persistAgentRunArtifacts(run: any) {
  * crowding out the actual evidence. App-agnostic  -  style only, no app facts.
  */
 const SOURCE_BOUNDARY_CONTRACT = `SOURCE BOUNDARY RULES (non-negotiable):
-- Production repo code, live DOM/inspection, selector registry, metadata, and the approved agent understanding are the only evidence for application behavior.
+- Production repo code, live DOM/inspection, selector registry, and metadata are the only evidence for application behavior. The approved agent understanding defines requested scope and coverage intent, but is not product evidence.
+- When the approved understanding conflicts with repository, metadata, or live evidence, follow the evidence and omit or correct the unsupported claim. Labels and descriptions never prove executable requirements: use exact required-field keys, step definitions, permission records, layout placement, and runtime configuration.
 - Existing test cases, previous runs, generated reports, QA artifacts, scripts, fixtures, and conversation memory are NOT product evidence. Use them only as reuse candidates after strict matching; never let them introduce new behavior into cases.
 - Before asking for a child app/object/tab, use the selected platform plus repo/live evidence to decide whether the requested feature is platform-level or app-scoped. If the repo/live evidence shows the feature is global/platform-level, do not ask for an app. If it shows the feature is app-scoped and the user did not name the app/object/tab, ask for that missing scope instead of guessing.
 - For generic feature requests, ground the reusable/shared implementation first, then the selected platform/app integration. Do not choose a convenient default entity, section, object, tab, or record type unless the user named it or the approved understanding names it.
@@ -4962,11 +5039,11 @@ Rules:
         `Here's what I understood:\n` +
         `- Target: ${rawTargetName ? `${rawTargetName} (${rawTargetUrl || 'URL not provided'})` : rawTargetUrl || 'Target not provided'}\n` +
         `- Task: ${rawPrompt}\n\n` +
-        `Plan: log in to the target, perform the requested steps on the live app, verify the result, and capture screenshots as evidence.`,
+        `Plan: derive the test scope and scripts from the connected codebase, then let the headless runner use stored Settings credentials for deployed-app verification and evidence.`,
       targetName: rawTargetName,
       targetUrl: rawTargetUrl,
       task: rawPrompt,
-      plannedApproach: 'Log in, inspect the live app, generate test cases, create Playwright scripts, execute them, and capture screenshot evidence.',
+      plannedApproach: 'Derive test cases and Playwright scripts from the connected codebase, then execute headlessly with stored Settings credentials and capture evidence.',
       suggestedFolderName: suggestIntentFolderName(rawOriginalRequest || rawPrompt, rawTargetName)
         || buildFallbackArtifactName(rawOriginalRequest || rawPrompt, rawTargetUrl),
       confidence: 70,
@@ -5047,6 +5124,7 @@ Rules:
           `AUTHORITATIVE target for THIS request (overrides anything implied by the background above) — name: ${rawTargetName || 'not provided'}, URL: ${rawTargetUrl || 'not provided'}\n` +
           (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +
           (correction ? `User correction/revision:\n${String(correction)}\n` : '') +
+          `\nThis confirmation step has source-code and conversation context only; it has NO live browser/page-state evidence. Never claim the target currently shows a login/sign-in page, never ask the user to open or sign in to a visible browser, and never block test-scope or script generation on browser availability. State that downstream deployed-app verification runs headlessly with stored Settings credentials when relevant.\n` +
           `\nThe "understanding" field must be concise, user-facing plain text with these sections: Here's what I understood, Target, Task, Plan.\n` +
           `Also create "suggestedFolderName": a short, human-readable folder/artifact name based on the user's request and target app, e.g. "<Area> - <Behavior>". Do not use a full sentence.`,
         schema: z.object({
@@ -5389,6 +5467,20 @@ Rules:
   // request doesn't name its target, it returns the platform's REAL options (RUNTIME apps with
   // their tabs / ADMIN navigations) so the user picks from a dropdown up front — the run never
   // burns minutes of research before discovering the target was ambiguous.
+  /** The targets to choose from BEFORE any work starts, so the repo dive and everything after is
+   * grounded on the URL the user picked rather than a late guess. */
+  app.get('/api/agent/targets', (req, res) => {
+    const scope = reqScope(req);
+    const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
+    res.json({ targets: listConfiguredTargets(selectedApp, scope.userId || '', reqGrants(req)) });
+  });
+
+  /** Is this target actually testable? Checked before the repo dive so a dead URL costs one request
+   * instead of a full scope build — and, worse, cases authored against an error page. */
+  app.get('/api/agent/target-check', async (req, res) => {
+    res.json(await checkTarget(String(req.query.url || '').trim()));
+  });
+
   app.post('/api/agent/target-options', async (req, res) => {
     try {
       const scope = reqScope(req);
@@ -5401,10 +5493,13 @@ Rules:
       if (!appUrl) return res.json({ needsChoice: false, reason: 'no-target-configured' });
 
       const platform = platformTypeFromSurface(selectedApp?.name || '', appUrl);
-      if (platform === 'ADMIN') {
+      // ADMIN is the fallback for any URL without an app id, so also require the target to BE the
+      // surface whose side-nav the repo yielded — otherwise a CRM target gets Admin's navigation.
+      const repoForNav = getProjectRepoPath(scope.projectId || '');
+      if (platform === 'ADMIN' && targetMatchesAdminSurface(repoForNav, appUrl)) {
         // Ambiguous when the prompt names a feature (e.g. "list view") but no admin module —
         // offer the side-nav modules PARSED FROM THE BOUND REPO so the user pins the target.
-        const navModules = loadAdminNavModules(getProjectRepoPath(scope.projectId || ''));
+        const navModules = loadAdminNavModules(repoForNav);
         if (!navModules.length) return res.json({ needsChoice: false });
         // "in admin" names the PLATFORM, not a module — strip platform words so they can't
         // satisfy the module detector ("list view in admin" is still module-ambiguous).
@@ -5453,7 +5548,10 @@ Rules:
   });
 
   app.post('/api/agent/start', async (req, res) => {
-    const { app_url, prompt } = req.body;
+    // `app_url` is reassigned once the target is resolved from the prompt or the conversation, so
+    // every downstream stage (mission, credentials, discovery) sees the target the user actually chose.
+    let { app_url } = req.body;
+    const { prompt } = req.body;
     // Fail fast when the workspace isn't set up (no LLM / no target URL+credentials / no project):
     // refuse before creating a run so the user gets an immediate setup message instead of a run that
     // starts, spins, then flips to failed. `chat_response` renders as a normal assistant turn.
@@ -5509,6 +5607,66 @@ Rules:
     const scope = reqScope(req);
     const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
     const selectedProject = scope.projectId ? getProject(scope.projectId) : undefined;
+
+    // No resolvable target: ASK which one to test instead of starting. Without this the run reaches
+    // discovery and dies on "Discovery node requires a resolved mission with targetUrl", burning a run
+    // and showing an invariant violation where a simple question belongs.
+    const configuredTargets = listConfiguredTargets(selectedApp, scope.userId || '', reqGrants(req));
+    /**
+     * A target the user already chose must never be asked for again. Two ways they choose without
+     * an explicit app_url: naming it in the prompt ("go with keystone"), or having run against it
+     * earlier in this conversation. Names come from configured targets, never a hardcoded list.
+     */
+    const namedHits = (() => {
+      const words = new Set(String(prompt || '').toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || []);
+      if (!words.size) return [] as typeof configuredTargets;
+      const hits = configuredTargets.filter((t) => {
+        const nameWords = (t.name.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || []);
+        return nameWords.length > 0 && nameWords.some((w) => words.has(w));
+      });
+      const byUrl = new Map(hits.map((h) => [h.url, h]));
+      return [...byUrl.values()];
+    })();
+    // One match resolves silently. Several same-named targets are a real ambiguity — but the ask must
+    // offer THOSE, not the whole list, or naming the target feels ignored.
+    const namedTargetUrl = namedHits.length === 1 ? namedHits[0].url : '';
+    const conversationTargetUrl = String(latestRunForConversation(conversationId, scope)?.app_url || '').trim();
+    const resolvedTargetUrl = String(app_url || selectedApp?.baseUrl || namedTargetUrl || conversationTargetUrl || '').trim();
+    app_url = resolvedTargetUrl || app_url;
+    const targetPicker = (message: string, excludeUrl = '', only?: typeof configuredTargets) => {
+      const targets = only?.length ? only : configuredTargets;
+      // Dedupe by URL so one target configured as both an app and a website is offered once.
+      const seen = new Set<string>([excludeUrl].filter(Boolean));
+      const options = targets.filter((t) => !seen.has(t.url) && seen.add(t.url));
+      if (!options.length) {
+        return { chat_response: `${message} I have no other target configured — add one in Settings → Credentials, then ask me again.` };
+      }
+      return {
+        chat_response: message,
+        app_options: {
+          surface: selectedProject?.name || 'Targets',
+          platform: 'RUNTIME' as const,
+          allowAllApps: false,
+          apps: options.map((t) => ({ id: t.id, name: `${t.name} — ${t.url}`, group: '', tabs: [], baseUrl: t.url })),
+        },
+      };
+    };
+    if (!resolvedTargetUrl) {
+      return res.json(namedHits.length > 1
+        ? targetPicker(`You named a target with ${namedHits.length} configured URLs — which one?`, '', namedHits)
+        : targetPicker('Which target should I test? Pick one and I will run against it.'));
+    }
+    // Pre-flight the target. Discovery would otherwise spend a minute failing and report
+    // "requires a resolved mission with targetUrl", which blames the wrong thing — the URL is fine,
+    // the app just is not running. Any HTTP answer counts as reachable (401/404 at root is normal);
+    // only a connection-level failure means there is nothing to test.
+    const reachability = await checkTarget(resolvedTargetUrl);
+    if (!reachability.up) {
+      return res.json(targetPicker(
+        `I could not reach ${resolvedTargetUrl} (${reachability.error}), so there is nothing to inspect. Start that app, or pick a different target.`,
+        resolvedTargetUrl,
+      ));
+    }
     // Learn the connected app's OWN auth storage keys (from its repo) and register them for the inspector's
     // token injection — replaces hardcoded product keys with the app's learned keys. Best-effort, non-fatal.
     try {
@@ -5538,7 +5696,20 @@ Rules:
       (Boolean(currentTargetUrl) && Boolean(priorTargetUrl) && normTarget(currentTargetUrl) !== normTarget(priorTargetUrl))
       || (Boolean(scope.appId) && Boolean(priorAppId) && String(scope.appId) !== priorAppId)
     );
-    if (targetChanged) {
+    // Same target, different FEATURE is the more common drift: "test list view" after "test account
+    // creation" would otherwise inherit the account-creation understanding and author cases for it.
+    // Terms come only from the two prompts (app/project names removed, since the target is gated above),
+    // so this stays app-agnostic. Drop only when BOTH prompts name a subject and they share nothing —
+    // a bare continuation ("run it again") has no terms and keeps inheriting.
+    const featureChanged = Boolean(priorSessionRun) && subjectChanged(
+      String(prompt || ''),
+      String(priorSessionRun?.prompt || ''),
+      [selectedApp?.name || '', selectedProject?.name || ''],
+    );
+    if (targetChanged || featureChanged) {
+      if (featureChanged && !targetChanged) {
+        console.log(`[attention] feature changed within the same target — prior understanding dropped for: ${String(prompt || '').slice(0, 80)}`);
+      }
       approvedUnderstanding = '';
       priorGrounding = '';
     } else if (priorSessionRun) {
@@ -5559,24 +5730,35 @@ Rules:
     const metadataRefs: string[] = Array.isArray(req.body.metadataRefs)
       ? req.body.metadataRefs.map((r: any) => String(r || '').trim()).filter(Boolean)
       : [];
-    const adminNavModules = provisionalPlatform === 'ADMIN'
-      ? loadAdminNavModules(getProjectRepoPath(scope.projectId || ''))
-      : [];
+    // ADMIN is the fallback classification for any URL without an app id, so "is it admin?" alone is not
+    // enough — the target must actually BE the surface whose side-nav we parsed. Without this, a CRM (or
+    // any third-party) target is offered the bound repo's admin navigation, which is not its navigation.
+    const repoPathForNav = getProjectRepoPath(scope.projectId || '');
+    const isAdminSurface = provisionalPlatform === 'ADMIN'
+      && targetMatchesAdminSurface(repoPathForNav, app_url || selectedApp?.baseUrl || '');
+    const adminNavModules = isAdminSurface ? loadAdminNavModules(repoPathForNav) : [];
     // Auto-resolve a section ONLY from the requirement's real metadata refs matched against the repo-parsed
     // nav modules — no hardcoded object noun. Ambiguous prompts still fall through to the module question.
-    const autoModuleId = (!explicitModuleIdRaw && provisionalPlatform === 'ADMIN')
+    const autoModuleId = (!explicitModuleIdRaw && isAdminSurface)
       ? resolveAdminModuleFromRefs(metadataRefs, adminNavModules)
       : '';
     const explicitModuleId = explicitModuleIdRaw || autoModuleId;
-    if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
+    if (isAdminSurface && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
       // Structured options drive the console's dropdown card (ids = admin URL nav keys);
       // chat_response stays as the plain-text fallback and still accepts a typed module reply.
       // Repo-parsed side-nav modules drive the dropdown; when the repo has none the plain
       // question remains (older behavior) and the user can type the module name.
       // Examples derived from the live repo-parsed side-nav — never a hardcoded app's module names.
       const moduleExamples = adminNavModules.slice(0, 4).map((m) => m.name).filter(Boolean).join(', ');
+      // With no parsed modules there is no list to choose from — say WHY, so the empty ask does not
+      // look like the picker failed to load. The typed reply still works either way.
+      const noModulesReason = getProjectRepoPath(scope.projectId || '').trim()
+        ? " I could not read this app's navigation from the connected repository, so type the module name."
+        : ' No repository is connected for this project, so I cannot list its modules — type the module name, or connect the repo in Projects.';
       return res.json({
-        chat_response: `Which list view should I test? Name the module or record type${moduleExamples ? `, for example ${moduleExamples}` : ''}.`,
+        chat_response: adminNavModules.length
+          ? `Which list view should I test? Name the module or record type${moduleExamples ? `, for example ${moduleExamples}` : ''}.`
+          : `Which list view should I test?${noModulesReason}`,
         ...(adminNavModules.length ? {
           app_options: {
             surface: selectedApp?.name || 'Admin',
@@ -5948,481 +6130,37 @@ Rules:
       persistDataInBackground('cost-quota blocked agent run');
       return;
     }
+    (newRun as any).graph_start = {
+      requestedCaseCount,
+      reviewPolicy: flowMode === 'review_cases' ? 'manual' : 'auto',
+      provider: requestedProvider || '',
+      model: requestedModel || '',
+      effort: requestedEffort || '',
+    };
 
-    // AGENT_GRAPH_V2: route this run through the LangGraph workflow runtime instead of the legacy
-    // procedural pipeline. Same run record/SSE/status contracts; the runtime projects graph state
-    // back onto this run. AGENT_GRAPH_V2 defaults ON (isWorkflowGraphEnabled() is true unless the flag is
-    // explicitly '0'/'false'), so THIS graph path is the live default; the legacy path below runs only
-    // when the flag is explicitly disabled.
-    if (isWorkflowGraphEnabled()) {
-      // Non-secret graph-start params, so the coverage decision can launch the graph later (creds re-resolved then).
-      (newRun as any).graph_start = {
-        requestedCaseCount,
-        reviewPolicy: flowMode === 'review_cases' ? 'manual' : 'auto',
-        provider: requestedProvider || '',
-        model: requestedModel || '',
-        effort: requestedEffort || '',
-      };
-
-      // Existing-case reuse gate: if stored cases already cover this request, ask the user whether to
-      // reuse them or generate fresh BEFORE spending a run. Only in review mode (auto mode never pauses).
-      if (flowMode === 'review_cases') {
-        pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
-        const relatedExisting = await findRelatedExistingCases(newRun).catch(() => []);
-        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
-        pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
-        if (relatedExisting.length) {
-          newRun.status = 'coverage_options';
-          newRun.review_started_at = nowIso();
-          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s) that look related. Reuse them, add only the gaps, or generate fresh.` });
-          await persistAgentQualityArtifacts(newRun).catch(() => undefined);
-          persistDataInBackground('coverage-options graph run');
-          return;
-        }
-      }
-
-      pushPhase(newRun, { agent: 'Workflow', status: 'running', output: 'AGENT_GRAPH_V2: run routed through the durable LangGraph workflow runtime.' });
-      beginGraphRunFor(newRun, { credential: credentials }).catch((err: any) => {
-        markRunDone(newRun, 'failed');
-        pushPhase(newRun, { agent: 'Workflow', status: 'failed', output: `Workflow runtime failed to start: ${String(err?.message || err).slice(0, 300)}` });
-        persistDataInBackground('failed graph run start');
-      });
-      return;
-    }
-
-    try {
-      // #1: NamingAgent removed from the critical path  -  newRun.artifactName already holds
-      // a deterministic name (buildFallbackArtifactName), saving a ~30s codex call up front.
-      const credentialContext = buildCredentialContext(credentials);
-      pushPhase(newRun, { agent: 'ApplicationContext', status: 'running' });
-      try {
-        const appContext = await buildCorePlatformApplicationContext({
-          projectId: newRun.projectId,
-          appId: newRun.appId,
-          websiteId: newRun.websiteId,
-          targetUrl,
-          prompt: prompt || '',
-          understanding: approvedUnderstanding || priorGrounding || '',
-          ownerId: newRun.ownerId,
-          credentials,
-          maxChars: 24000,
-        });
-        newRun.application_context = appContext.context;
-        newRun.application_context_prompt = appContext.promptText;
-        newRun.application_context_cache_key = appContext.cacheKey;
-        if (appContext.context.testDataPack) (newRun as any).test_data_pack = appContext.context.testDataPack;
-        pushPhase(newRun, {
-          agent: 'ApplicationContext',
-          status: 'completed',
-          output: {
-            project: appContext.context.project?.name || '',
-            app: appContext.context.app?.name || '',
-            repo: appContext.context.repo?.appRoot || '',
-            catalogObjects: appContext.context.catalog.length,
-            hasTestData: !!appContext.context.testDataPack,
-            hasKnowledge: !!appContext.context.knowledgeBlock,
-            warnings: appContext.context.warnings,
-          },
-        });
-      } catch (err: any) {
-        pushPhase(newRun, { agent: 'ApplicationContext', status: 'completed', output: `Application context unavailable: ${getAIErrorMessage(err)}. Downstream agents must rely only on inspection/source evidence and must not guess missing details.` });
-      }
-      // Ground the case writer to the resolved app: cover ONLY that app's list-view objects (from
-      // its tabs), not the whole surface. Threads through application_context_prompt, which the
-      // case/coder prompts already include.
-      if (targetAppLabel) {
-        const objectsLine = targetAppObjects.length
-          ? ` Its main sections/objects are: ${targetAppObjects.join(', ')}.`
-          : '';
-        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface  -  not other apps.${objectsLine}\n${String(newRun.application_context_prompt || '')}`;
-      }
-      const appContextPrompt = String(newRun.application_context_prompt || '');
-      const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
-      const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`, appContextKey);
-
-      // Metadata fetch is scoped to the RESOLVED platform app id (app0NNNNNN). Note: newRun.appId is
-      // our internal surface id (APP-xxxx), which is NOT a platform app id  -  feeding it here was a
-      // no-op/mismatch, so we only fetch when a real platform app was resolved.
-      if (targetCoreAppId && targetCoreAppId !== ALL_APPS_ID) {
-        await runMetadataFetchPhase({
-          run: newRun,
-          appId: targetCoreAppId,
-          baseUrl: surfaceBaseUrl || selectedApp?.baseUrl || targetUrl,
-          credentials,
-          onPhase: (msg) => pushPhase(newRun, msg),
-        });
-      } else {
-        const why = targetCoreAppId === ALL_APPS_ID ? 'All-apps sweep; per-app metadata skipped.' : 'No individual app resolved; metadata fetch skipped.';
-        pushPhase(newRun, { agent: 'MetadataFetch', status: 'skipped', output: why });
-        newRun.phases = {
-          ...(newRun.phases || {}),
-          metadata_fetch: { status: 'skipped', reason: why, completed_at: nowIso() },
-        };
-      }
-      runContextBuilderPhase({
-        run: newRun,
-        websiteId: req.body.websiteId || (credentials as any).websiteId || '',
-        ownerId: newRun.ownerId || undefined,
-        primaryCredentials: credentials,
-        onPhase: (msg) => pushPhase(newRun, msg),
-      });
-
-      // Inspection is the hard grounding gate. If the live app cannot be read, stop here
-      // before spending tokens on code understanding or generating ungrounded cases.
-      const cachedInspection = getCached(inspectionCache, cacheKey);
-      let inspectionContext: any = null;
-      let inspectionOk = false;
-      if (cachedInspection) {
-        newRun.inspection_context = cachedInspection;
-        newRun.inspection_contexts = [{ ...cachedInspection, context_id: 'cached_primary' }];
-        inspectionContext = cachedInspection;
-        inspectionOk = true;
-        pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...cachedInspection, cached: true, verifier: 'reused cached inspection' } });
-      } else {
-        const inspectionContexts = await runMultiContextInspectionPhase({
-          run: newRun,
-          targetUrl,
-          prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
-          primaryCredentials: credentials,
-          ownerId: newRun.ownerId || undefined,
-          knowledge: `${appContextPrompt}\n\n${inspectorKnowledge}`.trim(),
-          onPhase: (msg) => pushPhase(newRun, msg),
-        });
-        inspectionContext = newRun.inspection_context;
-        inspectionOk = inspectionContexts.some((ctx: any) => assessInspection(ctx).ok);
-        if (inspectionOk && inspectionContext) setCached(inspectionCache, cacheKey, inspectionContext);
-      }
-
-      // Surface-Consistency Invariant (Phase 1): seal the mission to the surface discovery landed on, before
-      // the Selector Registry / Evidence Graph consume it. Prefer the live DOM URL; fall back to inspection.
-      const inspectedSurfaceUrl = String((newRun as any).dom_exploration?.url || inspectionContext?.currentUrl || '').trim();
-      if (inspectedSurfaceUrl) {
-        try {
-          const sealed = finalizeMissionFromInspectedSurface(mission, inspectedSurfaceUrl);
-          if (sealed !== mission) {
-            mission = sealed;
-            targetUrl = mission.targetUrl;
-            newRun.mission_context = mission;
-            newRun.app_url = mission.targetUrl;
-            pushPhase(newRun, {
-              agent: 'System',
-              status: 'completed',
-              output: `Mission sealed to discovery surface: ${describeMission(mission)} -> ${mission.targetUrl}`,
-            });
-          }
-        } catch (e: any) {
-          // Wrong-surface conflict: stop the run (HTTP response already sent) instead of grounding wrong.
-          pushPhase(newRun, { agent: 'System', status: 'failed', output: `Refusing to generate tests on the wrong surface: ${String(e?.message || e)}` });
-          markRunDone(newRun, 'failed');
-          persistDataInBackground('surface-mismatch blocked agent run');
-          return;
-        }
-      }
-
-      runSelectorRegistryPhase({ run: newRun, page: targetUrl, onPhase: (msg) => pushPhase(newRun, msg) });
-
-      (newRun as any).inspection_blind = !inspectionOk;
-      if (!inspectionOk) {
-        const detail = (assessInspection(inspectionContext).reason || '').trim();
-        pushPhase(newRun, {
-          agent: 'System',
-          status: 'running',
-          output: `Live inspection did not reach the authenticated application.${detail ? ` Details: ${detail}` : ''} Continuing to CodeAnalyst so the run can fall back to repo-grounded generation if source evidence exists.`,
-        });
-      }
-
-      pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });
-
-      const understandTask = (async () => {
-        const cached = getCached(understandingCache, cacheKey);
-        if (cached) {
-          const cachedUnderstanding = cached?.understanding || cached;
-          // featureInventory is now emitted separately after FeatureDiscoveryAgent
-          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...cachedUnderstanding, cached: true, searchedFiles: [] } });
-          return { understanding: cachedUnderstanding, featureInventory: cached?.featureInventory || null };
-        }
-        if (canReusePriorCodeGrounding(newRun.understandingSource, newRun.priorGrounding)) {
-          const reusedGrounding = stripCodebaseLocationsForAgentConsole(newRun.priorGrounding || approvedUnderstanding);
-          const reusedUnderstanding = buildUnderstandingFromPriorGrounding(prompt || '', targetUrl, reusedGrounding);
-          const reusedInventory = wantsFeatureInventory(prompt || '', reusedGrounding)
-            ? buildInventoryFromPriorGrounding(prompt || '', targetUrl, reusedGrounding)
-            : null;
-          pushPhase(newRun, {
-            agent: 'CodeAnalyst',
-            status: 'completed',
-            output: {
-              ...reusedUnderstanding,
-              reused: true,
-              memorySource: newRun.understandingSource,
-              note: 'Reused the prior code-grounded chat answer; source files were not reread for this stage.',
-            },
-          });
-          // FeatureWriter phase is emitted after FeatureDiscoveryAgent  -  not here
-          setCached(understandingCache, cacheKey, { understanding: reusedUnderstanding, featureInventory: reusedInventory });
-          return { understanding: reusedUnderstanding, featureInventory: reusedInventory };
-        }
-        try {
-          // Research the SELECTED project's repo  -  dynamic per app, no hardcoded path.
-          const repoPath = getProjectRepoPath(newRun.projectId || '').trim();
-          // Strike 3: ground the CodeAnalyst on the SAME resolved understanding the case
-          // writer/coder use (resolveUnderstanding applies the chat fallback) instead of the
-          // raw request-body approvedUnderstanding, so all three workers share one grounding.
-          const analystUnderstanding = resolveUnderstanding(newRun);
-          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), {
-            workspaceId: newRun.ownerId || 'default',
-            userId: newRun.ownerId,
-            repoPath,
-            projectId: newRun.projectId,
-            appId: newRun.appId,
-            applicationContextPrompt: appContextPrompt,
-          });
-          const rawUnderstanding = (analysis.understanding || {}) as any;
-          const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
-          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
-          // FeatureWriter now runs AFTER FeatureDiscoveryAgent (post understandTask) so phases
-          // emit in the correct order: Find Existing -> Write New (missing). Cache the inventory
-          // key here so FeatureWriter can retrieve it without re-running the LLM.
-          setCached(understandingCache, cacheKey, { understanding: analysis.understanding, featureInventory: null });
-          return { understanding: analysis.understanding, featureInventory: null };
-        } catch (err: any) {
-          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
-          return { understanding: null, featureInventory: null };
-        }
-      })();
-
-      const sourceUnderstanding = await understandTask;
-      newRun.feature_understanding = sourceUnderstanding?.understanding || null;
-      newRun.feature_inventory = sourceUnderstanding?.featureInventory || null;
-      if (!newRun.feature_understanding && newRun.understandingSource !== 'requirement') {
-        const why = 'CodeAnalyst could not produce repo-grounded understanding. Generation is blocked because agents must not fall back to guessed behavior.';
-        pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
-        (newRun as any).cases_grounding = { ok: false, reason: why };
-        markRunDone(newRun, 'failed');
-        await persistAgentQualityArtifacts(newRun).catch((persistErr) => console.warn('Failed to persist failed code-grounding agent artifacts:', persistErr));
-        persistDataInBackground('code-grounding blocked agent run');
+    // Existing-case reuse gate: if stored cases already cover this request, ask the user whether to
+    // reuse them or generate fresh BEFORE spending a run. Only in review mode (auto mode never pauses).
+    if (flowMode === 'review_cases') {
+      pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
+      const relatedExisting = await findRelatedExistingCases(newRun).catch(() => []);
+      newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
+      pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
+      if (relatedExisting.length) {
+        newRun.status = 'coverage_options';
+        newRun.review_started_at = nowIso();
+        pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s) that look related. Reuse them, add only the gaps, or generate fresh.` });
+        await persistAgentQualityArtifacts(newRun).catch(() => undefined);
+        persistDataInBackground('coverage-options graph run');
         return;
       }
-
-      // -- Phase 3: Find Existing Features ------------------------------------
-      pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'running' });
-      const existingFeatureRequirements = await findExistingFeatureRequirements(newRun);
-      (newRun as any).existing_feature_matches = existingFeatureRequirements;
-      pushPhase(newRun, {
-        agent: 'FeatureDiscoveryAgent',
-        status: 'completed',
-        output: existingFeatureRequirements.length
-          ? { count: existingFeatureRequirements.length, matches: existingFeatureRequirements.map((req: any) => ({ id: req.id, title: req.title })).slice(0, 10) }
-          : 'No existing feature/requirement records found for this scope.',
-      });
-
-      // -- Phase 4: Write New Features (missing) ------------------------------
-      // FeatureWriter now runs here (after discovery) so the phase order in the UI is correct.
-      let featureInventory = newRun.feature_inventory;
-      if (!featureInventory && newRun.understandingSource !== 'requirement') {
-        const analystUnderstanding = resolveUnderstanding(newRun);
-        const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), appContextKey);
-        const cachedInventory = getCached(featureInventoryCache, inventoryKey);
-        if (cachedInventory) {
-          featureInventory = cachedInventory;
-          newRun.feature_inventory = featureInventory;
-          pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { cached: true }) });
-        } else if (wantsFeatureInventory(prompt || '', analystUnderstanding || approvedUnderstanding || '')) {
-          pushPhase(newRun, { agent: 'FeatureWriter', status: 'running' });
-          try {
-            const repoPath = getProjectRepoPath(newRun.projectId || '').trim();
-            const inventoryResult = await discoverFeatureInventoryFromSource(
-              `${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(),
-              {
-                workspaceId: newRun.ownerId || 'default',
-                userId: newRun.ownerId,
-                repoPath,
-                projectId: newRun.projectId,
-                appId: newRun.appId,
-                applicationContextPrompt: appContextPrompt,
-              },
-            );
-            featureInventory = inventoryResult.inventory;
-            newRun.feature_inventory = featureInventory;
-            setCached(featureInventoryCache, inventoryKey, featureInventory);
-            pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory) });
-          } catch (inventoryErr: any) {
-            pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: `Feature inventory unavailable: ${getAIErrorMessage(inventoryErr)}` });
-          }
-        } else {
-          pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Focused scope  -  no broad feature inventory needed.' });
-        }
-      } else if (featureInventory) {
-        pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { reused: true }) });
-      } else {
-        pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available  -  feature discovery skipped.' });
-      }
-
-      pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'A requirement is recorded from this run\'s verified coverage on completion (see the Requirements section).' });
-
-      // Auto-grow the app knowledge
-      try {
-        const ic: any = inspectionContext || {};
-        const nav = (ic.visibleNavigation || []).slice(0, 10).join(', ');
-        const forms = (ic.visibleForms || []).map((f: any) => f?.name || f?.label).filter(Boolean).slice(0, 6).join(', ');
-        const obsNote = `For "${(prompt || '').slice(0, 80)}" the app showed page "${ic.pageSummary || ic.currentUrl || ''}"`
-          + (nav ? `; nav: ${nav}` : '') + (forms ? `; forms: ${forms}` : '') + ` (goal: ${ic.goalStatus || 'unknown'}).`;
-        recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '', ownerId: newRun.ownerId || '' }, obsNote);
-      } catch { /* observation is best-effort */ }
-
-      newRun.requested_case_count = requestedCaseCount;
-      newRun.selected_qa_prompt_text = selectedQaContext.promptText;
-      newRun.scope_context_text = scopeContextText;
-
-      // Per-feature sub-loop: for each NEW feature -> Map -> Find existing -> Write cases.
-      // BUT when the user FIXED a case count, skip the comprehensive per-feature expansion (which
-      // produces one case per subfeature) and use the focused single-batch path below, which
-      // honors the exact requested count.
-      const inventoryFeatures = (featureInventory?.features as any[] || []);
-      const requirementScenarioCount = Array.isArray(newRun.feature_understanding?.candidateScenarios)
-        ? newRun.feature_understanding.candidateScenarios.length
-        : 0;
-      const useRequirementScenarioContract = newRun.understandingSource === 'requirement' && requirementScenarioCount > 0;
-      if (flowMode === 'review_cases') {
-        const relatedExisting = await findRelatedExistingCases(newRun);
-        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
-        if (relatedExisting.length) {
-          newRun.status = 'coverage_options';
-          newRun.review_started_at = nowIso();
-          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} strongly related existing test case(s). Choose reuse, gaps, or fresh generation.` });
-          await persistAgentQualityArtifacts(newRun);
-          persistDataInBackground('coverage-options agent run');
-          return;
-        }
-      }
-      if (inventoryFeatures.length > 0 && !requestedCaseCount && !useRequirementScenarioContract) {
-        const existingTitles = existingFeatureRequirements.map((r: any) => (r.title || '').toLowerCase());
-        const newFeatures = inventoryFeatures.filter((f: any) =>
-          !existingTitles.some((t) => t.includes((f.name || '').toLowerCase().slice(0, 10))),
-        );
-        const featureLoop = newFeatures.length ? newFeatures : inventoryFeatures;
-        const allGeneratedCases: any[] = [];
-
-        // Feature writers are independent model calls. Run a small bounded batch so a
-        // complete 15-feature inventory does not take 15 serial model round trips.
-        const FEATURE_WRITER_CONCURRENCY = 3;
-        for (let start = 0; start < featureLoop.length; start += FEATURE_WRITER_CONCURRENCY) {
-          const batch = featureLoop.slice(start, start + FEATURE_WRITER_CONCURRENCY);
-          for (const feature of batch) {
-            pushPhase(newRun, {
-              agent: 'FeatureMapper',
-              status: 'completed',
-              output: { feature: feature.name, subfeatures: (feature.subfeatures || []).length, surface: feature.surface || '' },
-            });
-            pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'running', output: `Writing cases for "${feature.name}".` });
-          }
-          const results = await Promise.all(batch.map(async (feature: any) => {
-            try {
-              return { feature, cases: await generateCasesForFeature(newRun, feature, credentials), error: null };
-            } catch (error: any) {
-              return { feature, cases: [] as any[], error };
-            }
-          }));
-          // Promise.all preserves input order, keeping generated case order deterministic.
-          for (const result of results) {
-            if (result.error) {
-              pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'skipped', output: `"${result.feature.name}": ${getAIErrorMessage(result.error)}` });
-              continue;
-            }
-            allGeneratedCases.push(...result.cases);
-            pushPhase(newRun, {
-              agent: 'FeatureTestWriter',
-              status: 'completed',
-              output: `${result.cases.length} new case(s) written for "${result.feature.name}".`,
-            });
-          }
-        }
-
-        // -- Phase 6: Recheck coverage  -  fill any gaps --------------------------
-        pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'running' });
-        const allSubFeatures = inventoryFeatures
-          .flatMap((f: any) => (Array.isArray(f?.subfeatures) ? f.subfeatures : []))
-          .map((s: any) => ({ name: String(s?.name || '').trim() }))
-          .filter((s: { name: string }) => s.name);
-        if (allSubFeatures.length && allGeneratedCases.length) {
-          const featureLabel = inventoryFeatures[0]?.name ? String(inventoryFeatures[0].name) : String(prompt || 'feature').slice(0, 60);
-          const completeness = assessFeatureCompleteness(featureLabel, allSubFeatures, allGeneratedCases);
-          if (!completeness.ok) {
-            try {
-              const gapCases = await proposeGapCases(newRun.feature_understanding, allGeneratedCases.map((c: any) => ({
-                id: c.existingCaseId || c.id || c.title, title: c.title, tags: c.tags || [], type: c.type, priority: c.priority, stepCount: (c.steps || []).length,
-              })));
-              const gapFormatted = (gapCases || []).map((g: any) => ({
-                title: g.title, description: g.rationale || '', priority: g.priority || 'Medium', type: g.type || 'Automated',
-                tags: normalizeCaseTags(g.tags || []), steps: normalizeCaseSteps(g.steps || []), captureEvidence: true,
-              }));
-              if (gapFormatted.length) allGeneratedCases.push(...gapFormatted);
-              pushPhase(newRun, {
-                agent: 'CoverageGapChecker',
-                status: 'completed',
-                output: gapFormatted.length ? `${gapFormatted.length} gap case(s) added. ${completeness.reason}` : `No actionable gaps. ${completeness.reason}`,
-              });
-            } catch {
-              pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: completeness.reason });
-            }
-          } else {
-            pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: `All features covered. ${completeness.reason}` });
-          }
-        } else {
-          pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: 'No subfeature inventory to validate against.' });
-        }
-
-        // Commit all accumulated cases and go straight to script generation
-        newRun.generated_cases = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allGeneratedCases, newRun), newRun);
-        (newRun as any).all_generated_cases = newRun.generated_cases;
-        newRun.existing_matches = [];
-        pushPhase(newRun, {
-          agent: 'TestGenerationAgent',
-          status: 'completed',
-          output: { test_cases: newRun.generated_cases, grounded: true, grounding: 'Per-feature case generation complete.' },
-        });
-        await persistAgentCaseArtifacts(newRun);
-        (newRun.generated_cases || []).forEach((tc: any, idx: number) => {
-          pushInboxItem({
-            workspaceId: 'default', source: 'case', sourceId: `${newRun.id}:${idx}`,
-            title: `Review new test case: ${tc.title || `Case ${idx + 1}`}`, summary: tc.description || '',
-            confidence: 80, proposedBy: 'QA Assistant',
-            payload: { runId: newRun.id, caseIndex: idx, case: tc },
-            links: [{ label: 'Open in Test Cases', href: '/test-cases' }],
-          });
-        });
-        if (flowMode === 'review_cases') {
-          newRun.status = 'review_required';
-          (newRun as any).review_stage = 'cases';
-          newRun.review_started_at = nowIso();
-          pushPhase(newRun, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
-          await persistAgentRunAndReportArtifacts(newRun);
-          persistDataInBackground('review-required agent run');
-          return;
-        }
-        await runPostCaseAgentFlow(newRun, undefined as any, { test_cases: newRun.generated_cases }, targetUrl, credentials);
-      } else {
-        // No feature inventory  -  fall back to single-batch generation with coverage-options gate
-        pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
-        const relatedExisting = await findRelatedExistingCases(newRun);
-        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
-        pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
-        if (relatedExisting.length && flowMode === 'review_cases') {
-          newRun.status = 'coverage_options';
-          newRun.review_started_at = nowIso();
-          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s). Reuse them, add only the gaps, or generate fresh.` });
-          await persistAgentQualityArtifacts(newRun);
-          persistDataInBackground('coverage-options agent run');
-          return;
-        }
-        await generateCasesForRun(newRun, credentials, { flowMode, mode: 'fresh' });
-      }
-    } catch (err: any) {
-      console.error('AI Gen Error:', err);
-      markRunDone(newRun, 'failed');
-      pushPhase(newRun, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
-      await persistAgentQualityArtifacts(newRun).catch((persistErr) => console.warn('Failed to persist failed agent artifacts:', persistErr));
-      persistDataInBackground('failed agent run');
     }
+
+    pushPhase(newRun, { agent: 'Workflow', status: 'running', output: 'Run routed through the durable LangGraph workflow runtime.' });
+    beginGraphRunFor(newRun, { credential: credentials }).catch((err: any) => {
+      markRunDone(newRun, 'failed');
+      pushPhase(newRun, { agent: 'Workflow', status: 'failed', output: `Workflow runtime failed to start: ${String(err?.message || err).slice(0, 300)}` });
+      persistDataInBackground('failed graph run start');
+    });
   });
 
   // Resolve the early reuse gate: the user chose to reuse existing cases, extend

@@ -75,6 +75,20 @@ function main() {
   ok(r.code.includes('app9'), 'mission carries the appId');
   ok(!/searchParams/.test(r.code), 'no searchParams manipulation');
 
+  console.log('plan operations remain grouped by their reviewed case step');
+  {
+    const grouped: TestPlan = { mission: runtime.executionScope, title: 'grouped source steps', steps: [
+      { id: 'case:0', sourceStep: 1, action: 'CLICK', target: 'New' },
+      { id: 'case:0', sourceStep: 1, assert: 'VISIBLE', target: 'Search' },
+      { id: 'case:1', sourceStep: 2, action: 'FILL', target: 'Search', value: 'acme' },
+      { id: 'case:1', sourceStep: 2, assert: 'HAS_VALUE', target: 'Search', value: 'acme' },
+    ] };
+    const compiled = playwrightCompiler.compile({ mission: runtime, plan: grouped, evidenceGraph: graph, run });
+    eq((compiled.code.match(/await test\.step\(/g) || []).length, 2, 'four plan operations compile into two reviewed-case step groups');
+    ok(compiled.code.includes('runner.click(') && compiled.code.includes('runner.expectVisible('), 'the first source-step group retains both operations');
+    ok(compiled.code.includes('runner.fill(') && compiled.code.includes('runner.expectValue('), 'the second source-step group retains both operations');
+  }
+
   console.log('assertions expect the ENGINE-RESOLVED values (fill ↔ expectValue stay consistent)');
   {
     const p: TestPlan = { mission: runtime.executionScope, title: 'create app', steps: [
@@ -138,12 +152,12 @@ function main() {
     ] };
     const rc2 = playwrightCompiler.compile({ mission: runtime, plan: p2, evidenceGraph: graph, run });
     ok(/runner\.fill\(\{[^}]*create-app-api/.test(rc2.code) && !/runner\.select\(\{[^}]*create-app-api/.test(rc2.code), 'SELECT with a value on a textbox coerced to fill (not select)');
-    // Global, not textbox-specific: a mis-verbed action on ANY role maps to that role's natural action.
+    // A value-bearing action on a non-value role is dropped; converting it to CLICK would lose the value.
     const p3: TestPlan = { mission: runtime.executionScope, title: 'matrix', steps: [
       { action: 'FILL', target: 'New', value: 'x' },   // FILL on a BUTTON → CLICK
     ] };
     const rc3 = playwrightCompiler.compile({ mission: runtime, plan: p3, evidenceGraph: graph, run });
-    ok(rc3.ok && /runner\.click\(\{[^}]*testid.*new/i.test(rc3.code.replace(/\n/g, ' ')), 'FILL on a button coerced to click (matrix is universal, not per-field)');
+    ok(rc3.ok && !/runner\.click\(\{[^}]*testid.*new/i.test(rc3.code.replace(/\n/g, ' ')), 'FILL with a value on a button is dropped, never converted to click');
   }
 
   console.log('ungrounded target → diagnostic + marker, never a guess');
@@ -340,7 +354,7 @@ function main() {
   console.log('compiler rejects incompatible action/element pairs');
   const incompatible: TestPlan = { mission: runtime.executionScope, steps: [{ action: 'SELECT', target: 'Roles', value: 'system_admin' }] };
   const badAction = playwrightCompiler.compile({ mission: runtime, plan: incompatible, evidenceGraph: graph, run });
-  ok(!badAction.ok && badAction.diagnostics[0]?.kind === 'INVALID_STEP', 'SELECT targeting a heading is rejected');
+  ok(badAction.ok && badAction.diagnostics[0]?.kind === 'INVALID_STEP', 'SELECT targeting a heading is safely dropped');
   ok(!badAction.code.includes('runner.select('), 'invalid SELECT is never emitted');
 
   console.log('context asserts (Phase 4): page-scoped, never grounded, runner-owned');
@@ -521,6 +535,21 @@ function main() {
     const rpos = playwrightCompiler.compile({ mission: runtime, plan: pos, evidenceGraph: nvGraph, run: nvRun });
     ok(rpos.code.includes('runner.expectValue('), 'positive "with required fields" case keeps expectValue');
     ok(!rpos.code.includes('expectValidation('), 'positive case is not treated as a validation case');
+  }
+
+  console.log('value-bearing action is never downgraded to a bare click');
+  {
+    const unsafeRun: any = { selector_registry: { verified_selectors: [
+      vs('status', 'button', 'Status *', 'role=button[name="Status *"]', 'role+name'),
+    ] } };
+    const unsafeGraph = buildEvidenceGraphFromRun(unsafeRun, { platform: 'Admin' });
+    const unsafePlan: TestPlan = { mission: runtime.executionScope, title: 'create with status', steps: [
+      { action: 'SELECT', target: 'Status', value: 'available status' },
+      { assert: 'HAS_TEXT', target: 'Status', value: 'available status' },
+    ] };
+    const result = playwrightCompiler.compile({ mission: runtime, plan: unsafePlan, evidenceGraph: unsafeGraph, run: unsafeRun });
+    ok(result.ok, 'unsafe value action is skippable rather than deleting the whole case');
+    ok(!result.code.includes('runner.click(') && !result.code.includes('runner.expectText('), 'invalid SELECT and its invented assertion are both omitted');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

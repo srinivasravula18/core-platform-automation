@@ -1,21 +1,4 @@
-/**
- * Live-run instrumentation (Phase 1 cutover) — projects the graph runtime's REAL state onto the
- * coordination bus + blackboard so a live run populates the A2A substrate at full fidelity.
- *
- * SHADOW / observability only: it records what the existing graph already decided; it changes NO control
- * flow and makes NO decision. Flag-gated by AGENT_NATIVE_V1 (off → no-op) and fully best-effort — any bus/
- * blackboard hiccup is swallowed so a run can never be affected by instrumentation. This is the first live
- * consumer of the Phase 1 substrate; it proves the bus/blackboard end-to-end against the SUT before any
- * decision-bearing agent is migrated onto them.
- *
- * Fidelity model: each graph stage is voiced by the specialist agent that owns it (same roster the console
- * chips use, so names line up). On every stage boundary we publish (a) a HANDOFF from the orchestrator to
- * the entering stage's agent, (b) a RESULT from the just-completed stage's agent carrying the concrete
- * facts that stage produced (read straight from WorkflowState — cases drafted, selectors verified, verdicts),
- * and (c) an append-only blackboard fact for that produced artifact so any agent can read it once, not
- * re-derive it. The result is a real, causally-linked conversation transcript of the run.
- */
-import { isAgentNativeEnabled } from '../agentNativeFlag';
+/** Projects graph stage transitions onto the bus/blackboard. Observability only — makes no decision. */
 import { getMessageBus } from './messageBus';
 import { getBlackboard } from './blackboard';
 import type { WorkflowState } from '../../features/agent/workflow/state';
@@ -111,7 +94,6 @@ export async function recordRunStageProgress(
   status: string,
   prevStage: string | null,
 ): Promise<void> {
-  if (!isAgentNativeEnabled()) return;
   try {
     const bus = getMessageBus();
     const blackboard = getBlackboard();
@@ -122,14 +104,14 @@ export async function recordRunStageProgress(
       if (fact) {
         const agent = agentForStage(prevStage);
         await bus.publish({ runId, from: agent, to: ORCHESTRATOR, type: 'RESULT', payload: { stage: prevStage, summary: fact.summary, ...fact.value } });
-        await blackboard.put(runId, `stage.result.${prevStage}`, fact.value, agent);
+        await blackboard.put(runId, `stage.result.${prevStage}`, fact.value, agent, { status: 'accepted' });
       }
     }
 
     // 2. HANDOFF: the orchestrator hands the run to the entering stage's agent (broadcast — any observer reads it).
     await bus.publish({ runId, from: ORCHESTRATOR, to: agentForStage(stage), type: 'HANDOFF', payload: { stage, status, prevStage, task: `Own the ${stage} stage.` } });
     // 3. Blackboard fact: the current run stage (append-only history of the run's progression).
-    await blackboard.put(runId, 'run.stage', { stage, status, prevStage }, ORCHESTRATOR);
+    await blackboard.put(runId, 'run.stage', { stage, status, prevStage }, ORCHESTRATOR, { status: 'accepted' });
   } catch (err) {
     console.warn(`[run-instrumentation] failed to record stage '${stage}' for run ${runId} (non-fatal):`, (err as Error)?.message);
   }
@@ -141,13 +123,13 @@ export async function recordRunStageProgress(
  * state so the transcript ends with the finalizer's actual outcome. Best-effort + flag-gated; never throws.
  */
 export async function recordRunTerminal(runId: string, state: WorkflowState): Promise<void> {
-  if (!isAgentNativeEnabled()) return;
   try {
     const fact = factForStage(state.stage, state);
     if (!fact) return;
     const agent = agentForStage(state.stage);
     await getMessageBus().publish({ runId, from: agent, to: ORCHESTRATOR, type: 'RESULT', payload: { stage: state.stage, summary: fact.summary, ...fact.value } });
-    await getBlackboard().put(runId, `stage.result.${state.stage}`, fact.value, agent);
+    // Deterministic stage records are runtime-observed truth, not agent claims awaiting promotion.
+    await getBlackboard().put(runId, `stage.result.${state.stage}`, fact.value, agent, { status: 'accepted' });
   } catch (err) {
     console.warn(`[run-instrumentation] failed terminal flush for run ${runId} (non-fatal):`, (err as Error)?.message);
   }
@@ -163,10 +145,9 @@ export async function recordRunStageTransition(
   status: string,
   prevStage: string | null,
 ): Promise<void> {
-  if (!isAgentNativeEnabled()) return;
   try {
     await getMessageBus().publish({ runId, from: ORCHESTRATOR, to: agentForStage(stage), type: 'HANDOFF', payload: { stage, status, prevStage } });
-    await getBlackboard().put(runId, 'run.stage', { stage, status, prevStage }, ORCHESTRATOR);
+    await getBlackboard().put(runId, 'run.stage', { stage, status, prevStage }, ORCHESTRATOR, { status: 'accepted' });
   } catch (err) {
     console.warn(`[run-instrumentation] failed to record stage '${stage}' for run ${runId} (non-fatal):`, (err as Error)?.message);
   }

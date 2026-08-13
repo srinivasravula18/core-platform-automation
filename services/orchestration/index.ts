@@ -52,7 +52,6 @@ export {
 export {
   getWorkflowCheckpointer,
   closeWorkflowCheckpointer,
-  isWorkflowGraphEnabled,
 } from '../../server/features/agent/workflow/checkpointer';
 
 export {

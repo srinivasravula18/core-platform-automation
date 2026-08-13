@@ -1,23 +1,22 @@
 /**
- * Provider factory and orchestrator.
+ * Codex runtime factory and orchestrator.
  *
- * The factory builds a Provider by name from the workspace's stored credentials.
- * The orchestrator wraps the provider with the guardrail pipeline, cost tracking,
- * and the DB-backed prompt store so the rest of the app does not have to repeat
- * that setup.
+ * The factory builds the Codex provider from the workspace's stored credentials. The
+ * orchestrator wraps it with the guardrail pipeline, cost tracking, and the DB-backed
+ * prompt store so the rest of the app does not have to repeat that setup.
  *
  * Usage in routes:
  *   const ai = await getOrchestrator(workspaceId, agentName);
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse, ProviderImage } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName, ProviderResponse, ProviderImage } from './providers/types';
 import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
-import { GeminiProvider } from './providers/gemini';
-import { OpenAIProvider } from './providers/openai';
-import { AnthropicProvider } from './providers/anthropic';
-import { AccountCliProvider } from './providers/cli';
+import { CodexProvider } from './providers/codex';
+import { openBridgeSession } from './codex/mcpBridge';
+import { isKnownCodexModel } from './codex/runtime';
+import { CodexThreads } from '../db/repository';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
 import { recordUsage, getDailyCost } from './costTracker';
@@ -34,148 +33,86 @@ export interface ProviderCredentials {
   authMode: ProviderAuthMode;
 }
 
-const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
+/** One runtime. The name survives because usage/trace records and RBAC grants key on it. */
+export const CODEX: ProviderName = 'codex';
+const PROVIDERS: ProviderName[] = [CODEX];
 
-function isProviderName(value: unknown): value is ProviderName {
-  return PROVIDERS.includes(value as ProviderName);
-}
-
-export function getProviderCredentials(provider: ProviderName): ProviderCredentials | null {
+/**
+ * Codex credentials: an API key when one is configured (stored or `OPENAI_API_KEY`),
+ * otherwise the machine's ChatGPT/Codex login. Account auth needs no key, so — unlike the
+ * old multi-provider factory — "no key" is a valid, fully usable configuration.
+ */
+export function getProviderCredentials(provider: ProviderName = CODEX): ProviderCredentials | null {
   const settings = db.settings?.providerSettings?.[provider];
   if (settings?.enabled === false) return null;
-  if (settings?.authMode === 'account' && isLocalCliProviderAllowed()) {
-    return { apiKey: '', model: settings.model, authMode: 'account' };
+  const apiKey = settings?.apiKey || process.env.OPENAI_API_KEY || '';
+  if (apiKey && settings?.authMode !== 'account') {
+    return { apiKey, model: settings?.model, authMode: 'api_key' };
   }
-  if (!settings?.apiKey) {
-    if (provider === 'gemini') {
-      const envKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-      if (envKey) return { apiKey: envKey, authMode: 'api_key' };
-    }
-    if (provider === 'openai' && process.env.OPENAI_API_KEY) {
-      return { apiKey: process.env.OPENAI_API_KEY, authMode: 'api_key' };
-    }
-    if (provider === 'anthropic' && process.env.ANTHROPIC_API_KEY) {
-      return { apiKey: process.env.ANTHROPIC_API_KEY, authMode: 'api_key' };
-    }
-    return null;
-  }
-  return { apiKey: settings.apiKey, model: settings.model, authMode: settings.authMode || 'api_key' };
+  return { apiKey: '', model: settings?.model, authMode: 'account' };
 }
 
-function isLocalCliProviderAllowed(): boolean {
-  const env = String(process.env.NODE_ENV || '').toLowerCase();
-  const explicit = String(process.env.ALLOW_LOCAL_CLI_PROVIDERS || '').toLowerCase();
-  const deploymentMode = String(process.env.DEPLOYMENT_MODE || '').toLowerCase();
-  const lifecycle = String(process.env.npm_lifecycle_event || '').toLowerCase();
-  if (explicit === 'true') return true;
-  if (explicit === 'false') return false;
-  return (
-    !env ||
-    env === 'development' ||
-    env === 'dev' ||
-    deploymentMode === 'local' ||
-    lifecycle.startsWith('dev')
-  );
-}
-
-export function buildProvider(provider: ProviderName, modelOverride?: string): AIProvider {
+export function buildProvider(provider: ProviderName = CODEX, modelOverride?: string): AIProvider {
   const creds = getProviderCredentials(provider);
-  if (!creds) {
-    throw new Error(
-      `No credentials configured for provider "${provider}". Add an API key in Settings → AI Providers.`,
-    );
-  }
+  if (!creds) throw new Error('The Codex runtime is disabled. Enable it in Settings → AI Runtime.');
   const model = modelOverride || creds.model || DEFAULT_MODELS[provider].default;
-  if (creds.authMode === 'account') {
-    if (!isLocalCliProviderAllowed()) {
-      throw new Error(
-        `Provider "${provider}" is configured for local subscription/account CLI auth, but CLI providers are disabled outside local development. Use API key mode in test and production.`,
-      );
-    }
-    // explicitModel: only forward a model id to the CLI when the user actually chose
-    // one in Settings — the CLI's own local config is the default otherwise.
-    if (provider === 'openai') return new AccountCliProvider('openai', 'codex', model, { explicitModel: !!(modelOverride || creds.model) });
-    if (provider === 'anthropic') return new AccountCliProvider('anthropic', 'claude', model, { explicitModel: !!(modelOverride || creds.model) });
-    throw new Error(
-      `Provider "${provider}" does not support subscription/account CLI auth in Test Flow AI. Use API key mode for this provider.`,
-    );
-  }
-  switch (provider) {
-    case 'gemini':
-      return new GeminiProvider(creds.apiKey, model);
-    case 'openai':
-      return new OpenAIProvider(creds.apiKey, model);
-    case 'anthropic':
-      return new AnthropicProvider(creds.apiKey, model);
-  }
+  // explicitModel: only pin a model id when the user actually chose one — account auth
+  // otherwise defers to the local Codex config, which is what `codex` itself would use.
+  return new CodexProvider(creds.apiKey, model, { explicitModel: !!(modelOverride || creds.model) });
 }
 
-// A provider is usable by `userId` when an Access Group grants it. No userId (internal/system) or an
-// admin/ungrouped user is UNRESTRICTED. Provider config is global, so this is a per-user allow-list.
+// The runtime is usable by `userId` when an Access Group grants it. No userId (internal/system)
+// or an admin/ungrouped user is UNRESTRICTED. Config is global, so this is a per-user allow-list.
 function providerAllowedForUser(userId: string | undefined, provider: ProviderName): boolean {
   if (!userId) return true;
   return isAllowed(effectiveGrantsForUser(getUserById(userId)), 'providers', provider);
 }
 
 export function listConfiguredProviders(userId?: string): ProviderName[] {
-  const out: ProviderName[] = [];
-  for (const name of PROVIDERS) {
-    if (getProviderCredentials(name) && providerAllowedForUser(userId, name)) out.push(name);
-  }
-  return out;
+  return PROVIDERS.filter((name) => getProviderCredentials(name) && providerAllowedForUser(userId, name));
 }
 
-// User-facing message shown when no LLM provider is connected. Kept in one place so every agent
-// entry point fails fast with the SAME actionable text instead of starting work that then errors.
-export const NO_PROVIDER_MESSAGE = 'No AI provider is connected. Add an API key in Settings → AI Providers to run the agent.';
+// User-facing message shown when the runtime cannot run. Kept in one place so every agent entry
+// point fails fast with the SAME actionable text instead of starting work that then errors.
+export const NO_PROVIDER_MESSAGE = 'The Codex runtime is not available. Sign in with "codex login", or add an OpenAI API key in Settings → AI Runtime.';
 
-/** True when at least one LLM provider has usable credentials (stored or env). */
+/** True when the Codex runtime is enabled and permitted. */
 export function isAnyProviderConfigured(): boolean {
   return listConfiguredProviders().length > 0;
 }
 
 /**
- * Why no provider can run, in the user's terms. "Connect an AI provider" is wrong — and reads as a bug —
- * when Settings plainly shows one switched ON: a provider is enabled yet unusable when it is in
- * subscription/CLI (account) mode on a deployment that cannot run the CLI, or in API-key mode with no key.
- * Returns '' when a provider IS usable.
+ * Why the runtime cannot run, in the user's terms. Returns '' when it CAN run. Codex
+ * authentication itself is checked asynchronously by the health endpoint; this covers the
+ * synchronous config-level blockers only.
  */
 export function providerBlockerReason(): string {
   if (isAnyProviderConfigured()) return '';
-  const cliAllowed = isLocalCliProviderAllowed();
-  const enabled = PROVIDERS.filter((p) => db.settings?.providerSettings?.[p]?.enabled !== false);
-  const cliBlocked = enabled.filter((p) => db.settings?.providerSettings?.[p]?.authMode === 'account' && !cliAllowed);
-  if (cliBlocked.length) {
-    return `${cliBlocked.join(', ')} is enabled but set to subscription/CLI (account) mode, which this deployment cannot run — switch it to API key mode and add a key in Settings → AI Providers.`;
+  if (db.settings?.providerSettings?.[CODEX]?.enabled === false) {
+    return 'The Codex runtime is switched off — enable it in Settings → AI Runtime.';
   }
-  if (enabled.length) {
-    return `${enabled.join(', ')} is enabled but has no API key — add one in Settings → AI Providers.`;
-  }
-  return 'Connect an AI provider so the agent can think — Settings → AI Providers.';
+  return 'Your account is not granted access to the Codex runtime. Ask an admin to grant it in Access Groups.';
 }
 
-export function resolveProviderForAgent(agent: string, userId?: string): ProviderName {
-  const map = db.settings?.agentProviderMap;
-  const rawPreferred = map && (map as any)[agent] ? (map as any)[agent] : db.settings?.defaultProvider;
-  const preferred = isProviderName(rawPreferred) ? rawPreferred : undefined;
-  if (preferred && getProviderCredentials(preferred) && providerAllowedForUser(userId, preferred)) return preferred;
-  const configured = listConfiguredProviders(userId);
-  if (configured.length > 0) return configured[0];
-  return preferred || 'gemini';
+/** Single runtime — kept as a function so callers and traces keep a stable seam. */
+export function resolveProviderForAgent(_agent: string, _userId?: string): ProviderName {
+  return CODEX;
 }
 
-export function resolveModelForAgent(agent: string, provider: ProviderName): string {
-  const validModels = listAvailableModels(provider, { includeLocalOnly: isLocalCliProviderAllowed() });
-  // 1) per-agent override (Settings → AI Providers → per-agent model)
+/** Settings offers every model the live runtime lists, so both sources count as valid here. */
+function isSelectableModel(model: string, provider: ProviderName): boolean {
+  return !!model && (listAvailableModels(provider).includes(model) || isKnownCodexModel(model));
+}
+
+export function resolveModelForAgent(agent: string, provider: ProviderName = CODEX): string {
+  // 1) per-agent override (Settings → AI Runtime → per-agent model)
   const map = db.settings?.agentModelMap;
   const agentModel = map && (map as any)[agent] ? String((map as any)[agent]) : '';
-  if (agentModel && validModels.includes(agentModel)) return agentModel;
-  // 2) provider-level model chosen in the Settings panel (providerSettings[provider].model).
-  //    Without this, getOrchestrator overwrites the UI-selected model with the hard default,
-  //    so toggling the model in Settings never reached the agents.
+  if (isSelectableModel(agentModel, provider)) return agentModel;
+  // 2) runtime-level model chosen in Settings. Without this, getOrchestrator overwrites the
+  //    UI-selected model with the hard default, so the Settings choice never reached agents.
   const providerModel = db.settings?.providerSettings?.[provider]?.model;
-  if (providerModel && validModels.includes(providerModel)) return providerModel;
-  // 3) hard default for the provider
+  if (isSelectableModel(providerModel, provider)) return providerModel;
   return DEFAULT_MODELS[provider].default;
 }
 
@@ -407,15 +344,18 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Run a grounded agentic tool loop: the model repeatedly calls tools, observes the
-   * results, and continues until it answers, an accept-check passes, or a budget is hit.
-   * Uses the provider's NATIVE function-calling (chatWithTools). This is the core of the
-   * re-architected agents — no more one-shot prompt→JSON.
+   * Run a grounded agentic tool loop on ONE Codex thread.
+   *
+   * The application's tools are exposed through a scoped, loopback-only MCP bridge, so Codex
+   * calls them natively — no prose-emulated tool protocol, and no re-sending the whole transcript
+   * every round-trip. Codex iterates internally; this method owns what stays application business:
+   * guardrails, usage/tracing, artifact memory, the honesty gate on an empty answer, and Reflexion
+   * retries driven by `accept`. Each retry is a follow-up turn on the SAME thread, so the agent
+   * keeps everything it already learned.
    */
   async runToolLoop(opts: RunToolLoopOptions): Promise<AgentRunResult> {
-    if (!this.provider.chatWithTools) {
-      throw new Error(`Provider "${this.provider.name}" does not support tool calling (no chatWithTools). Pick an API-key provider in Settings.`);
-    }
+    const runtime = (this.provider as CodexProvider).codex;
+    if (!runtime) throw new Error('The active runtime does not support tool loops.');
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.guardrailInput || opts.task,
@@ -431,189 +371,184 @@ export class AgentOrchestrator {
       throw err;
     }
     const system = opts.system || (await this.assembleSystem(pipeline));
-    const toolSpecs = opts.tools.map((t) => t.spec);
-    const toolByName = new Map(opts.tools.map((t) => [t.spec.name, t]));
     const ctx = opts.toolContext || {};
-    const maxSteps = opts.maxSteps ?? 12;
     const maxAcceptRetries = opts.maxAcceptRetries ?? 2;
 
-    const messages: ChatMessage[] = [...(opts.seedMessages || []), { role: 'user', content: opts.task }];
     const steps: AgentStep[] = [];
     const toolResults: AgentRunResult['toolResults'] = [];
     const totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
-    let acceptRetries = 0;
-    let finalText = '';
-    let stoppedReason: AgentRunResult['stoppedReason'] = 'max_steps';
+    let stepIndex = 0;
 
-    for (let i = 0; i < maxSteps; i += 1) {
-      if (opts.signal?.aborted) { stoppedReason = 'aborted'; break; }
-      if (opts.maxTotalTokens && totalUsage.totalTokens >= opts.maxTotalTokens) { stoppedReason = 'budget'; break; }
-
-      const res = await callWithRetry(() => this.provider.chatWithTools!({
-        system,
-        messages,
-        tools: toolSpecs,
-        temperature: opts.temperature,
-        maxTokens: opts.maxTokensPerCall,
-        effort: this.effort,
-        signal: opts.signal,
-      }), opts.signal);
-      if (res.usage) {
-        totalUsage.inputTokens += res.usage.inputTokens ?? 0;
-        totalUsage.outputTokens += res.usage.outputTokens ?? 0;
-        totalUsage.totalTokens += res.usage.totalTokens ?? 0;
-        totalUsage.costUsd += res.usage.costUsd ?? 0;
-      }
-      await recordUsage({
-        workspaceId: this.workspaceId,
-        userId: this.userId,
-        agent: this.agent,
-        provider: this.provider.name,
-        model: res.model,
-        inputTokens: res.usage?.inputTokens ?? 0,
-        outputTokens: res.usage?.outputTokens ?? 0,
-        cacheReadTokens: res.usage?.cacheReadTokens ?? 0,
-        cacheWriteTokens: res.usage?.cacheWriteTokens ?? 0,
-        costUsd: res.usage?.costUsd ?? 0,
-        requestId: opts.contextManifestId || pipeline.requestId,
-      });
-
-      const step: AgentStep = { index: i, text: res.text, toolCalls: [], usage: res.usage };
-
-      if (res.toolCalls.length) {
-        // Record the assistant's tool-call turn so the provider sees the full exchange.
-        messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls, providerItems: res.providerItems });
-        for (const call of res.toolCalls) {
-          const inv: ToolInvocation = { id: call.id, name: call.name, arguments: call.arguments };
-          const tool = toolByName.get(call.name);
-          const t0 = Date.now();
-          if (!tool) {
-            inv.error = `Unknown tool "${call.name}".`;
-          } else {
-            try {
-              const result = await tool.execute(call.arguments, ctx);
-              inv.result = result;
-              toolResults.push({ name: call.name, arguments: call.arguments, result });
-              if (ctx.conversationId) {
-                await rememberToolResult({
-                  conversationId: String(ctx.conversationId),
-                  runId: ctx.runId ? String(ctx.runId) : undefined,
-                  toolName: call.name,
-                  arguments: call.arguments,
-                  result,
-                }).catch((error) => console.warn('[memory] artifact persistence failed:', error?.message || error));
-              }
-            } catch (err: any) {
-              inv.error = err?.message || String(err);
-            }
-          }
-          inv.ms = Date.now() - t0;
-          step.toolCalls.push(inv);
-          // Feed the result (or error) back to the model as a tool message.
-          messages.push({
-            role: 'tool',
-            toolCallId: call.id,
-            toolName: call.name,
-            content: inv.error
-              ? `ERROR: ${inv.error}`
-              : safeJson(inv.result),
-          });
-          
-          // --- Trace Execution (Tool Call) ---
-          const assumptionText = (res.text || '').trim();
-          logExecutionTrace({
-            stepNumber: i + 1,
-            agentName: this.agent,
-            toolInvoked: call.name,
-            toolInputs: call.arguments,
-            toolOutputs: inv.result || inv.error,
-            contextReceived: opts.task,
-            contextPassed: inv.result || inv.error,
-            tokenUsage: res.usage ? { promptTokens: res.usage.inputTokens ?? 0, completionTokens: res.usage.outputTokens ?? 0 } : null,
-            informationTruncated: res.stopReason === 'length',
-            evidenceDiscarded: false, // We log it all
-            assumptionsMade: assumptionText ? "Implied by reasoning" : "Not explicitly provided by model",
-            whyNextToolSelected: assumptionText || "Not explicitly provided by model",
-            finalPromptSent: serializePrompt(system, messages),
-            runId: pipeline.requestId
-          }).catch(console.error);
-          // -----------------------------------
-        }
+    // Tool calls settle inside the bridge; this is where each becomes a visible step, a trace
+    // row, and — when the call belongs to a conversation — a remembered artifact.
+    const bridge = await openBridgeSession({
+      tools: opts.tools,
+      ctx,
+      maxToolCalls: opts.maxSteps ?? 12,
+      onInvocation: (invocation) => {
+        const inv: ToolInvocation = {
+          id: invocation.id, name: invocation.name, arguments: invocation.arguments,
+          result: invocation.result, error: invocation.error, ms: invocation.ms,
+        };
+        const step: AgentStep = { index: stepIndex++, toolCalls: [inv] };
         steps.push(step);
         opts.onStep?.(step);
-        continue;
-      }
-
-      // No tool calls → the model produced what it considers a final answer.
-      finalText = res.text || '';
-      messages.push({ role: 'assistant', content: finalText });
-      steps.push(step);
-      opts.onStep?.(step);
-
-      // --- Trace Execution (Final Answer) ---
-      logExecutionTrace({
-        stepNumber: i + 1,
-        agentName: this.agent,
-        toolInvoked: null,
-        toolInputs: null,
-        toolOutputs: finalText,
-        contextReceived: opts.task,
-        contextPassed: finalText,
-        tokenUsage: res.usage ? { promptTokens: res.usage.inputTokens ?? 0, completionTokens: res.usage.outputTokens ?? 0 } : null,
-        informationTruncated: res.stopReason === 'length',
-        evidenceDiscarded: false,
-        assumptionsMade: "Not explicitly provided by model",
-        whyNextToolSelected: "Goal is complete",
-        finalPromptSent: serializePrompt(system, messages),
-        runId: pipeline.requestId
-      }).catch(console.error);
-      // --------------------------------------
-
-      // HONESTY GATE: an empty/whitespace final answer is NOT a success, and neither is a
-      // response the provider flagged as truncated (stopReason === 'length'). Reporting
-      // `accepted: true` with no real content is exactly the fake-green failure we are
-      // eliminating. Detect these here so they either trigger a Reflexion retry (when an
-      // accept() critic exists) or surface an honest not-accepted verdict.
-      const isEmptyFinal = finalText.trim().length === 0;
-      const isTruncated = res.stopReason === 'length';
-      if (isEmptyFinal || isTruncated) {
-        const why = isEmptyFinal
-          ? 'the model returned an empty final answer'
-          : 'the model output was truncated (hit the token limit) before completing';
-        if (acceptRetries < maxAcceptRetries) {
-          acceptRetries += 1;
-          // Give the agent a chance to actually produce a complete answer.
-          messages.push({
-            role: 'user',
-            content: `Your result was not accepted because ${why}. Produce a complete, non-empty final answer.`,
-          });
-          continue;
+        if (!invocation.error) toolResults.push({ name: invocation.name, arguments: invocation.arguments, result: invocation.result });
+        if (!invocation.error && ctx.conversationId) {
+          rememberToolResult({
+            conversationId: String(ctx.conversationId),
+            runId: ctx.runId ? String(ctx.runId) : undefined,
+            toolName: invocation.name,
+            arguments: invocation.arguments,
+            result: invocation.result,
+          }).catch((error) => console.warn('[memory] artifact persistence failed:', error?.message || error));
         }
-        // Out of retries: fail loudly rather than masquerading as a clean final answer.
-        stoppedReason = isEmptyFinal ? 'empty_response' : 'truncated';
-        return { finalText, steps, accepted: false, stoppedReason, toolResults, totalUsage };
-      }
+        logExecutionTrace({
+          stepNumber: step.index + 1,
+          agentName: this.agent,
+          toolInvoked: invocation.name,
+          toolInputs: invocation.arguments,
+          toolOutputs: invocation.result ?? invocation.error,
+          contextReceived: opts.task,
+          contextPassed: invocation.result ?? invocation.error,
+          tokenUsage: null,
+          informationTruncated: false,
+          evidenceDiscarded: false,
+          assumptionsMade: 'Not explicitly provided by model',
+          whyNextToolSelected: 'Chosen by the agent during its own tool loop',
+          finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.task }]),
+          runId: opts.contextManifestId || pipeline.requestId,
+        }).catch(console.error);
+      },
+    });
 
-      if (opts.accept) {
-        const verdict = await opts.accept({ finalText, steps, ctx });
-        if (!verdict.ok && acceptRetries < maxAcceptRetries) {
-          acceptRetries += 1;
-          // Grounded Reflexion: append the critique and let the agent try again.
-          messages.push({
-            role: 'user',
-            content: `Your result was not accepted. ${verdict.feedback || 'It did not meet the acceptance criteria.'} Diagnose why and try again — do not repeat the same approach.`,
-          });
-          continue;
+    // Resume this conversation's Codex thread when we have one: the runtime already holds the
+    // exchange, so replaying the transcript would only duplicate it. A first turn (or a mapping
+    // the runtime has since forgotten) falls back to seeding history into the prompt.
+    const conversationId = ctx.conversationId ? String(ctx.conversationId) : '';
+    const mapping = conversationId ? await CodexThreads.get(conversationId, this.agent).catch(() => null) : null;
+    let threadId: string | undefined = mapping?.threadId;
+    const history = threadId ? '' : (opts.seedMessages || [])
+      .filter((m) => (m.content || '').trim())
+      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+      .join('\n\n');
+
+    let finalText = '';
+    let acceptRetries = 0;
+    /** Record the thread once per loop so a restart resumes instead of forgetting. */
+    const rememberThread = async () => {
+      if (!conversationId || !threadId) return;
+      await CodexThreads.record({
+        conversationId,
+        agent: this.agent,
+        threadId,
+        model: (this.provider as any).defaultModel,
+        ownerId: this.userId,
+        projectId: ctx.projectId ? String(ctx.projectId) : undefined,
+        appId: ctx.appId ? String(ctx.appId) : undefined,
+      }).catch((error) => console.warn('[codex] thread mapping failed:', error?.message || error));
+    };
+
+    try {
+      let prompt = history ? `CONVERSATION SO FAR:\n${history}\n\nTASK:\n${opts.task}` : opts.task;
+      for (;;) {
+        if (opts.signal?.aborted) return { finalText, steps, accepted: false, stoppedReason: 'aborted', toolResults, totalUsage };
+        if (opts.maxTotalTokens && totalUsage.totalTokens >= opts.maxTotalTokens) {
+          return { finalText, steps, accepted: false, stoppedReason: 'budget', toolResults, totalUsage };
         }
-        stoppedReason = verdict.ok ? 'accepted' : 'max_steps';
-        return { finalText, steps, accepted: verdict.ok, stoppedReason, toolResults, totalUsage };
-      }
 
-      stoppedReason = 'final_text';
-      return { finalText, steps, accepted: true, stoppedReason, toolResults, totalUsage };
+        const runTurn = (resumeFrom?: string) => callWithRetry(() => runtime.run({
+          system,
+          prompt,
+          model: (this.provider as any).defaultModel,
+          effort: this.effort,
+          signal: opts.signal,
+          threadId: resumeFrom,
+          mcpServers: bridge.mcpServers,
+          env: bridge.env,
+            }), opts.signal);
+
+        let turn: Awaited<ReturnType<typeof runTurn>>;
+        try {
+          turn = await runTurn(threadId);
+        } catch (err: any) {
+          // A mapping the runtime no longer knows must not strand the conversation: drop it and
+          // start a fresh thread instead of failing the turn.
+          if (!threadId || opts.signal?.aborted) throw err;
+          console.warn(`[codex] resuming thread ${threadId} failed (${err?.message || err}); starting a new thread`);
+          if (conversationId) await CodexThreads.forget(conversationId, this.agent).catch(() => undefined);
+          threadId = undefined;
+          turn = await runTurn(undefined);
+        }
+        threadId = turn.threadId || threadId;
+        await rememberThread();
+        finalText = turn.text || '';
+
+        totalUsage.inputTokens += turn.usage.inputTokens ?? 0;
+        totalUsage.outputTokens += turn.usage.outputTokens ?? 0;
+        totalUsage.totalTokens += turn.usage.totalTokens ?? 0;
+        totalUsage.costUsd += turn.usage.costUsd ?? 0;
+        await recordUsage({
+          workspaceId: this.workspaceId,
+          userId: this.userId,
+          agent: this.agent,
+          provider: this.provider.name,
+          model: turn.model,
+          inputTokens: turn.usage.inputTokens ?? 0,
+          outputTokens: turn.usage.outputTokens ?? 0,
+          cacheReadTokens: turn.usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: turn.usage.cacheWriteTokens ?? 0,
+          costUsd: turn.usage.costUsd ?? 0,
+          requestId: opts.contextManifestId || pipeline.requestId,
+        });
+
+        const answerStep: AgentStep = { index: stepIndex++, text: finalText, toolCalls: [], usage: turn.usage };
+        steps.push(answerStep);
+        opts.onStep?.(answerStep);
+        logExecutionTrace({
+          stepNumber: answerStep.index + 1,
+          agentName: this.agent,
+          toolInvoked: null,
+          toolInputs: null,
+          toolOutputs: finalText,
+          contextReceived: opts.task,
+          contextPassed: finalText,
+          tokenUsage: { promptTokens: turn.usage.inputTokens ?? 0, completionTokens: turn.usage.outputTokens ?? 0 },
+          informationTruncated: false,
+          evidenceDiscarded: false,
+          assumptionsMade: 'Not explicitly provided by model',
+          whyNextToolSelected: 'Goal is complete',
+          finalPromptSent: serializePrompt(system, [{ role: 'user', content: prompt }]),
+          runId: opts.contextManifestId || pipeline.requestId,
+        }).catch(console.error);
+
+        // HONESTY GATE: an empty answer is NOT a success. Reporting accepted:true with no real
+        // content is exactly the fake-green failure this pipeline exists to eliminate.
+        if (!finalText.trim()) {
+          if (acceptRetries < maxAcceptRetries) {
+            acceptRetries += 1;
+            prompt = 'Your result was not accepted because you returned an empty final answer. Produce a complete, non-empty final answer.';
+            continue;
+          }
+          return { finalText, steps, accepted: false, stoppedReason: 'empty_response', toolResults, totalUsage };
+        }
+
+        if (opts.accept) {
+          const verdict = await opts.accept({ finalText, steps, ctx });
+          if (!verdict.ok && acceptRetries < maxAcceptRetries) {
+            acceptRetries += 1;
+            // Grounded Reflexion: append the critique and let the agent try again on the same thread.
+            prompt = `Your result was not accepted. ${verdict.feedback || 'It did not meet the acceptance criteria.'} Diagnose why and try again — do not repeat the same approach.`;
+            continue;
+          }
+          return { finalText, steps, accepted: verdict.ok, stoppedReason: verdict.ok ? 'accepted' : 'max_steps', toolResults, totalUsage };
+        }
+
+        return { finalText, steps, accepted: true, stoppedReason: 'final_text', toolResults, totalUsage };
+      }
+    } finally {
+      bridge.close();
     }
-
-    return { finalText, steps, accepted: false, stoppedReason, toolResults, totalUsage };
   }
 }
 
@@ -640,49 +575,20 @@ async function callWithRetry<T>(fn: () => Promise<T>, signal?: AbortSignal, atte
   throw lastErr;
 }
 
-function safeJson(value: unknown): string {
-  try {
-    const s = typeof value === 'string' ? value : JSON.stringify(value);
-    return (s ?? '').slice(0, 8000);
-  } catch {
-    return String(value).slice(0, 8000);
-  }
-}
-
-/**
- * Like getOrchestrator, but guarantees a provider that supports NATIVE tool-calling
- * (chatWithTools). The agent loop needs this. We honour the Settings-selected provider
- * when it can do tools; if it is in account/CLI mode (no function-calling), we fall back
- * to the first configured API-key provider that can, so the loop still runs.
- */
+/** The Codex runtime always supports tool calling, so this is `getOrchestrator` with a guard. */
 export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
-  const canonical = canonicalAgent(agent);
-  const preferred = resolveProviderForAgent(canonical, opts.userId);
-  const order: ProviderName[] = [preferred, ...listConfiguredProviders(opts.userId).filter((p) => p !== preferred)];
-  for (const provider of order) {
-    const creds = getProviderCredentials(provider);
-    if (!creds) continue;
-    let base: AIProvider;
-    try { base = buildProvider(provider); } catch { continue; }
-    // Any provider that exposes chatWithTools works: API-key providers do it natively;
-    // the account/CLI provider (codex/claude subscription) emulates it via prompting.
-    if (!base.chatWithTools) continue;
-    const model = resolveModelForAgent(canonical, provider);
-    if (model && (base as any).defaultModel !== model) (base as any).defaultModel = model;
-    return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
+  if (!listConfiguredProviders(opts.userId).length) {
+    throw new Error(providerBlockerReason() || NO_PROVIDER_MESSAGE);
   }
-  throw new Error(`No tool-capable AI provider is available. ${providerBlockerReason() || 'The enabled provider cannot run tool calls — pick an API-key provider in Settings → AI Providers.'}`);
+  return getOrchestrator(agent, opts);
 }
 
 export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
-  // Resolve legacy agent names onto the 7 canonical roles so prompt overrides,
-  // provider/model routing, and usage logging all use one consolidated identity.
+  // Resolve legacy agent names onto the canonical roles so prompt overrides,
+  // model routing, and usage logging all use one consolidated identity.
   const canonical = canonicalAgent(agent);
   const provider = resolveProviderForAgent(canonical, opts.userId);
   const model = resolveModelForAgent(canonical, provider);
-  const base = buildProvider(provider);
-  if (model && (base as any).defaultModel !== model) {
-    (base as any).defaultModel = model;
-  }
+  const base = buildProvider(provider, model);
   return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
 }

@@ -1,16 +1,4 @@
-/**
- * Semantic memory store (Phase 4) — the typed WRITE + relevance-RECALL substrate.
- *
- * Three memory kinds: episodic (a selector was flaky, a case passed/failed on run N), semantic (a learned
- * fact about a target app), procedural (a proven approach for a feature). Every record is keyed by
- * (scopeKey, kind, subject) — the SAME key on write and read — which is precisely the fix for the
- * historically inverted recall loop (write-key ≠ read-key made recall dead). Recall is relevance-ranked
- * (recency + weight + lexical subject/text match), never a recency dump.
- *
- * Persistence-agnostic (Postgres `agent_memory` when configured, in-memory otherwise). This is the STORE;
- * the decision-gating read path that changes a branch lives in gate.ts. Additive + gated by
- * AGENT_NATIVE_V1 — nothing on the live path writes/reads here until an agent is migrated onto it.
- */
+/** Semantic memory store: episodic, semantic, and procedural records keyed by (scope, kind, subject). */
 import { isPostgresEnabled, query, uid } from '../../db/pool';
 
 export type MemoryKind = 'episodic' | 'semantic' | 'procedural';

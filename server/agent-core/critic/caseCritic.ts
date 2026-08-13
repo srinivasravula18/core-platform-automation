@@ -1,19 +1,4 @@
-/**
- * Case Critic (Phase 4) — verification as a PEER, not a postscript.
- *
- * The CriticAgent adversarially reviews the author's drafted cases BEFORE they are committed to compile,
- * publishing a CRITIQUE per refuted case on the bus and a `critique.cases` blackboard fact. This is the
- * first real decision-bearing A2A negotiation: the author drafts, the critic refutes with a concrete reason,
- * and the author revises addressing the critique. It is the anti-hallucination lever — the same reason a
- * strong agent runs a verifier/self-critique loop before acting.
- *
- * The checks are DETERMINISTIC and HIGH-PRECISION on purpose: a false refutation would harm a real run, so
- * the critic only refutes what it can prove — exact duplicate titles, empty preconditions, step-less cases,
- * @blocked leakage, and cases wholly disconnected from the verified evidence catalog (a strong hallucination
- * signal). It never invents; it grounds every objection in the draft + the catalog. Flag-gated by
- * AGENT_NATIVE_V1 via its callers — this module is pure and always safe to import.
- */
-import { isAgentNativeEnabled } from '../agentNativeFlag';
+/** Adversarial critic: refutes ungrounded, duplicate, or unsafe drafts before compile. Pure verdict computation plus CRITIQUE traffic. */
 import { getMessageBus } from '../bus/messageBus';
 import { getBlackboard } from '../bus/blackboard';
 import { readSharedCatalog } from '../grounding/groundingFacts';
@@ -198,7 +183,7 @@ function isUngrounded(c: CritiqueCase, vocab: Set<string>): boolean {
 }
 
 /**
- * Adversarially review the drafted cases. Pure computation of verdicts; when AGENT_NATIVE_V1 is on it also
+ * Adversarially review the drafted cases. Pure computation of verdicts; it also
  * publishes the CRITIQUE traffic + blackboard fact for the run (best-effort, never throws).
  */
 export async function critiqueCases(input: {
@@ -213,7 +198,7 @@ export async function critiqueCases(input: {
   behavior?: BehaviorObservation;
   causationId?: string | null;
 }): Promise<CritiqueResult> {
-  const labels = input.catalogLabels ?? (isAgentNativeEnabled() ? await readSharedCatalog(input.runId) : []);
+  const labels = input.catalogLabels ?? await readSharedCatalog(input.runId);
   const vocab = catalogVocabulary(labels);
   const seenTitles = new Map<string, number>();
   const verdicts: CaseVerdict[] = [];
@@ -256,20 +241,7 @@ export async function critiqueCases(input: {
     ? `Refuted ${refuted.length}/${verdicts.length} case(s): ${refuted.map((v) => v.title).slice(0, 6).join('; ')}.`
     : `Accepted all ${verdicts.length} case(s) — grounded, de-duplicated, executable.`;
 
-  // Publish the negotiation as real A2A traffic (flag-gated; best-effort).
-  if (isAgentNativeEnabled()) {
-    try {
-      const bus = getMessageBus();
-      for (const v of refuted) {
-        await bus.publish({ runId: input.runId, from: CRITIC, to: AUTHOR, type: 'CRITIQUE', payload: { summary: `Refuted "${v.title}".`, title: v.title, issues: v.issues, codes: v.codes }, causationId: input.causationId ?? null });
-      }
-      // A RESULT summarizing the verdict (even an all-accept is worth recording — the critic ran).
-      await bus.publish({ runId: input.runId, from: CRITIC, to: AUTHOR, type: 'RESULT', payload: { summary, accepted: verdicts.length - refuted.length, refuted: refuted.length }, causationId: input.causationId ?? null });
-      await getBlackboard().put(input.runId, 'critique.cases', { verdicts, refuted: refuted.length, accepted: verdicts.length - refuted.length }, CRITIC);
-    } catch (err) {
-      console.warn(`[critic] failed to publish critique for run ${input.runId} (non-fatal):`, (err as Error)?.message);
-    }
-  }
-
+  // Verdicts only. The coordinator owns the CRITIQUE/RESULT traffic so the exchange is causally linked
+  // and voiced by display names — publishing here too would duplicate it under raw agent keys.
   return { verdicts, hasIssues, feedback, summary };
 }

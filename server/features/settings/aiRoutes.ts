@@ -1,5 +1,5 @@
 /**
- * Routes for the AI provider / prompt / cost / guardrail configuration.
+ * Routes for the AI runtime / prompt / cost / guardrail configuration.
  *
  * The UI in Settings calls these endpoints. The agent routes call into
  * the same modules directly.
@@ -7,8 +7,11 @@
 
 import type { Express } from 'express';
 import { db, persistDataInBackground, persistSettingsInBackground } from '../../shared/storage';
-import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
+import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent, CODEX } from '../../ai/orchestrator';
 import { DEFAULT_MODELS, listAvailableModels, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
+import { CodexRuntime } from '../../ai/codex/runtime';
+import { startDeviceLogin, readLogin, cancelDeviceLogin, logoutRuntime, describeLogin } from '../../ai/codex/login';
+import { requireAdmin } from '../auth/routes';
 import {
   listPrompts,
   getActivePrompt,
@@ -33,51 +36,27 @@ function usageWorkspace(req: any): string {
 // Only the consolidated 7 roles are shown/managed in the UI. Legacy agent keys
 // still resolve (aliased) but are no longer surfaced for editing.
 const AGENT_NAMES: AgentName[] = CANONICAL_AGENTS;
-const PROVIDERS = ['gemini', 'openai', 'anthropic'] as ProviderName[];
+const PROVIDERS = [CODEX] as ProviderName[];
 
 function ensureProviderSettings() {
-  const existing = db.settings.providerSettings || {};
-  db.settings.providerSettings = {};
-  for (const name of PROVIDERS) {
-    const model = existing[name]?.model || '';
-    db.settings.providerSettings[name] = {
-      apiKey: existing[name]?.apiKey || '',
-      model: listAvailableModels(name, { includeLocalOnly: true }).includes(model) ? model : '',
-      authMode: existing[name]?.authMode || 'api_key',
-      enabled: existing[name]?.enabled === undefined ? name === db.settings.defaultProvider : !!existing[name]?.enabled,
-    };
-  }
-  if (!PROVIDERS.includes(db.settings.defaultProvider)) db.settings.defaultProvider = 'gemini';
-  db.settings.agentProviderMap = Object.fromEntries(
-    Object.entries(db.settings.agentProviderMap || {}).filter(([, provider]) => PROVIDERS.includes(provider as ProviderName)),
-  );
+  const stored = db.settings.providerSettings?.[CODEX] || {};
+  db.settings.providerSettings = {
+    [CODEX]: {
+      apiKey: stored.apiKey || '',
+      // Kept verbatim: the runtime serves more models than the static registry lists.
+      model: typeof stored.model === 'string' ? stored.model : '',
+      // No key means the machine's ChatGPT/Codex login, which is a fully valid configuration.
+      authMode: stored.apiKey || process.env.OPENAI_API_KEY ? (stored.authMode || 'api_key') : 'account',
+      enabled: stored.enabled === undefined ? true : !!stored.enabled,
+      effort: stored.effort || 'medium',
+    },
+  };
+  db.settings.defaultProvider = CODEX;
+  db.settings.agentProviderMap = {};
 }
 
-function hasEnvApiKey(provider: ProviderName): boolean {
-  if (provider === 'gemini') return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY);
-  if (provider === 'openai') return !!process.env.OPENAI_API_KEY;
-  if (provider === 'anthropic') return !!process.env.ANTHROPIC_API_KEY;
-  return false;
-}
-
-function supportsAccountCli(provider: ProviderName): boolean {
-  return provider === 'openai' || provider === 'anthropic';
-}
-
-function isLocalCliProviderAllowed(): boolean {
-  const env = String(process.env.NODE_ENV || '').toLowerCase();
-  const explicit = String(process.env.ALLOW_LOCAL_CLI_PROVIDERS || '').toLowerCase();
-  const deploymentMode = String(process.env.DEPLOYMENT_MODE || '').toLowerCase();
-  const lifecycle = String(process.env.npm_lifecycle_event || '').toLowerCase();
-  if (explicit === 'true') return true;
-  if (explicit === 'false') return false;
-  return (
-    !env ||
-    env === 'development' ||
-    env === 'dev' ||
-    deploymentMode === 'local' ||
-    lifecycle.startsWith('dev')
-  );
+function hasEnvApiKey(): boolean {
+  return !!process.env.OPENAI_API_KEY;
 }
 
 function redactKey(key: string): string {
@@ -86,70 +65,89 @@ function redactKey(key: string): string {
   return `${key.slice(0, 4)}****${key.slice(-4)}`;
 }
 
-function providerIsCallable(provider: ProviderName): boolean {
+/** Config-level callability. Whether Codex is actually AUTHENTICATED is the health check's job. */
+function providerIsCallable(provider: ProviderName = CODEX): boolean {
   const stored = db.settings?.providerSettings?.[provider];
-  if (!stored || stored.enabled === false) return false;
-  const authMode = (stored.authMode || 'api_key') as ProviderAuthMode;
-  if (authMode === 'account') return isLocalCliProviderAllowed() && supportsAccountCli(provider);
-  return !!stored.apiKey || hasEnvApiKey(provider);
-}
-
-function repairDefaultProviderIfNeeded(): void {
-  if (providerIsCallable(db.settings.defaultProvider)) return;
-  const fallback = PROVIDERS.find((provider) => providerIsCallable(provider));
-  if (fallback) db.settings.defaultProvider = fallback;
+  return !!stored && stored.enabled !== false;
 }
 
 export function registerSettingsRoutes(app: Express) {
   /* ---------- provider list ---------- */
 
-  app.get('/api/ai/providers', (_req, res) => {
+  app.get('/api/ai/providers', async (_req, res) => {
     ensureProviderSettings();
-    if (!isLocalCliProviderAllowed()) {
-      for (const provider of PROVIDERS) {
-        const stored = db.settings.providerSettings[provider];
-        if (stored?.authMode === 'account') stored.authMode = 'api_key';
-      }
-    }
-    repairDefaultProviderIfNeeded();
-    const out = PROVIDERS.map((p) => {
-      const stored = db.settings?.providerSettings?.[p];
-      const authMode = (stored?.authMode || 'api_key') as ProviderAuthMode;
-      const hasApiKey = !!stored?.apiKey || hasEnvApiKey(p);
-      const accountCallable = isLocalCliProviderAllowed() && supportsAccountCli(p);
-      return {
-        name: p,
-        defaultModel: DEFAULT_MODELS[p].default,
-        alternatives: listAvailableModels(p, { includeLocalOnly: isLocalCliProviderAllowed() }).filter((m) => m !== DEFAULT_MODELS[p].default),
+    const stored = db.settings.providerSettings[CODEX];
+    const authMode = (stored?.authMode || 'account') as ProviderAuthMode;
+    const hasApiKey = !!stored?.apiKey || hasEnvApiKey();
+    // Models the local Codex runtime actually serves; the static registry is the fallback.
+    const runtime = new CodexRuntime({ apiKey: hasApiKey && authMode === 'api_key' ? 'set' : undefined });
+    const [live, health] = await Promise.all([
+      runtime.listModels().catch(() => []),
+      runtime.health().catch(() => ({ ok: false, authMethod: null, error: 'The Codex runtime is unreachable.' })),
+    ]);
+    const models = live.length ? live.map((m) => m.id) : listAvailableModels(CODEX);
+    res.json({
+      providers: [{
+        name: CODEX,
+        defaultModel: DEFAULT_MODELS[CODEX].default,
+        alternatives: models.filter((m) => m !== DEFAULT_MODELS[CODEX].default),
         enabled: stored?.enabled !== false,
-        configured: authMode === 'api_key' ? hasApiKey : accountCallable,
+        configured: true,
         apiKeyConfigured: hasApiKey,
-        callable: (stored?.enabled !== false) && (authMode === 'api_key' ? hasApiKey : accountCallable),
-        model: stored?.model || DEFAULT_MODELS[p].default,
+        callable: providerIsCallable(),
+        model: stored?.model || DEFAULT_MODELS[CODEX].default,
         authMode,
         effort: stored?.effort || 'medium',
-        accountTool: authMode === 'account' && p === 'openai' ? 'codex' : authMode === 'account' && p === 'anthropic' ? 'claude' : '',
-        runtime: authMode === 'api_key' ? 'sdk' : 'cli',
-        accountCliAllowed: isLocalCliProviderAllowed(),
+        runtime: 'codex',
         apiKeyMasked: stored?.apiKey ? redactKey(stored.apiKey) : '',
-      };
-    });
-    res.json({
-      providers: out,
+        // LIVE auth, not stored config: whether Codex can actually run right now, and how it
+        // is signed in. Settings must not claim "Active" when the ChatGPT session has lapsed.
+        authenticated: health.ok,
+        authMethod: health.authMethod || null,
+        authError: health.ok ? '' : (health as any).error || '',
+      }],
       configured: listConfiguredProviders(),
-      defaultProvider: db.settings?.defaultProvider || 'gemini',
-      agentProviderMap: db.settings?.agentProviderMap || {},
+      defaultProvider: CODEX,
+      agentProviderMap: {},
       agentModelMap: db.settings?.agentModelMap || {},
     });
   });
 
+  /* ---------- ChatGPT device sign-in (deployment: no browser, no shell, no API key) ---------- */
+
+  app.post('/api/ai/runtime/login', requireAdmin, async (_req, res) => {
+    try {
+      res.json(describeLogin(await startDeviceLogin()));
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Could not start the Codex sign-in.' });
+    }
+  });
+
+  // Polled by Settings while the admin completes the code in their own browser.
+  app.get('/api/ai/runtime/login/:loginId', requireAdmin, (req, res) => {
+    const login = readLogin(String(req.params.loginId));
+    if (!login) return res.status(404).json({ error: 'That sign-in is no longer active.' });
+    res.json(describeLogin(login));
+  });
+
+  app.post('/api/ai/runtime/login/:loginId/cancel', requireAdmin, async (req, res) => {
+    res.json({ ok: await cancelDeviceLogin(String(req.params.loginId)) });
+  });
+
+  app.post('/api/ai/runtime/logout', requireAdmin, async (_req, res) => {
+    try {
+      await logoutRuntime();
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Could not sign out of Codex.' });
+    }
+  });
+
   app.post('/api/ai/providers/:name/test', async (req, res) => {
     const name = req.params.name as ProviderName;
-    if (!PROVIDERS.includes(name)) return res.status(404).json({ ok: false, provider: name, error: `Unknown provider: ${name}`, checkedAt: new Date().toISOString() });
+    if (!PROVIDERS.includes(name)) return res.status(404).json({ ok: false, provider: name, error: `Unknown runtime: ${name}`, checkedAt: new Date().toISOString() });
     try {
-      const provider = buildProvider(name);
-      const health = await provider.health();
-      res.json(health);
+      res.json(await buildProvider(name).health());
     } catch (err: any) {
       res.status(400).json({ ok: false, provider: name, error: err?.message || String(err), checkedAt: new Date().toISOString() });
     }
@@ -157,26 +155,26 @@ export function registerSettingsRoutes(app: Express) {
 
   app.put('/api/ai/providers/:name', (req, res) => {
     const name = req.params.name as ProviderName;
-    if (!PROVIDERS.includes(name)) return res.status(404).json({ error: `Unknown provider: ${name}` });
-    const { apiKey, model, authMode, enabled } = req.body || {};
+    if (!PROVIDERS.includes(name)) return res.status(404).json({ error: `Unknown runtime: ${name}` });
+    const { apiKey, model, authMode, enabled, effort } = req.body || {};
     ensureProviderSettings();
-    const slot = db.settings.providerSettings[name] || { apiKey: '', model: '', authMode: 'api_key' };
+    const slot = db.settings.providerSettings[name];
     if (apiKey !== undefined) slot.apiKey = apiKey;
     if (model !== undefined) slot.model = model;
+    if (effort !== undefined) {
+      if (!['low', 'medium', 'high'].includes(effort)) return res.status(400).json({ error: 'effort must be low, medium or high' });
+      slot.effort = effort;
+    }
     if (authMode !== undefined) {
       if (!['api_key', 'account'].includes(authMode)) return res.status(400).json({ error: 'authMode must be api_key or account' });
-      if (authMode === 'account' && !isLocalCliProviderAllowed()) {
-        return res.status(400).json({ error: 'Subscription/account auth is only available in local development.' });
+      if (authMode === 'api_key' && !slot.apiKey && !hasEnvApiKey()) {
+        return res.status(400).json({ error: 'Add an OpenAI API key before switching to API-key mode.' });
       }
       slot.authMode = authMode;
     }
     if (enabled !== undefined) slot.enabled = !!enabled;
-    db.settings.providerSettings[name] = slot;
-    if (providerIsCallable(name) && !providerIsCallable(db.settings.defaultProvider)) {
-      db.settings.defaultProvider = name;
-    }
-    persistSettingsInBackground(`provider settings: ${name}`);
-    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode || 'api_key', enabled: slot.enabled !== false });
+    persistSettingsInBackground(`runtime settings: ${name}`);
+    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode, enabled: slot.enabled !== false });
   });
 
   app.delete('/api/ai/providers/:name/key', (req, res) => {
@@ -188,35 +186,23 @@ export function registerSettingsRoutes(app: Express) {
     res.json({ ok: true });
   });
 
+  // Kept for API compatibility: the runtime is fixed, so only the model selection still applies.
   app.put('/api/ai/default-provider', (req, res) => {
-    const { provider, model } = req.body || {};
-    if (provider && PROVIDERS.includes(provider)) {
-      ensureProviderSettings();
-      db.settings.providerSettings[provider].enabled = true;
-      db.settings.defaultProvider = provider;
-    }
-    if (model) {
-      ensureProviderSettings();
-      const targetProvider = PROVIDERS.includes(provider) ? provider : db.settings.defaultProvider;
-      db.settings.providerSettings[targetProvider].model = model;
-    }
-    persistSettingsInBackground('default provider');
-    res.json({ ok: true, defaultProvider: db.settings.defaultProvider });
+    const { model } = req.body || {};
+    ensureProviderSettings();
+    if (model) db.settings.providerSettings[CODEX].model = model;
+    persistSettingsInBackground('default model');
+    res.json({ ok: true, defaultProvider: CODEX });
   });
 
   app.put('/api/ai/agent-provider', (req, res) => {
-    const { agent, provider, model } = req.body || {};
+    const { agent, model } = req.body || {};
     if (!agent) return res.status(400).json({ error: 'agent is required' });
-    if (provider) {
-      if (!PROVIDERS.includes(provider)) return res.status(400).json({ error: `Unknown provider: ${provider}` });
-      if (!db.settings.agentProviderMap) db.settings.agentProviderMap = {};
-      db.settings.agentProviderMap[agent] = provider;
-    }
     if (model) {
       if (!db.settings.agentModelMap) db.settings.agentModelMap = {};
       db.settings.agentModelMap[agent] = model;
     }
-    persistSettingsInBackground(`agent provider: ${agent}`);
+    persistSettingsInBackground(`agent model: ${agent}`);
     res.json({ ok: true, agent, provider: resolveProviderForAgent(agent), model: resolveModelForAgent(agent, resolveProviderForAgent(agent)) });
   });
 

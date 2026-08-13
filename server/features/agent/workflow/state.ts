@@ -13,6 +13,13 @@
  */
 import { z } from 'zod';
 import { Annotation } from '@langchain/langgraph';
+import {
+  ORCHESTRATION_CONTRACT_VERSION, mergeTask,
+  agentExecutionPlanSchema, artifactLineageSchema, factRefSchema, humanReviewObservationSchema,
+  registrySnapshotSchema, usageSchema,
+  type AgentExecutionPlan, type AgentTask, type AgentUsage, type ArtifactLineage, type FactRef,
+  type HumanReviewObservation, type RegistrySnapshot,
+} from '../../../agent-core/orchestration/contracts';
 import { WORKFLOW_ERROR_CLASSES, type WorkflowError, type WorkflowErrorClass } from './errors';
 import { COVERAGE_KINDS, type CoverageItem, type CoveragePlan } from '../compiler/coveragePlan';
 import type { RiskFactor, RiskScore } from '../graph/riskAnalysis';
@@ -221,6 +228,20 @@ export interface WorkflowOutput {
   reason?: string;
 }
 
+/** Checkpointed record of which agent was asked to do what. Keyed by ID so fan-out merges cleanly. */
+export interface WorkflowOrchestration {
+  contractVersion: number;
+  plan: AgentExecutionPlan | null;
+  registrySnapshot: RegistrySnapshot | null;
+  tasks: Record<string, AgentTask>;
+  /** Only coordinator-accepted facts — proposed/rejected ones never reach a downstream task. */
+  acceptedFactRefs: FactRef[];
+  artifactLineage: ArtifactLineage[];
+  humanLabels: HumanReviewObservation[];
+  /** One shared run budget; per-agent usage rolls up into it. */
+  budgetSpent: AgentUsage;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reducers (Section 6.2) — used ONLY for the three fields that need merge-not-replace semantics.
 // ---------------------------------------------------------------------------------------------
@@ -279,6 +300,73 @@ function appendUsage(existing: UsageRecord[], incoming: UsageRecord | UsageRecor
 function appendEvidenceRefs(existing: string[], incoming: string | string[]): string[] {
   const list = Array.isArray(incoming) ? incoming : [incoming];
   return list.length === 0 ? existing : existing.concat(list);
+}
+
+export const EMPTY_AGENT_USAGE: AgentUsage = {
+  inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, codexTurns: 0, toolCalls: 0,
+};
+
+export function emptyOrchestration(): WorkflowOrchestration {
+  return {
+    contractVersion: ORCHESTRATION_CONTRACT_VERSION,
+    plan: null,
+    registrySnapshot: null,
+    tasks: {},
+    acceptedFactRefs: [],
+    artifactLineage: [],
+    humanLabels: [],
+    budgetSpent: { ...EMPTY_AGENT_USAGE },
+  };
+}
+
+/** Later entry wins per key, preserving first-seen order — used for fact/lineage/label append sets. */
+function mergeById<T>(existing: T[], incoming: T[] | undefined, keyOf: (v: T) => string): T[] {
+  if (!incoming?.length) return existing;
+  const merged = existing.slice();
+  const index = new Map(merged.map((v, i) => [keyOf(v), i]));
+  for (const item of incoming) {
+    const at = index.get(keyOf(item));
+    if (at === undefined) { index.set(keyOf(item), merged.length); merged.push(item); }
+    else merged[at] = item;
+  }
+  return merged;
+}
+
+/** Per-task monotonic merge — LangGraph folds concurrent writes in arbitrary order, so rank decides. */
+function mergeTaskLedger(left: Record<string, AgentTask>, right: Record<string, AgentTask>): Record<string, AgentTask> {
+  const merged = { ...left };
+  for (const [taskId, task] of Object.entries(right)) {
+    const prev = merged[taskId];
+    merged[taskId] = prev ? mergeTask(prev, task) : task;
+  }
+  return merged;
+}
+
+function addUsage(a: AgentUsage, b: AgentUsage | undefined): AgentUsage {
+  if (!b) return a;
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    codexTurns: a.codexTurns + b.codexTurns,
+    toolCalls: a.toolCalls + b.toolCalls,
+  };
+}
+
+/** Merge-not-replace; usage ACCUMULATES because it is spend, keeping the shared budget truthful. */
+function mergeOrchestration(left: WorkflowOrchestration, right: Partial<WorkflowOrchestration> | undefined): WorkflowOrchestration {
+  if (!right) return left;
+  return {
+    contractVersion: right.contractVersion ?? left.contractVersion,
+    plan: right.plan !== undefined ? right.plan : left.plan,
+    registrySnapshot: right.registrySnapshot !== undefined ? right.registrySnapshot : left.registrySnapshot,
+    tasks: right.tasks ? mergeTaskLedger(left.tasks, right.tasks) : left.tasks,
+    acceptedFactRefs: mergeById(left.acceptedFactRefs, right.acceptedFactRefs, (f) => f.factId),
+    artifactLineage: mergeById(left.artifactLineage, right.artifactLineage, (a) => a.artifactId),
+    humanLabels: mergeById(left.humanLabels, right.humanLabels, (h) => `${h.correlationId}:${h.itemId}`),
+    budgetSpent: addUsage(left.budgetSpent, right.budgetSpent),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +432,12 @@ export const WorkflowStateAnnotation = Annotation.Root({
   // Diagnostics — bounded append/dedupe; never a silent drop of the newest error.
   errors: Annotation<WorkflowError[]>({ reducer: appendErrors, default: () => [] }),
   usage: Annotation<UsageRecord[]>({ reducer: appendUsage, default: () => [] }),
+
+  // Orchestration ledger — merge-not-replace so concurrent specialists cannot clobber each other.
+  orchestration: Annotation<WorkflowOrchestration, Partial<WorkflowOrchestration>>({
+    reducer: mergeOrchestration,
+    default: emptyOrchestration,
+  }),
 
   // Event ordering + terminal output.
   eventCursor: Annotation<number>,
@@ -507,6 +601,19 @@ const riskScoreSchema = z.object({
 }) satisfies z.ZodType<RiskScore>;
 const riskScoresSchema = z.array(riskScoreSchema);
 
+const agentTaskRecordSchema = z.record(z.string(), agentExecutionPlanSchema.shape.tasks.element);
+
+const workflowOrchestrationSchema = z.object({
+  contractVersion: z.number().int().positive(),
+  plan: agentExecutionPlanSchema.nullable(),
+  registrySnapshot: registrySnapshotSchema.nullable(),
+  tasks: agentTaskRecordSchema,
+  acceptedFactRefs: z.array(factRefSchema),
+  artifactLineage: z.array(artifactLineageSchema),
+  humanLabels: z.array(humanReviewObservationSchema),
+  budgetSpent: usageSchema,
+});
+
 export const workflowStateSchema = z.object({
   schemaVersion: z.number().int(),
   graphVersion: z.number().int(),
@@ -544,6 +651,8 @@ export const workflowStateSchema = z.object({
   usage: z.array(usageRecordSchema),
   eventCursor: z.number().int().nonnegative(),
   output: workflowOutputSchema.nullable(),
+  // Optional with a default: checkpoints written before Phase 1 rehydrate as an empty shadow ledger.
+  orchestration: workflowOrchestrationSchema.default(emptyOrchestration),
 });
 // Not `satisfies z.ZodType<WorkflowState>`: zod v4's inferred output for this many nested nullable/optional
 // layers structurally diverges from WorkflowState's required-key shape even though every value type matches
@@ -613,6 +722,7 @@ export function createInitialWorkflowState(input: CreateInitialWorkflowStateInpu
     usage: [],
     eventCursor: 0,
     output: null,
+    orchestration: emptyOrchestration(),
   };
 }
 

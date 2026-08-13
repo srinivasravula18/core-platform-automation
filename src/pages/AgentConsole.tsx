@@ -51,7 +51,7 @@ function looksLikeAgentError(text: string): boolean {
   const s = String(text || '').trim();
   if (!s) return false;
   return (
-    /^\[[a-z0-9_-]+\]\s/i.test(s) ||                 // provider-prefixed: "[openai] ...", "[anthropic] ..."
+    /^\[[a-z0-9_-]+\]\s/i.test(s) ||                 // runtime-prefixed: "[codex] auth: ..."
     /^(?:error|failed)\b[:\s]/i.test(s) ||           // "Error: ...", "Failed: ..."
     /^something went wrong\b/i.test(s) ||
     /^request failed\b/i.test(s) ||
@@ -120,7 +120,7 @@ function describeAgentStep(ev: { toolCalls?: Array<{ name: string; arguments?: a
 function isNoiseAnswer(content: string): boolean {
   const c = (content || '').trim();
   if (c.length < 12) return true;
-  if (/^\[(openai|anthropic|gemini|google|cli|deepseek|cerebras)\]/i.test(c)) return true;
+  if (/^\[(codex|openai)\]/i.test(c)) return true;
   if (/invalid_type|invalid_value|"code"\s*:\s*"invalid_/i.test(c)) return true;
   if (/^(hi|hello|hey)[.!,\s]/i.test(c)) return true;
   if (/^(i['’]?m ready to help|i can draft a test plan|hi\.? i can)/i.test(c)) return true;
@@ -232,52 +232,12 @@ function isProceedResponse(text: string): boolean {
   return /^(proceed|go ahead|go|yes|yep|yeah|ok|okay|sure|do it|start|run|looks good|lgtm|confirm|approved?)\b/i.test(t);
 }
 
-// Matches "requirement(s)" and common misspellings/truncations.
-const REQUIREMENT_WORD_RE = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|requiments?|requriments?|reqs?)\b/i;
-const REQUIREMENT_WORD_RE_GLOBAL = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|requiments?|requriments?|reqs?)\b/gi;
-
-function isRequirementWord(text: string): boolean {
-  return REQUIREMENT_WORD_RE.test(text);
-}
-
-function isExplicitRequirementOnlyRequest(text: string): boolean {
-  const value = (text || '').toLowerCase();
-  if (!isRequirementWord(value)) return false;
-  const createVerb = /\b(?:create|generate|write|draft|discover|add|make)\b[\s\S]{0,80}req/i.test(value);
-  // "req* for/to/of X" without asking for cases/scripts/runs is a requirement-only request.
-  const asksCasesOrScripts = /\b(?:cases?|scripts?|playwright|suite|run)\b/.test(value);
-  return createVerb && !asksCasesOrScripts;
-}
-
-function extractRequirementOnlyQuery(text: string): string {
-  return (text || '')
-    .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
-    .replace(/^(?:i\s+(?:want|need)\s+(?:you\s+)?to\s+)/i, '')
-    .replace(/\b(?:create|generate|write|draft|discover|add|make)\b/gi, ' ')
-    .replace(/\b(?:test\s+plan|plan|containing|with)\b/gi, ' ')
-    .replace(/\breq(?:u(?:i(?:r?e?m?e?n?t?s?|ments?|rements?|irements?|uirements?)?)?)?s?\b/gi, ' ')
-    .replace(/\bonly\b/gi, ' ')
-    .replace(/\b(?:from|using|based on)\s+(?:the\s+)?(?:code|codebase|source|product source)\b/gi, ' ')
-    .replace(/\b(?:for|on|about)\b/gi, ' ')
-    .replace(/\b(?:a|an|the)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function isRequirementDraftApprove(text: string): boolean {
   return /^(?:yes|ok|okay|approve|approved|save|create|confirm|looks good|proceed|go ahead)\b/i.test(text.trim());
 }
 
 function isRequirementDraftCancel(text: string): boolean {
   return /^(?:cancel|discard|stop|never mind|nevermind)\b/i.test(text.trim());
-}
-
-function isDirectScriptAuthoringRequest(text: string): boolean {
-  const value = String(text || '').toLowerCase();
-  const asksScript = /\b(?:author|record|generate|create|write)\b[\s\S]{0,40}\b(?:playwright\s+)?script\b/.test(value)
-    || /\bspecific\s+script\s+generation\b/.test(value);
-  const hasLiveSteps = /\b(?:open|login|log in|go to|click|fill|select|submit|create|save)\b/.test(value);
-  return asksScript && hasLiveSteps;
 }
 
 function authoredScriptFromTurn(turn: { text?: string; authoredScript?: string }): string {
@@ -287,13 +247,8 @@ function authoredScriptFromTurn(turn: { text?: string; authoredScript?: string }
   return /\btest\s*\(/.test(code) && /\bpage\./.test(code) ? code : '';
 }
 
-function initialThinkingLabel(text: string, opts: { selectedApps: number; requirementDraftPending: boolean }): string {
-  const value = (text || '').toLowerCase();
+function initialThinkingLabel(_text: string, opts: { selectedApps: number; requirementDraftPending: boolean }): string {
   if (opts.requirementDraftPending) return 'Updating requirement draft...';
-  if (isDirectScriptAuthoringRequest(text)) return 'Authoring script in a live browser...';
-  if (isExplicitRequirementOnlyRequest(text)) return 'Reading source for requirement draft...';
-  if (isRequirementWord(value)) return 'Preparing requirement review...';
-  if (/\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|plan|run)\b/.test(value)) return 'Preparing test workflow...';
   if (opts.selectedApps > 0) return `Inspecting ${opts.selectedApps} selected app${opts.selectedApps === 1 ? '' : 's'}...`;
   return 'Analyzing request...';
 }
@@ -319,7 +274,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[] }
-  | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string }>; runArgs: Record<string, any> }
+  | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string; baseUrl?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
 // Narrowed turn shape for the folder-ask review card component below.
@@ -422,6 +377,10 @@ function nextId(): string {
 }
 
 const CONV_KEY_BASE = 'tfa_active_conversation';
+// The runtime's model/effort are workspace-wide settings; these remember the user's own pick for them.
+const MODEL_PREF_KEY = 'tfa_runtime_model';
+const EFFORT_PREF_KEY = 'tfa_runtime_effort';
+const EFFORT_LEVELS = ['low', 'medium', 'high'];
 // Each unique project + app is its own chat workspace. We namespace the chat
 // workspace id and the "active conversation" pointer by the selected scope, so
 // switching project/app swaps the console to that context's own history.
@@ -449,21 +408,6 @@ interface ConversationMeta {
   turnCount: number;
   updatedAt: string;
 }
-
-function planIsChatOnly(plan: any): boolean {
-  const steps = plan?.steps || [];
-  if (!steps.length) return true;
-  return steps.every((s: any) => s.intent.kind === 'explain' || s.intent.kind === 'unknown');
-}
-
-// Lowest confidence across the plan's steps — used to decide if we should
-// confirm an ambiguous request with the user before acting.
-function planConfidence(plan: any): number {
-  const steps = plan?.steps || [];
-  if (!steps.length) return 100;
-  return Math.min(...steps.map((s: any) => Number(s.intent?.confidence) || 0));
-}
-const CLARIFY_THRESHOLD = 60;
 
 // Strip markdown / emoji from streamed chat text so it renders as clean plain text.
 function cleanChat(s: string): string {
@@ -732,28 +676,22 @@ export default function AgentConsole() {
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [providers, setProviders] = useState<any[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState('gemini');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedEffort, setSelectedEffort] = useState('medium');
   // Requirement mode: selected from the composer. When on, every message is routed
   // to the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
   const [scriptAuthorMode, setScriptAuthorMode] = useState(false);
-  const handleProviderChange = useCallback((provider: string) => {
-    setSelectedProvider(provider);
-    const p = providers.find((x: any) => x.name === provider);
-    if (p) {
-      setSelectedModel(p.model || p.defaultModel);
-      setSelectedEffort(p.effort || 'medium');
-    }
-  }, [providers]);
-
+  // The topbar pick is the user's, not the runtime's default — remember it so a refresh does not
+  // silently drop them back onto the configured model/effort mid-task.
   const handleModelChange = useCallback((model: string) => {
     setSelectedModel(model);
+    writeScopedStorage(MODEL_PREF_KEY, model || null);
   }, []);
 
   const handleEffortChange = useCallback((effort: string) => {
     setSelectedEffort(effort);
+    writeScopedStorage(EFFORT_PREF_KEY, effort || null);
   }, []);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -781,7 +719,6 @@ export default function AgentConsole() {
 
   // Snapshot the current execution context (AI + scope) for a response's metadata panel.
   const currentExecution = useCallback((): ExecutionMeta => ({
-    provider: selectedProvider,
     model: selectedModel || undefined,
     effort: selectedEffort,
     workspace: workspaceId,
@@ -789,7 +726,7 @@ export default function AgentConsole() {
     appId: selectedAppId || undefined,
     userName: getUsername() || undefined,
     conversationId,
-  }), [selectedProvider, selectedModel, selectedEffort, workspaceId, selectedProjectId, selectedAppId, conversationId]);
+  }), [selectedModel, selectedEffort, workspaceId, selectedProjectId, selectedAppId, conversationId]);
 
   // Stamp createdAt + execution metadata on each assistant response the moment it appears, so the
   // per-message footer can show the exact time (with seconds) and the execution details (Phase 3).
@@ -797,7 +734,7 @@ export default function AgentConsole() {
     if (!turns.some((t) => t.role === 'assistant' && (t.kind === 'text' || t.kind === 'deeprun') && !(t as any).createdAt)) return;
     setTurns((prev) => prev.map((t) =>
       t.role === 'assistant' && (t.kind === 'text' || t.kind === 'deeprun') && !(t as any).createdAt
-        ? { ...t, createdAt: new Date().toISOString(), execution: currentExecution() }
+        ? { ...t, createdAt: new Date().toISOString(), execution: { ...currentExecution(), ...((t as any).execution || {}) } }
         : t,
     ));
   }, [turns, currentExecution]);
@@ -1121,12 +1058,14 @@ export default function AgentConsole() {
       .then((data) => {
         const list = Array.isArray(data?.providers) ? data.providers : [];
         setProviders(list);
-        const callable = list.filter((p: any) => p.callable);
-        if (callable.length > 0) {
-          const def = callable.find((p: any) => p.name === (data.defaultProvider || 'gemini')) || callable[0];
-          setSelectedProvider(def.name);
-          setSelectedModel(def.model || def.defaultModel);
-          setSelectedEffort(def.effort || 'medium');
+        const runtime = list.find((p: any) => p.callable);
+        if (runtime) {
+          const offered = [runtime.defaultModel, ...(Array.isArray(runtime.alternatives) ? runtime.alternatives : [])].filter(Boolean).map(String);
+          const savedModel = readScopedStorage(MODEL_PREF_KEY) || '';
+          const savedEffort = readScopedStorage(EFFORT_PREF_KEY) || '';
+          // A remembered model the runtime no longer offers is dropped rather than sent and rejected.
+          setSelectedModel(offered.includes(savedModel) ? savedModel : (runtime.model || runtime.defaultModel));
+          setSelectedEffort(EFFORT_LEVELS.includes(savedEffort) ? savedEffort : (runtime.effort || 'medium'));
         }
       })
       .catch(() => {});
@@ -1608,7 +1547,6 @@ export default function AgentConsole() {
         priorGrounding: args.priorGrounding || args.approvedUnderstanding || '',
         testCaseCount: parseCaseCount(args.caseCountPrompt || args.prompt),
         flowMode: 'review_cases',
-        provider: selectedProvider,
         model: selectedModel,
         effort: selectedEffort,
         // Explicit target chosen in the app/navigation picker card — authoritative on the server,
@@ -1659,7 +1597,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation — the agent returned no run and no answer.',
       });
     }
-  }, [commitTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
+  }, [commitTurn, buildHistory, updateThinkingLabel, selectedModel, selectedEffort, conversationId]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
@@ -1773,6 +1711,10 @@ export default function AgentConsole() {
   //   with the explicit target (RUNTIME: applicationId/Name; ADMIN: moduleId/Name).
   const proceedAppAsk = useCallback(async (turn: AppAskTurn, choice: { appId: string; appName: string; tab?: string }) => {
     const base = turn.runArgs as any;
+    // A no-target ask offers real base URLs. Carry the picked one back as app_url, or the run start
+    // would re-ask forever — the choice alone never told the server WHICH url to run against.
+    const pickedUrl = turn.apps.find((a) => a.id === choice.appId)?.baseUrl || '';
+    if (pickedUrl) base.app_url = pickedUrl;
     const focus = turn.platform === 'ADMIN'
       ? ` — test the ${choice.appName} list view`
       : choice.appId === '__all_apps__'
@@ -1794,7 +1736,7 @@ export default function AgentConsole() {
           contextPrompt: base.contextPrompt
             ? `${base.contextPrompt}\n\nUser-selected target: ${choice.appName}${choice.tab ? ` › ${choice.tab} tab` : ''}`
             : undefined,
-          targetUrl: base.targetUrl || '',
+          targetUrl: base.targetUrl || pickedUrl || '',
           websiteId: base.websiteId,
           websiteName: base.websiteName,
         });
@@ -2003,18 +1945,6 @@ export default function AgentConsole() {
     for (const a of selectedAppsRef.current) add(a);
     return out;
   }, []);
-  const getRoutingApps = useCallback((text: string): Array<{ name: string; baseUrl: string }> => {
-    const selected = getSelectedApps();
-    if (selected.length) return selected;
-    const q = normalizeAppMention(text);
-    const named = [...websites, ...projectAppsRef.current]
-      .filter((w) => w.baseUrl)
-      .map((w) => ({ name: w.name, baseUrl: w.baseUrl, score: appMentionAliases(w).find((a) => hasAppMention(q, a))?.length || 0 }))
-      .filter((w) => w.score > 0)
-      .sort((a, b) => b.score - a.score);
-    return named.length && (named.length === 1 || named[0].score > named[1].score) ? [{ name: named[0].name, baseUrl: named[0].baseUrl }] : [];
-  }, [getSelectedApps, websites]);
-
   const authorScriptFromSteps = useCallback(async (thinkingId: string, text: string) => {
     const namedSite = findWebsiteInText(text, websites);
     const namedTarget = findTargetInText(text, [...websites, ...projectAppsRef.current]);
@@ -2127,6 +2057,8 @@ export default function AgentConsole() {
       userMessage: text,
       workspaceId: 'default',
       conversationId,
+      projectId: selectedProjectId || undefined,
+      appId: selectedAppId || undefined,
       history: buildHistory(),
       pageContext: { path: location.pathname },
       apps: getSelectedApps(),
@@ -2148,7 +2080,9 @@ export default function AgentConsole() {
       const decoder = new TextDecoder();
       let buf = '';
       let finalReply = '';
+      let finalUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } | null = null;
       let liveReply = '';
+      let finalActions: Array<{ tool?: string; arguments?: Record<string, any>; result?: any }> = [];
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -2175,6 +2109,8 @@ export default function AgentConsole() {
           else if (ev.type === 'final') {
             appendThinkingDebug(thinkingId, 'Supervisor final', ev);
             finalReply = ev.reply || '';
+            finalActions = Array.isArray(ev.actions) ? ev.actions : [];
+            finalUsage = ev.usage || null;
           }
           else if (ev.type === 'error') {
             appendThinkingDebug(thinkingId, 'Supervisor error', ev);
@@ -2182,7 +2118,73 @@ export default function AgentConsole() {
           }
         }
       }
-      replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
+      const requirement = [...finalActions].reverse().find((action) => action.tool === 'draft_requirement')?.result;
+      const generatedCases = [...finalActions].reverse().find((action) => action.tool === 'create_cases')?.result?.cases;
+      const liveTest = [...finalActions].reverse().find((action) => action.tool === 'prepare_test_scope');
+      if (liveTest) {
+        const scopePrompt = String(liveTest.result?.scope || liveTest.arguments?.scope || text);
+        const targetUrl = String(liveTest.result?.targetUrl || liveTest.arguments?.targetUrl || getSelectedApps()[0]?.baseUrl || convTargetRef.current?.targetUrl || '');
+        // Pick the target BEFORE any work: the repo dive, the scope, the cases and the run all hang off
+        // this URL, so choosing it late means everything upstream was grounded on a guess.
+        // A configured-but-dead target is as unusable as none: check before spending a scope build.
+        const reachable = targetUrl
+          ? await fetch(`/api/agent/target-check?url=${encodeURIComponent(targetUrl)}`).then((r) => r.json()).catch(() => ({ up: true, error: '' }))
+          : { up: false, error: '' };
+        if (!targetUrl || !reachable.up) {
+          const targets = await fetch('/api/agent/targets')
+            .then((r) => r.json())
+            .then((d) => (d.targets || []).filter((t: any) => String(t.url) !== targetUrl))
+            .catch(() => []);
+          if (targets.length) {
+            commitTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'appask',
+              text: targetUrl
+                ? `I could not reach ${targetUrl}${reachable.error ? ` (${reachable.error})` : ''}. Which target should I test instead? I will read its repository and work out what to cover from there.`
+                : 'Which target should I test? I will read its repository and work out what to cover from there.',
+              surface: 'Targets',
+              platform: 'RUNTIME',
+              allowAllApps: false,
+              apps: targets.map((t: any) => ({ id: String(t.id), name: `${t.name} — ${t.url}`, tabs: [], baseUrl: String(t.url) })),
+              runArgs: { phase: 'pre-understanding', prompt: scopePrompt, originalRequest: text },
+            });
+            return;
+          }
+          commitTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'I have no target configured to test against. Add an app or a website (with its base URL) in Settings → Credentials, then ask me again.' });
+          return;
+        }
+        // answer_delta temporarily rendered the Supervisor's handoff text as a completed response.
+        // Restore an active turn while the deeper understanding job runs so the console never looks stuck.
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Building reviewed test scope...' });
+        await presentDeepUnderstanding({
+          thinkingId,
+          prompt: scopePrompt,
+          originalRequest: text,
+          targetUrl,
+        });
+      } else if (requirement?.draft) {
+        const nextDraft = { turnId: thinkingId, query: text, result: requirement, revisionCount: 0 };
+        setPendingDeep(null);
+        setPendingRequirementDraft(nextDraft);
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdraft', result: requirement, query: text, revisionCount: 0 });
+      } else if (Array.isArray(generatedCases) && generatedCases.length) {
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'cases', cases: generatedCases });
+      } else {
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: cleanChat(finalReply || 'Done.'),
+          execution: finalUsage ? {
+            ...currentExecution(),
+            promptTokens: finalUsage.inputTokens,
+            completionTokens: finalUsage.outputTokens,
+            totalTokens: finalUsage.totalTokens,
+            costUsd: finalUsage.costUsd,
+          } : currentExecution(),
+        });
+      }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.' });
@@ -2196,7 +2198,7 @@ export default function AgentConsole() {
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
       });
     }
-  }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps]);
+  }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps, presentDeepUnderstanding, selectedProjectId, selectedAppId, currentExecution]);
 
   const send = useCallback(
     async (raw?: string, editTurnIdArg?: string | null) => {
@@ -2370,7 +2372,7 @@ export default function AgentConsole() {
           updateThinkingLabel(thinkingId, 'Starting reviewed test run...');
           await startDeepRun({
             thinkingId,
-            prompt: activePending.contextPrompt || activePending.prompt,
+            prompt: activePending.originalRequest || activePending.prompt,
             targetUrl: activePending.targetUrl,
             websiteId: activePending.websiteId,
             websiteName: activePending.websiteName,
@@ -2394,12 +2396,8 @@ export default function AgentConsole() {
         return;
       }
 
-      // 2) Requirement creation only:
-      //    - Composer requirement mode keeps forcing this route.
-      //    - Plain-text requests like "create requirements only for list view" also bypass
-      //      the goal router, so the console drafts a requirement without starting a deep run.
-      const requirementOnly = isExplicitRequirementOnlyRequest(text);
-      if (scriptAuthorMode || isDirectScriptAuthoringRequest(text)) {
+      // Explicit composer modes are user-selected controls, not inferred intent.
+      if (scriptAuthorMode) {
         try {
           updateThinkingLabel(thinkingId, 'Authoring script in a live browser...');
           await authorScriptFromSteps(thinkingId, text);
@@ -2418,10 +2416,10 @@ export default function AgentConsole() {
         return;
       }
 
-      if (reqMode || requirementOnly) {
+      if (reqMode) {
         try {
           updateThinkingLabel(thinkingId, 'Starting requirement drafting agent...');
-          await runRequirementDraft(thinkingId, requirementOnly ? extractRequirementOnlyQuery(text) : text);
+          await runRequirementDraft(thinkingId, text);
         } finally {
           clearActiveRequest();
           setBusy(false);
@@ -2430,338 +2428,10 @@ export default function AgentConsole() {
         return;
       }
 
-      // ── The single primary decision: the unified backend router ─────────────────────
-      // POST the message to /api/agent/goal and dispatch on the returned `kind`, reusing
-      // the existing execution + rendering helpers. This replaces the old pile of frontend
-      // regexes (DEEP_RE / GEN_VERB_RE / siteActionable / isQuestionForSupervisor / …).
-      const historyForRouting = buildHistory();
-      const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
+      // Every ordinary message uses the same Codex Supervisor tool loop.
       try {
-        updateThinkingLabel(thinkingId, 'Routing request to the right agent...');
-        const routingBody = {
-          message: text,
-          conversationId,
-          history: historyForRouting,
-          apps: getRoutingApps(text),
-          pageContext: { path: location.pathname },
-          projectId: selectedProjectId || undefined,
-          appId: selectedAppId || undefined,
-        };
-        appendThinkingDebug(thinkingId, 'Sending request to agent router', routingBody);
-        // Durable router job: start → poll SHORT requests → decision. A backgrounded tab or a proxy idle
-        // timeout can no longer kill routing (the job runs to completion server-side); the poll re-attaches.
-        const startRes = await fetch('/api/agent/goal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: activeAbortRef.current?.signal,
-          body: JSON.stringify(routingBody),
-        });
-        const started = await startRes.json().catch(() => ({} as any));
-        let goal: any = started;
-        let goalOk = startRes.ok;
-        if (startRes.ok && started?.job_id) {
-          const jobId = String(started.job_id);
-          const deadline = Date.now() + 180000; // router is quick; cap so a dead job can't poll forever
-          for (;;) {
-            if (activeAbortRef.current?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
-            await new Promise((r) => setTimeout(r, 900));
-            if (Date.now() > deadline) { goalOk = false; goal = { error: 'Routing timed out.' }; break; }
-            const pr = await fetch(`/api/agent/goal/${encodeURIComponent(jobId)}`, {
-              headers: { 'Cache-Control': 'no-store' },
-              signal: activeAbortRef.current?.signal,
-            });
-            if (pr.status === 404) { goalOk = false; goal = { error: 'Routing job expired.' }; break; }
-            const pj = await pr.json().catch(() => ({} as any));
-            if (pj?.status === 'done') { goal = pj.result ?? {}; goalOk = (pj.http ?? 200) < 400; break; }
-          }
-        }
-        appendThinkingDebug(thinkingId, 'Agent router result', { ...goal, message: text });
-        if (!goalOk) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: goal?.error || 'Sorry, I could not process that request. Please try rephrasing it.',
-          });
-          return;
-        }
-
-        const kind = goal?.kind;
-        updateThinkingLabel(thinkingId, kind === 'answer'
-          ? 'Preparing grounded answer...'
-          : kind === 'clarify'
-            ? 'Checking what needs clarification...'
-            : kind === 'code_analysis'
-              ? 'Preparing code analysis...'
-              : kind === 'requirement_draft'
-                ? 'Researching codebase for requirement draft...'
-                : kind === 'generate_cases' || kind === 'deep_test_run'
-                  ? 'Preparing reviewed test generation...'
-                  : kind === 'workspace_action'
-                    ? 'Preparing workspace action...'
-                    : 'Preparing response...');
-
-        // answer / clarify → a plain assistant-text turn. For 'answer' we keep the nicer
-        // streaming UX by re-using the Supervisor stream (which grounds in code + workspace);
-        // if that fails it falls back to the reply text the router already produced.
-        if (kind === 'answer') {
-          if (typeof goal.reply === 'string' && goal.reply.trim()) {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(goal.reply) });
-          } else {
-            updateThinkingLabel(thinkingId, 'Streaming grounded answer...');
-            await runViaSupervisor(text, thinkingId);
-          }
-          return;
-        }
-        if (kind === 'clarify') {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: cleanChat(goal.reply || 'Could you give me a bit more detail so I get this right?'),
-          });
-          return;
-        }
-
-        // code_analysis → the existing git-agent analysis path (renders a CodeChangeReview).
-        if (kind === 'code_analysis') {
-          try {
-            updateThinkingLabel(thinkingId, 'Reading repository changes...');
-            const ares = await fetch('/api/git-agent/analyze', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: activeAbortRef.current?.signal,
-              body: JSON.stringify({ baseRef: 'auto', workspaceId: 'default' }),
-            });
-            const data = await ares.json();
-            if (!ares.ok) {
-              replaceTurn(thinkingId, {
-                id: thinkingId,
-                role: 'assistant',
-                kind: 'text',
-                text: data?.error || 'I could not read the codebase. Make sure the Git Agent target repo is available.',
-              });
-            } else {
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'codereview', analysis: data });
-            }
-          } catch (err: any) {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: `Something went wrong analyzing the code changes: ${err?.message || 'unknown error'}.`,
-            });
-          }
-          return;
-        }
-
-        // requirement_draft → codebase-only, never touches the live app.
-        if (kind === 'requirement_draft') {
-          try {
-            updateThinkingLabel(thinkingId, 'Starting requirement drafting agent...');
-            await runRequirementDraft(thinkingId, goal?.scope || text);
-          } finally {
-            clearActiveRequest();
-            setBusy(false);
-            inputRef.current?.focus();
-          }
-          return;
-        }
-
-        // generate_cases / deep_test_run → the existing deep pipeline via startDeepRun, with
-        // the review-first understanding card. The router's `execute` flag distinguishes a
-        // review (generate_cases) from a full run (deep_test_run); the deep pipeline's
-        // flowMode='review_cases' already realizes review-first, so generate_cases shows the
-        // understanding card before any execution and deep_test_run proceeds with it.
-        if (kind === 'generate_cases' || kind === 'deep_test_run') {
-          // Resolve a concrete target. Prefer the router's resolved target, then the named
-          // website (so we can pass a websiteId), then the selected/scope app, then the
-          // target remembered earlier in THIS chat. Never fabricate a hardcoded URL.
-          const routedUrl = (goal?.target?.url || '').trim();
-          const routedName = (goal?.target?.name || '').trim();
-          const namedSite =
-            findWebsiteInText(routedName, websites) ||
-            findWebsiteInText(routedUrl, websites) ||
-            findWebsiteInText(text, websites);
-          const namedTarget =
-            findTargetInText(routedName, [...websites, ...projectAppsRef.current]) ||
-            findTargetInText(routedUrl, [...websites, ...projectAppsRef.current]) ||
-            findTargetInText(text, [...websites, ...projectAppsRef.current]);
-          const targetUrl =
-            routedUrl ||
-            firstUrlInText(text) ||
-            namedTarget?.baseUrl ||
-            namedSite?.baseUrl ||
-            scopeAppUrl ||
-            (getSelectedApps()[0]?.baseUrl || '') ||
-            convTargetRef.current?.targetUrl ||
-            '';
-          // Recover the websiteId by matching the RESOLVED url against configured websites (exact
-          // baseUrl, trailing-slash-insensitive). Credentials pin by websiteId — matching by host
-          // alone collides on localhost:5002 vs :5003 — so this is what lets creds resolve when the
-          // target came from the selected app rather than a name mention.
-          const normUrl = (u: string) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
-          const urlSite = targetUrl ? websites.find((w) => normUrl(w.baseUrl) === normUrl(targetUrl)) : undefined;
-          // Attention layer: a switched target URL must not inherit the PRIOR site's identity/creds.
-          const staleRef = Boolean(convTargetRef.current) && normUrl(convTargetRef.current!.targetUrl) !== normUrl(targetUrl);
-          const websiteId = namedSite?.id || urlSite?.id || (staleRef ? undefined : convTargetRef.current?.websiteId);
-          const websiteName = routedName || namedTarget?.name || namedSite?.name || urlSite?.name || (staleRef ? undefined : convTargetRef.current?.websiteName);
-          if (!targetUrl && !websiteId) {
-            // Don't loop the same vague prompt: list the apps we CAN target so the user picks a real
-            // one (by name, URL, or the top-bar switcher) instead of guessing again.
-            const available: Array<{ name: string; baseUrl: string }> = [];
-            const seenUrl = new Set<string>();
-            for (const a of [...projectAppsRef.current, ...websites]) {
-              const url = String(a.baseUrl || '').trim();
-              if (!url || seenUrl.has(url.toLowerCase())) continue;
-              seenUrl.add(url.toLowerCase());
-              available.push({ name: a.name, baseUrl: url });
-            }
-            const tried = routedName || text.trim();
-            const listText = available.length
-              ? `${available.slice(0, 8).map((a) => `• ${a.name} — ${a.baseUrl}`).join('\n')}\n\nReply with one of these names, paste a URL, or pick an app in the top-bar switcher.`
-              : 'No apps are configured yet. Add one in the project switcher (top bar) or paste the target URL here.';
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: `I couldn't match "${tried}" to a configured app.\n\n${available.length ? 'Apps I can target right now:\n' : ''}${listText}`,
-            });
-            setBusy(false);
-            inputRef.current?.focus();
-            return;
-          }
-          // The prompt carries the router's grounded scope when it has one, so the deep run
-          // reflects the actual conversation rather than just the raw message.
-          const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
-          const contextPrompt = buildDeepContextPrompt(text, prompt);
-          // TARGET PRE-FLIGHT: resolve the app/navigation FIRST. When the request doesn't name
-          // its target, show the platform's real options as a dropdown BEFORE any research runs —
-          // never burn minutes of understanding only to ask "which app?" afterwards.
-          updateThinkingLabel(thinkingId, 'Checking the target scope...');
-          try {
-            const pre = await fetch('/api/agent/target-options', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: activeAbortRef.current?.signal,
-              body: JSON.stringify({ prompt: text, app_url: targetUrl || websites.find((w) => w.id === websiteId)?.baseUrl || getSelectedApps()[0]?.baseUrl || '' }),
-            }).then((r) => r.json()).catch(() => ({}));
-            if (pre?.reason === 'no-target-configured') {
-              replaceTurn(thinkingId, {
-                id: thinkingId,
-                role: 'assistant',
-                kind: 'text',
-                text: 'No apps are configured for your account yet, so I have nothing to test against. Add a project and its app URL(s) in the project switcher (top bar), store the login credentials, and try again.',
-              });
-              setBusy(false);
-              inputRef.current?.focus();
-              return;
-            }
-            if (pre?.needsChoice && pre?.app_options?.apps?.length) {
-              replaceTurn(thinkingId, {
-                id: thinkingId,
-                role: 'assistant',
-                kind: 'appask',
-                text: 'Pick the target to test first.',
-                surface: String(pre.app_options.surface || ''),
-                platform: pre.app_options.platform === 'ADMIN' ? 'ADMIN' : 'RUNTIME',
-                allowAllApps: Boolean(pre.app_options.allowAllApps),
-                apps: pre.app_options.apps,
-                runArgs: { phase: 'pre-understanding', prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName },
-              });
-              setBusy(false);
-              inputRef.current?.focus();
-              return;
-            }
-          } catch { /* pre-flight is advisory — fall through to the normal flow */ }
-          updateThinkingLabel(thinkingId, 'Building reviewed test scope...');
-          await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName });
-          setBusy(false);
-          inputRef.current?.focus();
-          return;
-        }
-
-        // workspace_action → the existing plan-card flow (same plan shape as
-        // /api/controller/plan). Pure chat-only plans stream the answer; low-confidence
-        // plans confirm first; otherwise render the reviewable WorkflowRunner plan card.
-        const plan = goal?.plan;
-        if (kind === 'workspace_action' && plan) {
-          if (planIsChatOnly(plan)) {
-            const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
-            updateThinkingLabel(thinkingId, 'Streaming workspace answer...');
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
-            try {
-              const histForExplain = historyForRouting;
-              const ans = await fetch('/api/controller/explain/stream', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: activeAbortRef.current?.signal,
-                body: JSON.stringify({ topic: text, workspaceId: 'default', conversationId, history: histForExplain, apps: getSelectedApps() }),
-              });
-              if (!ans.ok || !ans.body) {
-                const data = await fetch('/api/controller/explain', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  signal: activeAbortRef.current?.signal,
-                  body: JSON.stringify({ topic: text, workspaceId: 'default', conversationId, history: histForExplain, apps: getSelectedApps() }),
-                }).then((r) => r.json()).catch(() => ({}));
-                replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
-              } else {
-                const reader = ans.body.getReader();
-                const decoder = new TextDecoder();
-                let acc = '';
-                for (;;) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  acc += decoder.decode(value, { stream: true });
-                  const display = cleanChat(acc);
-                  setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: display } : t)));
-                }
-                if (!acc.trim()) {
-                  setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: fallbackText } : t)));
-                }
-              }
-            } catch {
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: plan?.summary || fallbackText });
-            }
-            return;
-          }
-
-          if (planConfidence(plan) < CLARIFY_THRESHOLD) {
-            updateThinkingLabel(thinkingId, 'Preparing clarification...');
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'clarify',
-              plan,
-              summary: plan.summary || 'do that',
-              confidence: planConfidence(plan),
-            });
-          } else {
-            updateThinkingLabel(thinkingId, 'Preparing approval card...');
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
-          }
-          return;
-        }
-
-        // Unknown / unhandled kind: surface any reply, else a safe fallback.
-        replaceTurn(thinkingId, {
-          id: thinkingId,
-          role: 'assistant',
-          kind: 'text',
-          text: cleanChat(goal?.reply || plan?.summary || 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.'),
-        });
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
-          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.' });
-          return;
-        }
-        replaceTurn(thinkingId, {
-          id: thinkingId,
-          role: 'assistant',
-          kind: 'text',
-          text: `Something went wrong: ${err?.message || 'unknown error'}.`,
-        });
+        updateThinkingLabel(thinkingId, 'Working on your request...');
+        await runViaSupervisor(text, thinkingId);
       } finally {
         clearActiveRequest();
         setBusy(false);
@@ -2973,8 +2643,8 @@ export default function AgentConsole() {
 
   const isEmpty = turns.length === 0;
 
-  // The provider endpoint always lists every supported provider, including ones that are
-  // disabled or lack credentials. The topbar renders selectors only for callable providers,
+  // The runtime endpoint reports the Codex runtime even when it is switched off. The topbar
+  // renders the model/effort selectors only when it is callable,
   // or a compact Settings prompt when none is available.
   const providerPortal = providers.length > 0
     ? document.getElementById('topbar-actions')
@@ -3768,10 +3438,8 @@ export default function AgentConsole() {
     {providerPortal && createPortal(
       <TopbarActions
         providers={providers}
-        selectedProvider={selectedProvider}
         selectedModel={selectedModel}
         selectedEffort={selectedEffort}
-        onProviderChange={handleProviderChange}
         onModelChange={handleModelChange}
         onEffortChange={handleEffortChange}
       />,

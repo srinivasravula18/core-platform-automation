@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { BookOpen } from 'lucide-react';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import guideMarkdown from '../../docs/application-guide.md?raw';
@@ -22,7 +23,36 @@ const parsedGuide = (() => {
   return { title, intro, sections };
 })();
 
+/**
+ * Highlight the section you are actually reading. IntersectionObserver rather than scroll maths: the
+ * diagrams render asynchronously and move every heading below them, which desynchronises any approach
+ * that caches positions.
+ */
+function useActiveSection(ids: string[]): string {
+  const [active, setActive] = useState('');
+  useEffect(() => {
+    if (!ids.length) return;
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) visible.add(e.target.id); else visible.delete(e.target.id);
+        }
+        // Topmost visible section wins, so a long section stays selected while it scrolls past.
+        const first = ids.find((id) => visible.has(id));
+        if (first) setActive(first);
+      },
+      // Band across the upper page: a section counts as "being read" once its top reaches it.
+      { rootMargin: '-80px 0px -55% 0px', threshold: 0 },
+    );
+    for (const id of ids) { const el = document.getElementById(id); if (el) observer.observe(el); }
+    return () => observer.disconnect();
+  }, [ids]);
+  return active;
+}
+
 export default function Documentation() {
+  const active = useActiveSection(parsedGuide.sections.map((s) => s.id));
   return (
     <div className="app-page-shell">
       <header className="mb-8 border-b border-[var(--border)] pb-6">
@@ -44,7 +74,12 @@ export default function Documentation() {
               <a
                 key={section.id}
                 href={`#${section.id}`}
-                className="block rounded-md px-3 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+                aria-current={active === section.id ? 'true' : undefined}
+                className={`block rounded-md px-3 py-2 text-sm transition-colors ${
+                  active === section.id
+                    ? 'bg-[var(--accent)]/10 font-medium text-[var(--accent)] shadow-[inset_2px_0_0_var(--accent)]'
+                    : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
+                }`}
               >
                 {section.title}
               </a>

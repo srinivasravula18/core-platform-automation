@@ -14,19 +14,8 @@ let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
 
 async function main() {
-  console.log('Flag OFF — no facts published');
+  console.log('Grounding is published once and shared');
   {
-    delete process.env.AGENT_NATIVE_V1;
-    setMessageBus(new InMemoryMessageBus());
-    setBlackboard(new InMemoryBlackboard());
-    const r = await publishGroundingFacts({ runId: 'g0', catalogLabels: ['New Button'], gate: { decision: 'continue' } });
-    ok(r === null, 'returns null when the flag is off');
-    ok((await getBlackboard().all('g0')).length === 0, 'no facts written');
-  }
-
-  console.log('Flag ON — grounding is published once and shared');
-  {
-    process.env.AGENT_NATIVE_V1 = '1';
     setMessageBus(new InMemoryMessageBus());
     setBlackboard(new InMemoryBlackboard());
     const RUN = 'g1';

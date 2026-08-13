@@ -1,13 +1,4 @@
-/**
- * Memory Gate (Phase 4) — the read path that CHANGES A DECISION, not just pads a prompt.
- *
- * "Memory changes a decision, or it is not memory." This is where a recall alters control flow: a
- * selector proven broken/flaky in prior runs is avoided; a proven approach is preferred. The gate returns
- * typed verdicts a caller branches on — it never returns free text to concatenate into a prompt.
- *
- * Built ON TOP of the store (store.ts); additive + gated by AGENT_NATIVE_V1. Nothing on the live path
- * consults the gate until an agent is migrated onto it, so it changes no current behavior.
- */
+/** Recall gate over the memory store — ranks by recency and weight; historical memory never satisfies a live evidence gate. */
 import { getMemoryStore, type MemoryRecord, type MemoryScope, type MemoryStore } from './store';
 
 export interface SelectorHealthVerdict {

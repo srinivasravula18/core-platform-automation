@@ -87,11 +87,11 @@ console.log('Section 4 — classified truncation error matches the orchestrator 
 {
   // Must mirror isBadOutput in server/ai/orchestrator.ts so a truncation self-heals via one retry.
   const isBadOutput = (e: any) => /schema|invalid_type|invalid_value|expected .*received|did not match|valid json|received undefined|unexpected token|unexpected end of (json|input)|in json at position|after property value|not valid json|json\.parse/i.test(String(e?.message || ''));
-  const err = structuredTruncationError('openai', 'gpt-5.6-sol', 4096);
+  const err = structuredTruncationError('codex', 'gpt-5.6-sol', 4096);
   ok(err instanceof ProviderError, 'structuredTruncationError returns a ProviderError');
   ok(isBadOutput(err), 'truncation error message triggers the orchestrator isBadOutput retry');
   ok(/gpt-5\.6-sol/.test(err.message) && /4096/.test(err.message), 'message carries model id and output-token count');
-  const noUsage = structuredTruncationError('anthropic', 'claude-opus-4-8');
+  const noUsage = structuredTruncationError('codex', 'gpt-5.6-luna');
   ok(isBadOutput(noUsage) && /unknown/.test(noUsage.message), 'missing usage still yields a retryable, informative message');
 }
 

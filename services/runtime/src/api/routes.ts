@@ -1,6 +1,6 @@
 /**
  * Conversational Runtime APIs (Phase 5) — primary turn stream + session/entity/message/
- * evidence queries. Gated by CONVERSATIONAL_RUNTIME_V1 (default ON; set to "false" for
+ * evidence queries. Gated by (default ON; set to "false" for
  * instant rollback). Scope authority comes from authenticated middleware — client
  * project/app fields are selection hints only.
  */
@@ -12,16 +12,6 @@ import { runConversationTurn, type TurnEvent } from '../application/conversation
 import { sessionContextManager } from '../application/sessionContextManager';
 import { canonicalMessages, entityRefIndex, sessionRepository } from '../adapters/sessionRepository';
 import { aggregateEvidence } from '../application/evidenceAggregator';
-
-export function conversationalRuntimeEnabled(): boolean {
-  return String(process.env.CONVERSATIONAL_RUNTIME_V1 ?? 'true').toLowerCase() !== 'false';
-}
-
-function guard(res: Response): boolean {
-  if (conversationalRuntimeEnabled()) return true;
-  res.status(503).json({ error: 'Conversational runtime is disabled (CONVERSATIONAL_RUNTIME_V1=false).' });
-  return false;
-}
 
 /** Phase 7 tenant isolation: a conversation owned by another user is invisible here. */
 async function accessDenied(req: Request, conversationId: string): Promise<boolean> {
@@ -42,7 +32,6 @@ function scopeOf(req: Request) {
 export function registerConversationalRuntimeRoutes(app: Express) {
   // Primary turn API (SSE).
   app.post('/api/conversations/:conversationId/turns/stream', async (req, res) => {
-    if (!guard(res)) return;
     const conversationId = String(req.params.conversationId || '').trim();
     const body = req.body || {};
     const message = typeof body.message === 'string' ? body.message.trim() : '';
@@ -75,7 +64,6 @@ export function registerConversationalRuntimeRoutes(app: Express) {
 
   // Session snapshot.
   app.get('/api/conversations/:conversationId/session', async (req, res, next) => {
-    if (!guard(res)) return;
     try {
       if (await accessDenied(req, String(req.params.conversationId))) return res.status(404).json({ error: 'Conversation not found' });
       const session = await sessionContextManager.getSession(String(req.params.conversationId), { reconcile: false });
@@ -86,7 +74,6 @@ export function registerConversationalRuntimeRoutes(app: Express) {
 
   // Entity recency index.
   app.get('/api/conversations/:conversationId/entities', async (req, res, next) => {
-    if (!guard(res)) return;
     try {
       if (await accessDenied(req, String(req.params.conversationId))) return res.status(404).json({ error: 'Conversation not found' });
       const refs = await entityRefIndex.list(String(req.params.conversationId), {
@@ -100,7 +87,6 @@ export function registerConversationalRuntimeRoutes(app: Express) {
 
   // Explicit entity selection.
   app.post('/api/conversations/:conversationId/entities/select', async (req, res, next) => {
-    if (!guard(res)) return;
     try {
       if (await accessDenied(req, String(req.params.conversationId))) return res.status(404).json({ error: 'Conversation not found' });
       const entity = req.body?.entity;
@@ -114,7 +100,6 @@ export function registerConversationalRuntimeRoutes(app: Express) {
 
   // Canonical messages (keyset pagination).
   app.get('/api/conversations/:conversationId/messages', async (req, res, next) => {
-    if (!guard(res)) return;
     try {
       if (await accessDenied(req, String(req.params.conversationId))) return res.status(404).json({ error: 'Conversation not found' });
       const messages = await canonicalMessages.list(String(req.params.conversationId), {
@@ -127,7 +112,6 @@ export function registerConversationalRuntimeRoutes(app: Express) {
 
   // Scoped, redacted run evidence bundle (refs + facts — never filesystem paths or bytes).
   app.get('/api/conversations/:conversationId/runs/:runId/evidence', async (req, res, next) => {
-    if (!guard(res)) return;
     try {
       if (await accessDenied(req, String(req.params.conversationId))) return res.status(404).json({ error: 'Conversation not found' });
       const scope = scopeOf(req);

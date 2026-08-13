@@ -12,7 +12,7 @@ import '../server/shared/env';
 import { MemorySaver } from '@langchain/langgraph';
 import { buildTestAuthoringGraph } from '../server/features/agent/workflow/graphs/testAuthoringGraph';
 import { runGroundingNode } from '../server/features/agent/workflow/nodes/grounding';
-import type { AuthoredTestCase, AuthorTestCasesInput } from '../server/features/agent/workflow/nodes/authoring';
+import { planSemanticIssues, type AuthoredTestCase, type AuthorTestCasesInput } from '../server/features/agent/workflow/nodes/authoring';
 import { stashArtifacts, readArtifacts, clearArtifacts } from '../server/features/agent/workflow/artifactStash';
 import {
   createInitialWorkflowState, assertNoSecretLeakage,
@@ -104,6 +104,11 @@ const CLEAN_PLAN: TestPlan = {
 };
 
 const usageOf = (node: string): UsageRecord => ({ node, modelName: 'stub-model', inputTokens: 10, outputTokens: 20, latencyMs: 1, timestamp: '2026-07-13T00:00:00Z' });
+
+ok(planSemanticIssues({ mission: MISSION.executionScope, steps: [
+  { action: 'OPEN_MODULE', target: 'Accounts' },
+  { action: 'OPEN_MODULE', target: 'Accounts' },
+]}).length === 1, 'repeated OPEN_MODULE placeholders are rejected');
 
 // ---------------------------------------------------------------------------
 async function testHappyPath() {

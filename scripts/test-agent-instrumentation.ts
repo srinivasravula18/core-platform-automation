@@ -27,19 +27,8 @@ function baseState(): WorkflowState {
 async function main() {
   const RUN = 'run-instr';
 
-  console.log('Flag OFF — instrumentation is inert');
+  console.log('A real run transcript is emitted');
   {
-    delete process.env.AGENT_NATIVE_V1;
-    setMessageBus(new InMemoryMessageBus());
-    setBlackboard(new InMemoryBlackboard());
-    await recordRunStageProgress(RUN, baseState(), 'load_context', 'running', 'validate_request');
-    ok((await getMessageBus().history(RUN)).length === 0, 'no messages published when AGENT_NATIVE_V1 is off');
-    ok((await getBlackboard().all(RUN)).length === 0, 'no blackboard facts written when the flag is off');
-  }
-
-  console.log('Flag ON — a real run transcript is emitted');
-  {
-    process.env.AGENT_NATIVE_V1 = '1';
     setMessageBus(new InMemoryMessageBus());
     setBlackboard(new InMemoryBlackboard());
 

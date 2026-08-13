@@ -1,30 +1,20 @@
-/**
- * Write-through mirror between the in-process artifact stash and the shared run store (Phase 5).
- *
- * When AGENT_NATIVE_V1 is on, every stashArtifacts() write is best-effort mirrored to the durable shared
- * store so a second worker can re-hydrate. When the flag is OFF (default) these are no-ops, so the hot
- * stash path is byte-for-byte unchanged. Mirroring is fire-and-forget and never throws into the caller —
- * a store hiccup must never break a run; worst case the run stays process-bound exactly as today.
- */
-import { isAgentNativeEnabled } from '../agentNativeFlag';
+/** Mirrors stash writes to the durable shared store, best-effort. */
 import { getRunArtifactStore } from './runStore';
 
-/** Best-effort mirror of a partial stash write to the shared store. No-op unless AGENT_NATIVE_V1 is on. */
-export function mirrorArtifactsToRunStore(runId: string, partial: Record<string, unknown>): void {
-  if (!isAgentNativeEnabled()) return;
+/** Mirror a partial stash write to the shared store. Awaitable, so a boundary can require durability. */
+export function mirrorArtifactsToRunStore(runId: string, partial: Record<string, unknown>): Promise<void> {
   const store = getRunArtifactStore();
-  for (const [key, value] of Object.entries(partial)) {
-    if (value === undefined) continue;
-    // Fire-and-forget; swallow errors so a store failure can never break the run.
-    Promise.resolve(store.put(runId, key, value)).catch((err) => {
+  const writes = Object.entries(partial)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => Promise.resolve(store.put(runId, key, value)).catch((err) => {
+      // A store failure must never break the run; it only costs this run its cross-process resume.
       console.warn(`[run-store] mirror of '${key}' for run ${runId} failed (non-fatal):`, (err as Error)?.message);
-    });
-  }
+    }));
+  return Promise.all(writes).then(() => undefined);
 }
 
 /** Re-hydrate all shared-store artifacts for a run (for a resuming worker). Empty object when none/flag off. */
 export async function hydrateArtifactsFromRunStore(runId: string): Promise<Record<string, unknown>> {
-  if (!isAgentNativeEnabled()) return {};
   try {
     return await getRunArtifactStore().getAll(runId);
   } catch (err) {

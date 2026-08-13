@@ -24,7 +24,7 @@ import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from
 import type { CompilationDiagnostic, CompiledScriptRef, WorkflowCase, WorkflowCompilation } from '../state';
 
 /** Stamped into WorkflowCompilation.compilerVersion — bump when the emitted-spec shape changes. */
-export const COMPILER_VERSION = `${playwrightCompiler.name}@1`;
+export const COMPILER_VERSION = `${playwrightCompiler.name}@2`;
 
 export interface RunCompilationNodeInput {
   /** Frozen execution-scope authority — the compiler embeds it as the spec's MISSION constant. */

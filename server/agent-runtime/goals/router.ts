@@ -377,7 +377,7 @@ Return JSON with these fields:
 - confidence: 0-100. Use 70+ only when the intent is clear; 40-69 when ambiguous; <40 when guessing.
 - isQuestion: true if the latest message is a question or exploratory follow-up (e.g. "what about sorting?", "do we have X?", ends with "?").
 - isImperative: true ONLY if it is a clear command to act now ("generate the cases", "run it", "do it", "proceed", "go ahead").
-- wantsExecution: true if the user wants the tests actually RUN against the app (not merely drafted/reviewed).
+- wantsExecution: true when the user asks the agent to test, validate, verify, exercise, run, or execute behavior against the app. False when the user only asks to generate, draft, write, list, or review test cases.
 - scope: a short phrase naming exactly what to test or answer about, carried forward from the conversation (do not restate the whole message).
 - target: { url, name } of the app to act on if you can determine it from the message, conversation, or selected app; otherwise leave both "".
 - missing: list any REQUIRED detail that is absent for an action (e.g. "target app", "plan name", "scope"). Empty for questions.
@@ -387,6 +387,7 @@ Return JSON with these fields:
 Critical rules:
 - If the latest message is a QUESTION or discussion, kind="answer" and isImperative=false. Never classify a question as an action.
 - Only use "deep_test_run"/"generate_cases"/"workspace_action" when there is a clear imperative command.
+- Interpret intent semantically, in context. Commands such as "test account creation in CRM" and "verify the login flow" request execution (deep_test_run); commands such as "generate test cases for account creation" request a reviewable draft (generate_cases). Do not require special keywords beyond the user's clear meaning.
 - A bare demonstrative ("this", "that feature", "it") with no named feature/app/url is NOT enough — if you cannot resolve a concrete scope or target, use "clarify".
 - When genuinely unsure between answering and acting, choose "answer".`;
 }
@@ -453,12 +454,9 @@ export async function routeGoal(input: ClassifyGoalInput, ctx: RoutingContext = 
   if (shouldBypassModel) {
     raw = direct;
   } else {
-    try {
-      // Give the model the corrected message but keep the original as userMessage so its reply reads naturally.
-      raw = await classifyGoal({ ...normalizedInput, message: `${normalizedInput.message}` });
-    } catch {
-      raw = direct;
-    }
+    // Action intent is a semantic Codex decision. Never hide an auth/runtime failure by
+    // substituting a keyword heuristic that can perform the wrong action.
+    raw = await classifyGoal({ ...normalizedInput, message: `${normalizedInput.message}` });
   }
   if (!raw.target?.url && !raw.target?.name && (direct.target?.url || direct.target?.name)) {
     raw = { ...raw, target: direct.target };

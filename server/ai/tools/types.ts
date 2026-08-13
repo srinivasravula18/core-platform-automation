@@ -4,10 +4,11 @@
  * A `ToolSpec` (server/ai/providers/types.ts) is what the MODEL sees. An `AgentTool`
  * pairs that spec with an `execute` that actually does the work — almost always a thin
  * wrapper around an existing service (inspectApplicationFlow, generateCasesForRun, the
- * repository upserts, etc.). The agent loop (server/ai/agentLoop.ts via
- * AgentOrchestrator.runToolLoop) calls chatWithTools, runs the requested tools, feeds
- * results back, and repeats until the model answers, an accept-check passes, or a budget
- * is hit.
+ * repository upserts, etc.).
+ *
+ * AgentOrchestrator.runToolLoop publishes these through the scoped MCP bridge and runs one
+ * Codex thread: the runtime calls the tools natively and iterates on its own, while the
+ * orchestrator keeps guardrails, usage, tracing, the honesty gate, and accept-driven retries.
  */
 import type { ToolSpec, ProviderUsage } from '../providers/types';
 
@@ -64,24 +65,30 @@ export type AcceptCheck = (
   state: { finalText: string; steps: AgentStep[]; ctx: ToolContext },
 ) => Promise<{ ok: boolean; feedback?: string }> | { ok: boolean; feedback?: string };
 
+/** A prior conversational turn replayed as context for a new loop. */
+export interface LoopMessage {
+  role: 'user' | 'assistant' | 'system';
+  content?: string;
+}
+
 export interface RunToolLoopOptions {
   /** The goal / initial user instruction. */
   task: string;
   /** Original user-authored input for guardrails when task also contains memory/context. */
   guardrailInput?: string;
-  /** Prior native text turns. The current task is appended as the final user turn. */
-  seedMessages?: import('../providers/types').ChatMessage[];
+  /** Prior text turns, rendered as leading context before the task. */
+  seedMessages?: LoopMessage[];
   /** Override the system prompt; defaults to the agent's assembled system prompt. */
   system?: string;
   tools: AgentTool[];
   toolContext?: ToolContext;
-  /** Max chatWithTools round-trips. Default 12. Hard backstop against runaway loops. */
+  /** Hard backstop against a runaway loop: the tool-call ceiling for the whole run. Default 12.
+   *  Past it, further calls are refused with an instruction to answer from what it already has. */
   maxSteps?: number;
   /** Token budget across the whole loop. When exceeded, stop. */
   maxTotalTokens?: number;
-  /** Context-manifest id used to correlate provider usage with assembly decisions. */
+  /** Context-manifest id used to correlate usage with assembly decisions. */
   contextManifestId?: string;
-  maxTokensPerCall?: number;
   temperature?: number;
   accept?: AcceptCheck;
   /** How many accept-driven retries before giving up. Default 2. */

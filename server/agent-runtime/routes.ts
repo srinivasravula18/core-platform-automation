@@ -151,23 +151,12 @@ export function registerAgentRuntimeRoutes(app: Express) {
       // case-generation request even without the words "test cases" — it must reach the generate flow (with
       // its review gate), not dead-end as an informational answer. Result/status talk ("test failed", "why…")
       // is excluded so it stays a question.
-      const imperativeTestFeature =
-        /^(?:\s*(?:please|can you|could you|pls|hey)[\s,]+)?(test|cover|automate)\b/i.test(message.trim())
-        && /\b(view|views|page|pages|screen|screens|flow|flows|feature|features|module|modules|list|form|forms|workflow|tab|grid|dashboard|end[\s-]to[\s-]end|e2e|creation|functionality|button|field)\b/i.test(message)
-        && !/\b(failed|passed|error|errors|why|how|status|result|results|did it|is it)\b/i.test(message);
-      const wantsCaseGen =
-        (/\b(generate|create|write|draft|author|add|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/i.test(message)
-          || imperativeTestFeature)
-        // Exclude info questions ABOUT existing artifacts. "list" must be followed by an artifact
-        // word ("list my cases") so it does NOT swallow "list view" in a real generation request.
-        && !(/\b(how many|how much|do (?:we|i) have|which cases|what cases|count)\b/i.test(message)
-          || /\b(?:list|show(?:\s+me)?)\s+(?:(?:my|the|all|our)\s+)?(?:test\s+)?(?:cases?|suites?|plans?|runs?|scripts?)\b/i.test(message));
-      // Intercept answer/workspace_action AND requirement_draft: the LLM router sometimes classifies
+      // Preserve the semantic router's action and only enforce target safety here.
       // a clear "write test cases for X" as requirement_draft (the words "write"/"feature" tip it that
       // way), which then silently drafts a codebase requirement on the wrong feature. wantsCaseGen only
       // matches messages that explicitly ask for test cases/coverage/scenarios, so a genuine
       // "create a requirement for X" (no "cases") is never caught here.
-      if (wantsCaseGen && (route.kind === 'answer' || route.kind === 'workspace_action' || route.kind === 'requirement_draft')) {
+      if (route.kind === 'generate_cases') {
         const hasTarget = !!(route.target?.url || route.target?.name || selectedApps.some((a) => a.url || a.name));
         if (hasTarget) {
           route.kind = 'generate_cases';

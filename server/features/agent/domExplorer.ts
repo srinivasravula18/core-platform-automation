@@ -1,5 +1,4 @@
 import { launchChromiumWithRetry } from '../../shared/browser';
-import { isGroundingDisambiguationEnabled } from './groundingDisambiguationFlag';
 
 export interface DomElement {
   tag: string;
@@ -35,6 +34,7 @@ export interface DomElement {
   /** accessibility-tree enrichment (a11y-first capture) */
   accName?: string | null; // computed accessible name from the aria snapshot
   rowKey?: string | null; // first meaningful data-cell value for a row/control in a row
+  stateTag?: 'form' | 'page';
   interactive?: boolean; // true for elements a user can act on (button/link/input/menuitem/…)
 }
 
@@ -658,7 +658,7 @@ function slug(...parts: (string | null | undefined)[]): string {
   return base.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'el';
 }
 
-function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: string }[] {
+function candidatesFor(el: DomElement, formScoped = false): { strategy: SelectorStrategy; selector: string }[] {
   const out: { strategy: SelectorStrategy; selector: string }[] = [];
   const accName = cleanLabel(el.accName || el.ariaLabel || el.labelText || el.text || '');
   if (el.testId) out.push({ strategy: 'data-testid', selector: `[data-testid="${q(el.testId)}"]` });
@@ -669,12 +669,12 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
   if (el.placeholder) out.push({ strategy: 'placeholder', selector: `[placeholder="${q(el.placeholder)}"]` });
   if (el.role === 'row' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}")` });
   if (el.role === 'checkbox' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}") input[type="checkbox"]` });
-  // P1 (GROUNDING_DISAMBIGUATION_V1): a per-row interactive control (one "Edit"/"Delete" per grid row) is
+  // P1: a per-row interactive control (one "Edit"/"Delete" per grid row) is
   // NOT unique by role+name alone — scope it to its row so it becomes a genuinely unique, executable locator
   // instead of being discarded as non-unique. Placed BEFORE role+name so resolveBestSelector prefers the
   // unique scoped form; the live uniqueness check still verifies it, so a non-unique row scope is never
   // falsely promoted. Off (default) = legacy: no scoped candidate, non-unique controls excluded.
-  if (isGroundingDisambiguationEnabled() && el.rowKey && accName
+  if (!formScoped && el.rowKey && accName
       && ['button', 'link', 'menuitem', 'tab', 'switch'].includes(String(el.role))) {
     out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}") >> role=${el.role}[name="${q(accName)}"]` });
   }
@@ -684,10 +684,10 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
   return out;
 }
 
-export function resolveBestSelector(el: DomElement): ResolvedSelector {
+export function resolveBestSelector(el: DomElement, opts: { formScoped?: boolean } = {}): ResolvedSelector {
   const rowScoped = el.role === 'row' || (el.role === 'checkbox' && !el.accName && !el.ariaLabel && !el.text);
   const key = slug(rowScoped ? el.rowKey : el.accName, el.text, el.ariaLabel, el.name, el.labelText, el.testId) + `_${el.role || el.tag}`;
-  const cands = candidatesFor(el);
+  const cands = candidatesFor(el, opts.formScoped === true);
   if (cands.length === 0) {
     return { key, strategy: 'unresolvable', selector: null, fallback: null, reason: 'no stable attribute' };
   }
@@ -792,6 +792,7 @@ function toVerifiedElement(
     visible: v?.visible ?? el.visible,
     status,
     state: { disabled: el.disabled, readonly: el.readonly, required: el.required },
+    stateTag: el.stateTag,
   };
 }
 
@@ -853,7 +854,7 @@ export async function captureVerifiedElementsForOpenPage(page: any, opts?: { max
   const scoreDom = (e: DomElement) => (e.interactive ? 0 : 2) + (e.visible ? 0 : 1);
   const elements = captured.length > max ? [...captured].sort((a, b) => scoreDom(a) - scoreDom(b)).slice(0, max) : captured;
 
-  const resolved = elements.map((el) => ({ el, sel: resolveBestSelector(el) }));
+  const resolved = elements.map((el) => ({ el, sel: resolveBestSelector(el, { formScoped: Boolean(opts?.within) }) }));
   const selectors = [...new Set(resolved.filter((r) => r.sel.selector).map((r) => r.sel.selector as string))];
   // Same technique/timeouts as verifyResolvedSelectors' inline loop — reimplemented here since that
   // logic isn't factored into a standalone helper and this function must not touch that one.

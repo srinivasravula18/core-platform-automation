@@ -1,12 +1,11 @@
 /**
  * Authoring node — strict case + abstract-plan authoring (LangGraph migration, Phase 4).
  *
- * Provider-neutral per the architecture plan: the agent's provider/model resolve through the SAME
- * Settings-backed routing the legacy pipeline uses (resolveProviderForAgent/resolveModelForAgent), so
- * per-agent overrides keep working. OpenAI API-key routes go through the Responses structured client
- * (constrained decoding); Anthropic/Gemini (and any account-mode CLI) go through the existing
- * buildProvider adapters' generateObject. Either way, strict schema validation is the single authority
- * and a step/case is NEVER silently dropped.
+ * Every model turn runs on the single Codex runtime through buildProvider().generateObject, which uses
+ * Codex's native structured output (constrained decoding). Model/effort still resolve through the SAME
+ * Settings-backed routing the rest of the app uses (resolveModelForAgent/resolveEffortForAgent), so
+ * per-agent overrides keep working. Strict schema validation remains the single authority and a
+ * step/case is NEVER silently dropped.
  *
  * This node OWNS the one-repair loop from plan Section 10.5: exactly ONE second model call quoting the
  * validation issues, then a typed SCHEMA_INVALID_OUTPUT failure. Refusals get NO retry (MODEL_REFUSAL).
@@ -15,17 +14,14 @@
  */
 import { z } from 'zod';
 import {
-  resolveProviderForAgent, resolveModelForAgent, resolveEffortForAgent,
-  getProviderCredentials, buildProvider,
+  resolveProviderForAgent, resolveModelForAgent, resolveEffortForAgent, buildProvider,
 } from '../../../../ai/orchestrator';
-import { callOpenAIResponsesStructured } from '../../../../ai/openai/responsesClient';
 import { canonicalAgent, systemPromptFor } from '../../../../ai/systemPrompts';
 import type { ProviderName } from '../../../../ai/providers/types';
 import { testCasesSchema } from '../../../../shared/schemas';
 import { PLAN_ACTIONS, PLAN_ASSERTS, CONTEXT_ASSERTS, parseTestPlanStrict, type TestPlan } from '../../compiler/testPlan';
 import { renderTargetCatalogForPrompt } from '../../compiler/renderCatalogForPrompt';
 import { resolveTarget } from '../../graph/groundingEngine';
-import { isPlanTargetValidationEnabled } from '../../compiler/planTargetValidationFlag';
 import type { EvidenceGraph } from '../../graph/evidenceGraph';
 import { classifyError, WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { MissionRef, UsageRecord } from '../state';
@@ -50,12 +46,12 @@ export interface AuthorTestCasesInput {
   metadataHint?: string;
   /** Observe-then-assert: the OBSERVED FORM BEHAVIOR block — authors validation cases from measurement, not guesses. */
   behaviorHint?: string;
-  /** Settings identity for provider/model/effort routing; defaults to the legacy case-authoring agent. */
+  /** Settings identity for model/effort routing; defaults to the legacy case-authoring agent. */
   agent?: string;
   system?: string;
   signal?: AbortSignal;
-  /** Topbar per-run provider/model/effort — authoritative over Settings, like the legacy path. */
-  overrides?: { provider?: string; model?: string; effort?: string };
+  /** Topbar per-run model/effort — authoritative over Settings, like the legacy path. */
+  overrides?: { model?: string; effort?: string };
   /** True when the site has stored Settings credentials — authors are told auth is handled externally. */
   hasStoredCredentials?: boolean;
   /** Coverage "gaps": existing case titles to NOT duplicate — author only genuinely new behaviors. */
@@ -88,8 +84,8 @@ export interface AuthorAbstractPlanInput {
   agent?: string;
   system?: string;
   signal?: AbortSignal;
-  /** Topbar per-run provider/model/effort — authoritative over Settings, like the legacy path. */
-  overrides?: { provider?: string; model?: string; effort?: string };
+  /** Topbar per-run model/effort — authoritative over Settings, like the legacy path. */
+  overrides?: { model?: string; effort?: string };
   /** True when the site has stored Settings credentials — authors are told auth is handled externally. */
   hasStoredCredentials?: boolean;
 }
@@ -101,7 +97,7 @@ export interface AuthorAbstractPlanResult {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Wire schema — OpenAI strict structured outputs reject `.optional()`, so the transport shape is
+// Wire schema — strict structured output rejects `.optional()`, so the transport shape is
 // required-but-nullable; nulls are stripped before parseTestPlanStrict, which stays the sole authority.
 // ---------------------------------------------------------------------------------------------
 
@@ -114,6 +110,7 @@ const testPlanWireSchema = z.object({
     assert: z.enum(PLAN_ASSERTS).nullable(),
     target: z.string(),
     value: z.string().nullable(),
+    sourceStep: z.number().int().positive().nullable(),
   })),
 });
 type TestPlanWire = z.infer<typeof testPlanWireSchema>;
@@ -137,34 +134,21 @@ interface ModelRoute {
   provider: ProviderName;
   model: string;
   effort: 'low' | 'medium' | 'high';
-  apiKey: string;
-  /** True only for OpenAI in API-key mode — account/CLI OpenAI still routes through buildProvider. */
-  useResponsesApi: boolean;
 }
 
 /** Per-run overrides from the Agent Console topbar — authoritative over Settings, same as the legacy path. */
 export interface ModelOverrides {
-  provider?: string;
   model?: string;
   effort?: string;
-}
-
-function isProviderNameStr(v: unknown): v is ProviderName {
-  return v === 'gemini' || v === 'openai' || v === 'anthropic';
 }
 
 /** Same Settings-backed resolution chain getOrchestrator uses, so per-agent overrides keep working. */
 function resolveRoute(agentName: string, overrides?: ModelOverrides): ModelRoute {
   const agent = canonicalAgent(agentName);
-  const provider = isProviderNameStr(overrides?.provider) && getProviderCredentials(overrides.provider as ProviderName)
-    ? (overrides!.provider as ProviderName)
-    : resolveProviderForAgent(agent);
-  // Topbar model accepted verbatim (the UI only offers models valid for the selected provider).
+  const provider = resolveProviderForAgent(agent);
+  // Topbar model accepted verbatim (the UI only offers models the runtime serves).
   const model = (overrides?.model || '').trim() || resolveModelForAgent(agent, provider);
-  const effort = resolveEffortForAgent(agent, provider, overrides?.effort);
-  const creds = getProviderCredentials(provider);
-  const apiKey = creds?.authMode === 'api_key' ? creds.apiKey : '';
-  return { provider, model, effort, apiKey, useResponsesApi: provider === 'openai' && Boolean(apiKey) };
+  return { provider, model, effort: resolveEffortForAgent(agent, provider, overrides?.effort) };
 }
 
 interface ModelAttempt {
@@ -195,53 +179,20 @@ function schemaInvalidDetailFromThrow(error: unknown): string | null {
     ? message : null;
 }
 
-/** The Responses client folds SDK throws into rawContent — keep transport failures out of the repair loop. */
-function transportDetailFromRawContent(rawContent: string): WorkflowError | null {
-  if (/\b429\b|rate limit|timeout|timed out|econn|enotfound|eai_again|socket|fetch failed|network|connection/i.test(rawContent)) {
-    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.NETWORK_TRANSIENT, rawContent.slice(0, 500)).toWorkflowError();
-  }
-  if (/\b401\b|\b403\b|api key|unauthorized|authentication/i.test(rawContent)) {
-    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.AUTH_FAILURE, rawContent.slice(0, 500)).toWorkflowError();
-  }
-  return null;
-}
-
 interface ModelCallSpec<TWire> {
   node: string;
   route: ModelRoute;
   schema: z.ZodType<TWire>;
-  schemaName: string;
   system: string;
   prompt: string;
   signal?: AbortSignal;
 }
 
-/** Exactly ONE model round-trip; provider branching lives here and nowhere else. */
+/** Exactly ONE model round-trip through the Codex runtime's native structured output. */
 async function callModelOnce<TWire>(spec: ModelCallSpec<TWire>): Promise<ModelAttempt> {
   const started = Date.now();
   const base = { node: spec.node, timestamp: new Date().toISOString() };
   const failedUsage = (): UsageRecord => ({ ...base, modelName: spec.route.model, latencyMs: Date.now() - started });
-
-  if (spec.route.useResponsesApi) {
-    try {
-      const r = await callOpenAIResponsesStructured<TWire>({
-        apiKey: spec.route.apiKey, model: spec.route.model, schema: spec.schema, schemaName: spec.schemaName,
-        system: spec.system, prompt: spec.prompt, effort: spec.route.effort, signal: spec.signal,
-      });
-      const usage: UsageRecord = {
-        ...base, modelName: r.model,
-        inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, latencyMs: r.latencyMs,
-      };
-      if (r.refusal !== null) return { raw: null, refusal: r.refusal, invalidDetail: null, transportError: null, usage };
-      if (!r.schemaValid || r.object === null) {
-        const detail = r.rawContent || 'output did not parse against the schema';
-        return { raw: null, refusal: null, invalidDetail: detail, transportError: transportDetailFromRawContent(detail), usage };
-      }
-      return { raw: r.object, refusal: null, invalidDetail: null, transportError: null, usage };
-    } catch (error) {
-      return { raw: null, refusal: null, invalidDetail: null, transportError: toTransportError(error, spec.node), usage: failedUsage() };
-    }
-  }
 
   try {
     const provider = buildProvider(spec.route.provider, spec.route.model);
@@ -278,7 +229,6 @@ export interface StrictGenerationSpec<TWire, TOut> {
   node: string;
   agent: string;
   schema: z.ZodType<TWire>;
-  schemaName: string;
   system: string;
   prompt: string;
   /** Strict authority over the transport-shaped output — returns the value or quotable issues, never coerces. */
@@ -302,7 +252,7 @@ export async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSp
       ? { value: null, issues: [attempt.invalidDetail || 'model returned no parseable output'] }
       : spec.validate(attempt.raw);
 
-  const first = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, schemaName: spec.schemaName, system: spec.system, prompt: spec.prompt, signal: spec.signal });
+  const first = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, system: spec.system, prompt: spec.prompt, signal: spec.signal });
   usage.push(first.usage);
   if (first.transportError) return { value: null, usage, errors: [first.transportError] };
   if (first.refusal !== null) return { value: null, usage, errors: [refusalError(spec.node, first.refusal)] };
@@ -310,7 +260,7 @@ export async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSp
   if (firstEval.value !== null) return { value: firstEval.value, usage, errors: [] };
 
   // Exactly ONE repair call — schema-invalid only; refusals and transport failures never reach here twice.
-  const second = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, schemaName: spec.schemaName, system: spec.system, prompt: buildRepairPrompt(spec.prompt, firstEval.issues, first.raw), signal: spec.signal });
+  const second = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, system: spec.system, prompt: buildRepairPrompt(spec.prompt, firstEval.issues, first.raw), signal: spec.signal });
   usage.push(second.usage);
   if (second.transportError) return { value: null, usage, errors: [second.transportError] };
   if (second.refusal !== null) return { value: null, usage, errors: [refusalError(spec.node, second.refusal)] };
@@ -362,7 +312,7 @@ function authNote(hasStoredCredentials?: boolean): string {
 function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string {
   const countLine = input.requestedCaseCount > 0
     ? `Generate exactly ${input.requestedCaseCount} test case(s).`
-    : 'Choose the case count the evidenced behavior genuinely supports — quality over quantity, never pad. A catalog exposing a form, list, or multiple controls almost never supports only one case: author a distinct case per evidenced behavior (happy path, each validation rule, negative paths, observed disabled/empty/permission states) rather than one broad check.';
+    : 'Generate at least 5 distinct test cases, and more when the evidenced behavior supports them. Cover a distinct evidenced behavior per case (happy path, each validation rule, negative paths, observed disabled/empty/permission states); never pad with duplicates or invented behavior.';
   const avoid = input.avoidCaseTitles?.length
     ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
     : '';
@@ -395,6 +345,7 @@ CASE RULES:
 - STEPS: each step is one specific user action naming a real on-screen control from the catalog evidence, paired with its own observable expected result. No vague steps, no invented labels, no login/authentication steps.
 - When a VERIFIED FEATURE ANALYSIS is provided, author a case for EACH distinct behavior/rule/edge in it that the live catalog can exercise (derivations, per-field validation, state changes, disabled/empty states) — do not collapse it to a few generic open/cancel cases.
 - A happy-path create/submit case MUST include a fill step for EVERY catalog field marked (required) before the save/create step; a partially filled form fails to submit.
+- Do not invent a value or interaction merely because a visible label contains a required marker. Only FILL/SELECT a role that accepts values, using a value or option proven by the catalog/analysis. Preserve observed defaults unless the requested behavior explicitly changes them.
 - Cover the highest-value behaviors the evidence supports first (happy path, negative/validation, disabled/empty/permission states).
 - OBJECT/RECORD GOALS: when the goal targets a business object/record and the catalog exposes its form or list, cover each applicable dimension with a focused case — create/read/update/delete lifecycle, per-required-field validation, negative/boundary input, observed permission/read-only states, and lookup/relationship fields — never one generic "validate object" case; skip a dimension only when the catalog proves it is not exercisable.
 - tags use @ format (e.g. @regression, @ui, @positive, @negative); set priority and type per case.`;
@@ -416,9 +367,11 @@ Description: ${input.testCase.description || ''}
 Steps:
 ${stepLines}
 PLAN RULES:
+- Every plan operation must set sourceStep to the 1-based reviewed-case step it implements. Keep operations for each sourceStep together and map every reviewed step exactly; low-level operations may share one sourceStep.
 - steps: [{action|assert, target, value?}] — exactly ONE verb per step (set the unused verb to null).
 - Actions: ${PLAN_ACTIONS.join(', ')}. Asserts: ${PLAN_ASSERTS.join(', ')}.
 - Every locator-bearing target (CLICK/FILL/asserts) MUST be a catalog name verbatim. OPEN_MODULE is mission-scoped navigation intent — its target is advisory and needs no catalog match.
+- OPEN_MODULE may appear at most once, only for initial navigation. Never use it as a placeholder for a reviewed action or assertion.
 - MATCH THE ASSERT TO THE TARGET'S [role] (shown in the catalog): HAS_VALUE ONLY on an editable text field ([textbox]/[searchbox]/[spinbutton]/[combobox]); use CHECKED/UNCHECKED for a [checkbox]/[radio]/[switch] (never HAS_VALUE — a toggle has no text value); use VISIBLE/NOT_VISIBLE for a [heading]/[columnheader]/static control; ENABLED/DISABLED for interactive controls. An assert whose type does not fit the target's role will be dropped.
 - Never assert a specific heading, message, or ROW DATA that is not proven by the catalog or the verified analysis — do not invent an expected label/record (e.g. a specific row value) the evidence does not establish. To confirm a record you CREATED in this test, use ROW_IN_LIST with the value the test entered, not a pre-existing row.
 - Context asserts (URL_MATCHES, HAS_STATUS, EMPTY_STATE, ERROR_STATE, ROW_IN_LIST, FOUND_IN_GLOBAL_SEARCH) are page-scoped: their target/value is the EXPECTED TEXT (a URL fragment, a status/error message, or row text), never a catalog name. Use ROW_IN_LIST after creating a record to confirm it appears in its list, and FOUND_IN_GLOBAL_SEARCH to cross-check it via global search.
@@ -428,6 +381,7 @@ PLAN RULES:
 - TRANSFORMED FIELDS: when a step fills a field and a later step checks that field (or a field derived from it) and the case is about a normalization/derivation, the HAS_VALUE value MUST be the app's transformed OUTPUT, never the value that was filled. When the exact transformed output is not known from the catalog/analysis, do NOT emit HAS_VALUE with the typed input — emit VERIFY_VALIDATION describing the expected property (e.g. the value is lowercased / trimmed / spaces replaced) instead.
 - NEVER emit HAS_VALUE with an empty value to mean "auto-populated"/"non-empty"/"derived" — an empty HAS_VALUE asserts the field is BLANK and fails a correctly auto-filled field; use VERIFY_VALIDATION for the expected property instead. NOT_VISIBLE belongs on headings/static controls that truly disappear, NEVER on an input/combobox you filled or that stays on-screen.
 - UNIQUENESS PLACEHOLDERS: express run-uniqueness only as a {{unique}} token inside a value (e.g. "Version App {{unique}}"); never author bracket placeholders like [unique] — they are typed and asserted literally.
+- Never turn a value-bearing action into a bare CLICK. Only SELECT a [combobox]/[listbox] with a catalog-proven option; do not invent generic values such as "available option" for a [button]. Preserve observed defaults unless this case explicitly tests changing them.
 - Set unused optional fields (mission/module/title/value) to null.`;
 }
 
@@ -444,12 +398,22 @@ function validateCases(wire: unknown): { value: AuthoredTestCase[] | null; issue
   return { value: parsed.data.test_cases, issues: [] };
 }
 
+export function caseCountIssues(cases: unknown[], requestedCaseCount: number): string[] {
+  if (requestedCaseCount > 0 && cases.length !== requestedCaseCount) {
+    return [`Expected exactly ${requestedCaseCount} test case(s), but received ${cases.length}.`];
+  }
+  if (requestedCaseCount === 0 && cases.length < 5) {
+    return [`Auto mode requires at least 5 distinct grounded test cases, but received ${cases.length}.`];
+  }
+  return [];
+}
+
 function validatePlan(wire: unknown): { value: TestPlan | null; issues: string[] } {
   const { plan, issues } = parseTestPlanStrict(stripNullsDeep(wire));
   return { value: plan, issues };
 }
 
-/** P6 (PLAN_TARGET_VALIDATION_V1): every locator-bearing target must match a verified catalog entry. Uses the
+/** P6: every locator-bearing target must match a verified catalog entry. Uses the
  * compiler's own resolveTarget so it can never false-reject a target the compiler WOULD resolve — it flags
  * ONLY targets with no catalog candidate at all (an invented/mis-phrased name), which is exactly the
  * naming-variance the repair call can fix. OPEN_MODULE + context asserts carry advisory text targets, skipped. */
@@ -471,6 +435,14 @@ export function catalogTargetIssues(plan: TestPlan, graph: EvidenceGraph | null)
   return issues;
 }
 
+/** Navigation is setup, not a substitute for the reviewed case's actual interactions/assertions. */
+export function planSemanticIssues(plan: TestPlan): string[] {
+  const navigationSteps = plan.steps.filter((step) => 'action' in step && step.action === 'OPEN_MODULE').length;
+  return navigationSteps > 1
+    ? [`OPEN_MODULE may appear at most once, but the plan contains ${navigationSteps}; replace placeholder navigation steps with the reviewed actions/assertions they implement.`]
+    : [];
+}
+
 // ---------------------------------------------------------------------------------------------
 // Node entry points.
 // ---------------------------------------------------------------------------------------------
@@ -484,10 +456,14 @@ export async function authorTestCases(input: AuthorTestCasesInput): Promise<Auth
       // 'caseWriter' is the legacy Settings identity for case authoring — per-agent overrides keep working.
       agent: input.agent || 'caseWriter',
       schema: testCasesSchema,
-      schemaName: 'test_cases',
       system: input.system || CASE_AUTHORING_SYSTEM,
       prompt: buildCasesPrompt(input, catalog),
-      validate: validateCases,
+      validate: (wire) => {
+        const validated = validateCases(wire);
+        if (!validated.value) return validated;
+        const issues = caseCountIssues(validated.value, input.requestedCaseCount);
+        return issues.length ? { value: null, issues } : validated;
+      },
       signal: input.signal,
       overrides: input.overrides,
     });
@@ -508,14 +484,41 @@ export async function authorAbstractPlan(input: AuthorAbstractPlanInput): Promis
       // 'playwrightCoder' authored plans on the legacy AIQA_COMPILER path — same Settings identity here.
       agent: input.agent || 'playwrightCoder',
       schema: testPlanWireSchema,
-      schemaName: 'test_plan',
       system: input.system || PLAN_AUTHORING_SYSTEM,
       prompt: buildPlanPrompt(input, catalog),
       validate: (wire) => {
-        const { value, issues } = validatePlan(wire);
+        let { value, issues } = validatePlan(wire);
+        const sourceCount = input.testCase.steps?.length ?? 0;
+        if (value && sourceCount) {
+          const invalid = value.steps
+            .map((step, index) => ({ step, index }))
+            .filter(({ step }) => !step.sourceStep || step.sourceStep > sourceCount)
+            .map(({ index }) => `Plan step ${index + 1} must set sourceStep to a reviewed-case step from 1 through ${sourceCount}.`);
+          const mapped = new Set(value.steps.map((step) => step.sourceStep).filter((step): step is number => !!step));
+          const missing = Array.from({ length: sourceCount }, (_, index) => index + 1).filter((step) => !mapped.has(step));
+          const sourceOrder = value.steps.map((step) => step.sourceStep || 0);
+          const outOfOrder = sourceOrder.some((step, index) => index > 0 && step < sourceOrder[index - 1]);
+          if (invalid.length || missing.length || outOfOrder) {
+            return { value: null, issues: [
+              ...invalid,
+              ...(missing.length ? [`No plan operation maps reviewed-case step(s): ${missing.join(', ')}.`] : []),
+              ...(outOfOrder ? ['Plan operations must stay in sourceStep order so each reviewed case step compiles into one trace group.'] : []),
+            ] };
+          }
+          value = {
+            ...value,
+            sourceStepCount: sourceCount,
+            mappedSourceSteps: [...mapped].map((step) => step - 1),
+            steps: value.steps.map((step) => ({ ...step, id: `case:${step.sourceStep! - 1}` })),
+          };
+        }
         // P6: reject an otherwise-valid plan whose targets are not in the catalog, so the ONE repair call
         // re-authors them with exact catalog names before the all-or-nothing compiler drops the case.
-        if (value && isPlanTargetValidationEnabled()) {
+        if (value) {
+          const semanticIssues = planSemanticIssues(value);
+          if (semanticIssues.length) return { value: null, issues: semanticIssues };
+        }
+        if (value) {
           const targetIssues = catalogTargetIssues(value, input.evidenceGraph);
           if (targetIssues.length) return { value: null, issues: targetIssues };
         }

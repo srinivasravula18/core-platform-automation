@@ -1,18 +1,10 @@
-/**
- * Capability (tool) registry — Phase 2 of the agent-native re-architecture.
- *
- * One declarative place where a capability becomes reachable-by-name instead of being hand-picked into a
- * curated array or left orphaned (RC-3 Swagger parser, RC-4 MCP tools). Dispatch is a registry LOOKUP,
- * not a switch. The registry WRAPS the existing `AgentTool`s (server/ai/tools) — it does not reimplement
- * them — and additionally exposes capabilities that were built but never wired onto the running path.
- *
- * Additive + inert: nothing on the live path resolves tools through here yet (gated by AGENT_NATIVE_V1);
- * with the flag OFF this module is unused and cannot change current behavior.
- */
+/** Capability registry: a tool becomes reachable by name via lookup, not a dispatch switch. Wraps existing AgentTools. */
 import type { AgentTool } from '../../ai/tools/types';
 import type { ToolSpec } from '../../ai/providers/types';
+import type { ToolClass } from '../orchestration/contracts';
 import { coreTools } from '../../ai/tools/registry';
 import { apiEndpointsTool } from './apiEndpointsTool';
+import { urlHealthTool } from './urlHealthTool';
 
 export interface ToolDefinition {
   /** Canonical tool name (matches AgentTool.spec.name). */
@@ -27,6 +19,8 @@ export interface ToolDefinition {
   /** True for capabilities that require a live external session to execute (e.g. Playwright MCP) —
    * registered so they are DISCOVERABLE by intent (RC-4), bound to a real executor only when a session exists. */
   sessionScoped?: boolean;
+  /** Read tools are model-callable in-turn; state-changing ones are coordinator-only, never on a tool belt. */
+  toolClass?: ToolClass;
   /** True for DETERMINISTIC capabilities (the compiler, the executor) — invoked as tools an agent DELEGATEs
    * to, never LLM agents. "Agents decide; deterministic code executes." Registered so the orchestrator can
    * delegate to them by name (Phase 6); they run through the existing graph nodes, not an AgentTool. */
@@ -37,7 +31,8 @@ export interface ToolDefinition {
 export function defineTool(def: ToolDefinition): ToolDefinition {
   if (!def.name) throw new Error('defineTool: name is required.');
   if (!def.tool && !def.sessionScoped && !def.deterministic) throw new Error(`defineTool(${def.name}): a capability must provide an executable 'tool', or be sessionScoped/deterministic.`);
-  return { cost: 0, tags: [], sessionScoped: false, deterministic: false, ...def };
+  // Deterministic capabilities mutate state, so they are never model-callable.
+  return { cost: 0, tags: [], sessionScoped: false, deterministic: false, toolClass: def.deterministic ? 'state_changing' : 'read', ...def };
 }
 
 export class ToolRegistry {
@@ -58,10 +53,18 @@ export class ToolRegistry {
   list(): ToolDefinition[] { return [...this.byName.values()]; }
   byTag(tag: string): ToolDefinition[] { return this.list().filter((d) => (d.tags ?? []).includes(tag)); }
 
-  /** Resolve executable AgentTools for a set of names (session-scoped/unknown names are skipped). */
+  /** Resolve executable AgentTools for a set of names. State-changing capabilities are never returned:
+   * compile/execute/persist are coordinator-initiated, so they must not reach a model's tool belt. */
   toolsFor(names: string[]): AgentTool[] {
-    return names.map((n) => this.byName.get(n)?.tool).filter((t): t is AgentTool => Boolean(t));
+    return names
+      .map((n) => this.byName.get(n))
+      .filter((d): d is ToolDefinition => Boolean(d) && d!.toolClass !== 'state_changing')
+      .map((d) => d.tool)
+      .filter((t): t is AgentTool => Boolean(t));
   }
+
+  /** Every state-changing capability, for the coordinator to invoke by name. */
+  stateChanging(): ToolDefinition[] { return this.list().filter((d) => d.toolClass === 'state_changing'); }
 
   /** Model-facing specs for a set of names (or all, when omitted). */
   specs(names?: string[]): ToolSpec[] {
@@ -87,6 +90,9 @@ function seed(reg: ToolRegistry): void {
   // RC-3: the deterministic OpenAPI/Swagger parser was built but never reachable as a tool — wire it now.
   try {
     reg.registerAgentTool(apiEndpointsTool, { tags: ['api', 'grounding'], cost: 0 });
+    // One HTTP request beats a browser launch for "is it up?" — and stops an agent authoring against
+    // an error page it mistook for the product.
+    reg.registerAgentTool(urlHealthTool, { tags: ['grounding', 'health'], cost: 0 });
   } catch (err) { console.warn('[tool-registry] api-endpoints seed skipped:', (err as Error)?.message); }
 
   // RC-4: MCP browser tools are session-scoped (a spawned child process) — register them as DISCOVERABLE

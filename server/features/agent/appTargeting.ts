@@ -85,6 +85,27 @@ export function loadAdminNavModules(repoPath: string): AdminNavModule[] {
 }
 
 /**
+ * Does this target URL actually belong to the surface whose side-nav we parsed?
+ *
+ * The nav modules describe ONE surface in the bound repo. Offering them for a different target (a CRM
+ * URL, a third-party app) sends the run to the wrong place — the nav belongs to a surface the user is
+ * not testing. The surface name is taken from the sidebar file's own directory in the repo, so nothing
+ * about any product is hardcoded; when the repo yields no hint we stay permissive rather than blocking.
+ */
+export function targetMatchesAdminSurface(repoPath: string, targetUrl: string): boolean {
+  const file = findAdminSidebarFile(String(repoPath || '').trim());
+  if (!file) return false;
+  const url = String(targetUrl || '').toLowerCase();
+  if (!url) return false;
+  // Directory segments between the repo root and the sidebar file name the surface (e.g. ".../admin-ui/...").
+  const segments = path.relative(repoPath, file).split(/[\\/]/).slice(0, -1)
+    .map((s) => s.toLowerCase())
+    .filter((s) => s.length > 2 && !['src', 'app', 'apps', 'components', 'pages', 'lib', 'ui', 'web', 'client', 'frontend', 'packages'].includes(s));
+  if (!segments.length) return true; // no usable hint — do not block on a guess
+  return segments.some((s) => url.includes(s));
+}
+
+/**
  * Auto-resolve ONE admin nav module from a requirement's metadata object api_names (e.g. "app" → the
  * Apps section). Returns the nav id only when the refs point to exactly one section (singular/plural
  * tolerant); returns '' when they match zero or several — so a genuinely cross-cutting requirement

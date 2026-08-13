@@ -1,16 +1,4 @@
-/**
- * The Grounding Contract (Phase 3) — the law that kills guessing, made into a typed, testable primitive.
- *
- * Every grounding capability (live DOM, Swagger, metadata, repo research) publishes a typed CoverageReport
- * per run: which goal-intent terms it was asked to cover, which it covered, which are missing, and a
- * confidence. A deterministic gate then decides proceed / re-ground / block from those reports — so
- * "absence of evidence" becomes a loud, typed decision instead of a silent continue that the LLM fills
- * by guessing. This generalizes the RC-2 per-run gate to a per-SOURCE contract across all grounding kinds.
- *
- * Pure + app-agnostic: terms come from the goal, vocabulary from the live evidence — nothing hardcoded.
- * Additive: this is a library; the grounding node emits reports to the blackboard when AGENT_NATIVE_V1 is
- * on, but the existing evidence gate stays the authority until Phase 3 cutover, so behavior is unchanged.
- */
+/** Coverage contract library — the grounding node emits its reports to the blackboard. */
 import { goalTermCoverage } from '../../features/agent/workflow/goalTerms';
 
 export type GroundingSource = 'DOM' | 'SWAGGER' | 'METADATA' | 'REPO';

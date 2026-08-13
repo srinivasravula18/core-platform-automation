@@ -1,18 +1,8 @@
-/**
- * Message Bus — typed inter-agent messages over a persisted, per-run log (A2A Contract §4.2).
- *
- * Replaces the "mutate run: any + re-render into the next prompt" pattern with explicit, typed
- * messages: HANDOFF transfers ownership (router→planner→author→coder), DELEGATE asks for a sub-result,
- * CRITIQUE lets a reviewer refute a draft before compile, REQUEST/RESULT/QUESTION/ANSWER round out the
- * set. Every message carries `causationId` (the message it answers/continues) so a chain is traceable
- * and loops are detectable.
- *
- * Rails, not anarchy: a per-run message BUDGET hard-caps runaway chatter, and causation-chain depth is
- * bounded so a REQUEST→RESULT→REQUEST cycle can't spin forever. Persistence-agnostic like the blackboard
- * (Postgres `agent_messages` when configured, in-memory otherwise). Additive + inert until an agent is
- * migrated onto it (gated by AGENT_NATIVE_V1) — cannot change current behavior.
- */
+/** Message bus — typed inter-agent messages over a persisted per-run log, with causation chains and loop budgets. */
 import { isPostgresEnabled, query, uid, withTransaction } from '../../db/pool';
+
+/** Responses must answer something. An orphan RESULT/CRITIQUE/ANSWER is rejected, not silently logged. */
+const REQUIRES_CAUSATION: readonly AgentMessageType[] = ['RESULT', 'CRITIQUE', 'ANSWER'];
 
 export type AgentMessageType =
   | 'REQUEST'
@@ -40,6 +30,10 @@ export interface AgentMessage<T = unknown> {
   /** The message id this one was caused by (answer/continuation), for chain tracing + cycle detection. */
   causationId: string | null;
   at: string;
+  /** Orchestration correlation — null on pre-Phase-1 rows, which stay readable. */
+  taskId: string | null;
+  agentInstanceId: string | null;
+  traceId: string | null;
 }
 
 export interface PublishInput<T = unknown> {
@@ -49,6 +43,9 @@ export interface PublishInput<T = unknown> {
   type: AgentMessageType;
   payload: T;
   causationId?: string | null;
+  taskId?: string | null;
+  agentInstanceId?: string | null;
+  traceId?: string | null;
 }
 
 export interface HistoryOptions {
@@ -56,6 +53,22 @@ export interface HistoryOptions {
   types?: AgentMessageType[];
   /** Cap the number returned (most-recent-first slicing is the caller's job — this returns append order). */
   limit?: number;
+}
+
+/** Thrown when a message breaks the protocol (e.g. a response answering nothing) — a contract error. */
+export class ProtocolViolationError extends Error {
+  constructor(message: string, readonly runId: string) {
+    super(message);
+    this.name = 'ProtocolViolationError';
+  }
+}
+
+/** Rejects orphan responses. Task-bound only, so legacy stage projections keep working unchanged. */
+function assertProtocol(input: PublishInput): void {
+  if (!input.taskId) return;
+  if (REQUIRES_CAUSATION.includes(input.type) && !input.causationId) {
+    throw new ProtocolViolationError(`${input.type} for task ${input.taskId} must carry causationId — an orphan response is not traceable.`, input.runId);
+  }
 }
 
 /** Thrown when a run exceeds its message budget or causation-chain depth — a loop guard, not a normal error. */
@@ -112,6 +125,7 @@ export class InMemoryMessageBus implements MessageBus {
   private seq = new Map<string, number>();
 
   async publish<T>(input: PublishInput<T>): Promise<AgentMessage<T>> {
+    assertProtocol(input);
     const list = this.log.get(input.runId) ?? [];
     if (list.length >= maxMessagesPerRun()) {
       throw new BusBudgetExceededError(`Message budget exhausted for run ${input.runId} (${list.length} >= ${maxMessagesPerRun()}).`, input.runId);
@@ -133,6 +147,9 @@ export class InMemoryMessageBus implements MessageBus {
       payload: input.payload,
       causationId: input.causationId ?? null,
       at: new Date().toISOString(),
+      taskId: input.taskId ?? null,
+      agentInstanceId: input.agentInstanceId ?? null,
+      traceId: input.traceId ?? null,
     };
     list.push(msg);
     this.log.set(input.runId, list);
@@ -173,6 +190,9 @@ interface MessageRow {
   payload: unknown;
   causation_id: string | null;
   created_at: string;
+  task_id: string | null;
+  agent_instance_id: string | null;
+  trace_id: string | null;
 }
 
 function rowToMessage(r: MessageRow): AgentMessage {
@@ -186,13 +206,20 @@ function rowToMessage(r: MessageRow): AgentMessage {
     payload: r.payload,
     causationId: r.causation_id,
     at: new Date(r.created_at).toISOString(),
+    taskId: r.task_id ?? null,
+    agentInstanceId: r.agent_instance_id ?? null,
+    traceId: r.trace_id ?? null,
   };
 }
 
 export class PostgresMessageBus implements MessageBus {
   async publish<T>(input: PublishInput<T>): Promise<AgentMessage<T>> {
+    assertProtocol(input);
     const id = uid('msg');
     const row = await withTransaction(async (client) => {
+      // Same race as the blackboard: seq derives from a count, so concurrent publishers must serialize
+      // per run or two messages claim the same seq. Transaction-scoped and run-scoped.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`agent_messages:${input.runId}`]);
       const countRes = await client.query('SELECT COUNT(*)::int AS n FROM agent_messages WHERE run_id=$1', [input.runId]);
       const count = Number(countRes.rows[0]?.n ?? 0);
       if (count >= maxMessagesPerRun()) {
@@ -210,9 +237,10 @@ export class PostgresMessageBus implements MessageBus {
       }
       const seq = count + 1;
       const ins = await client.query(
-        `INSERT INTO agent_messages (id, run_id, seq, from_agent, to_agent, type, payload, causation_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8) RETURNING *`,
-        [id, input.runId, seq, input.from, input.to ?? null, input.type, JSON.stringify(input.payload ?? null), input.causationId ?? null],
+        `INSERT INTO agent_messages (id, run_id, seq, from_agent, to_agent, type, payload, causation_id, task_id, agent_instance_id, trace_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11) RETURNING *`,
+        [id, input.runId, seq, input.from, input.to ?? null, input.type, JSON.stringify(input.payload ?? null), input.causationId ?? null,
+         input.taskId ?? null, input.agentInstanceId ?? null, input.traceId ?? null],
       );
       return ins.rows[0] as MessageRow;
     });

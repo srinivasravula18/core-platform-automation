@@ -186,7 +186,6 @@ async function defaultNarrate(report: AnalystReport): Promise<string | null> {
     node: 'analyst',
     agent: 'defectTriage',
     schema: narrativeSchema,
-    schemaName: 'analyst_narrative',
     system: `${systemPromptFor('defectTriage')}\n--- RELEASE INTELLIGENCE NARRATIVE ---\nWrite a short executive release assessment (3-6 sentences) STRICTLY from the facts JSON you receive. Never invent numbers, names, or causes not present in the facts. State the recommendation and the top reasons. Return ONLY the JSON object.`,
     prompt: `FACTS:\n${JSON.stringify(facts)}`,
     validate: (wire) => {

@@ -25,10 +25,9 @@ import { registerSearchRoutes } from '../../../services/search';
 import { registerTagRoutes } from '../../../services/tags';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
-import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
+import { getWorkflowCheckpointer, closeWorkflowCheckpointer, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
 import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs, resumeScheduleExecutions } from '../../../services/automation';
-import { isEvidenceOracleEnabled } from '../../../server/features/agent/evidenceOracleFlag';
 
 let processGuardsInstalled = false;
 
@@ -47,7 +46,7 @@ export function installApiProcessGuards() {
 let shutdownHooksInstalled = false;
 
 function installWorkflowShutdownHooks() {
-  if (shutdownHooksInstalled || !isWorkflowGraphEnabled()) return;
+  if (shutdownHooksInstalled) return;
   shutdownHooksInstalled = true;
 
   const shutdown = async (signal: string) => {
@@ -92,14 +91,12 @@ export async function createExpressApp() {
     }
   }
 
-  if (isWorkflowGraphEnabled()) {
-    // Fail-closed: let construction errors (e.g. production without DATABASE_URL) crash startup, not log-and-continue.
-    await getWorkflowCheckpointer();
-    console.log('[workflow] graph runtime checkpointer initialized');
-    // This fresh process has no in-flight runs, so any run still 'running' in the store was orphaned by the
-    // previous process (its in-memory stash died with it) — fail them now instead of leaving the UI spinning.
-    await reconcileOrphanedRunsOnStartup().catch((err) => console.error('[workflow] orphaned-run reconcile failed:', err?.message || err));
-  }
+  // Fail-closed: let construction errors (e.g. production without DATABASE_URL) crash startup, not log-and-continue.
+  await getWorkflowCheckpointer();
+  console.log('[workflow] graph runtime checkpointer initialized');
+  // This fresh process has no in-flight runs, so any run still 'running' in the store was orphaned by the
+  // previous process (its in-memory stash died with it) — fail them now instead of leaving the UI spinning.
+  await reconcileOrphanedRunsOnStartup().catch((err) => console.error('[workflow] orphaned-run reconcile failed:', err?.message || err));
 
   await loadPersistedSettings();
   startMemoryRetention();
@@ -138,11 +135,9 @@ export async function createExpressApp() {
       (!process.env.DEPLOYMENT_MODE && String(process.env.NODE_ENV || '').toLowerCase() === 'production')
         ? 'production'
         : 'local';
-    // graphEngine: curl-able confirmation that AGENT_GRAPH_V2 actually reached the running process —
-    // true here means new runs route through the LangGraph engine; false means the legacy pipeline.
     // remoteAgent: curl-able confirmation that REMOTE_AGENT_V1 reached the running process —
     // the frontend gates the Record & Play (local desktop agent) UI on this.
-    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled(), remoteAgent: isRemoteAgentEnabled(), evidenceOracle: isEvidenceOracleEnabled() });
+    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', remoteAgent: isRemoteAgentEnabled() });
   });
 
   registerAuthRoutes(app);
@@ -152,7 +147,7 @@ export async function createExpressApp() {
   registerCredentialsRoutes(app);
   registerControllerRoutes(app);
   registerAgentRuntimeRoutes(app);
-  registerConversationalRuntimeRoutes(app); // Conversational Runtime (flag CONVERSATIONAL_RUNTIME_V1)
+  registerConversationalRuntimeRoutes(app); // Conversational Runtime (flag
   registerChatRoutes(app);
   registerPlaywrightRoutes(app);
   registerSearchRoutes(app);

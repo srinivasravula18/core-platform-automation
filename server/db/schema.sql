@@ -1706,3 +1706,97 @@ CREATE TABLE IF NOT EXISTS deletion_batches (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS deletion_batches_created_idx ON deletion_batches(created_at DESC);
+
+-- ---------------------------------------------------------------------------------------------
+-- Orchestration ledger (full multi-agent orchestration, Phase 1).
+-- Additive + idempotent. Nothing here decides control flow until the coordinator lands; these are
+-- the durable columns/tables the task lifecycle, fact lifecycle, and review scorecards need.
+-- ---------------------------------------------------------------------------------------------
+
+-- Messages gain task/instance/trace correlation so one agent's behavior is reconstructable across
+-- checkpoint, bus, fact, model turn, and UI. Existing rows keep NULLs and stay readable.
+ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS task_id           TEXT;
+ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS agent_instance_id TEXT;
+ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS trace_id          TEXT;
+CREATE INDEX IF NOT EXISTS agent_messages_task_idx ON agent_messages(run_id, task_id, seq);
+
+-- Blackboard facts gain the acceptance lifecycle. `status` is NULL on pre-Phase-1 rows and reads back
+-- as 'legacy': visible for audit, never promotable to authoritative (backward-compatibility item 13).
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS status             TEXT;
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS digest             TEXT;
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS schema_version     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS supersedes_fact_id TEXT;
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS task_id            TEXT;
+ALTER TABLE agent_blackboard ADD COLUMN IF NOT EXISTS historical         BOOLEAN NOT NULL DEFAULT FALSE;
+-- Authoritative reads filter to accepted facts, so that is the index that matters.
+CREATE INDEX IF NOT EXISTS agent_blackboard_accepted_idx ON agent_blackboard(run_id, kind, seq) WHERE status = 'accepted';
+
+-- The task ledger. Checkpoints remain the scheduling authority; this table is the queryable,
+-- cross-process mirror the console and operators read without loading a checkpoint.
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  task_id            TEXT PRIMARY KEY,
+  run_id             TEXT NOT NULL,
+  plan_id            TEXT NOT NULL,
+  mission_kind       TEXT NOT NULL,
+  agent_role_id      TEXT NOT NULL,
+  agent_key          TEXT NOT NULL,
+  display_name       TEXT NOT NULL,
+  definition_version INTEGER NOT NULL,
+  agent_instance_id  TEXT,
+  codex_thread_id    TEXT,
+  status             TEXT NOT NULL,
+  objective          TEXT NOT NULL DEFAULT '',
+  output_contract    TEXT NOT NULL DEFAULT '',
+  depends_on         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  input_fact_refs    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  attempt            INTEGER NOT NULL DEFAULT 0,
+  max_attempts       INTEGER NOT NULL DEFAULT 2,
+  -- Unique per run: what makes a deterministic capability run exactly once across retry and restart.
+  idempotency_key    TEXT NOT NULL,
+  budget             JSONB NOT NULL DEFAULT '{}'::jsonb,
+  usage              JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_tasks_run_idx ON agent_tasks(run_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_idempotency_idx ON agent_tasks(run_id, idempotency_key);
+
+-- Item-level human review observations. Richer than approved/rejected: `added_by_human` exposes recall
+-- gaps and `removed_by_human` exposes over-generation, neither of which an acceptance rate can measure.
+-- Role/version/prompt_hash are recorded so scorecards never mix unlike cohorts.
+CREATE TABLE IF NOT EXISTS agent_human_labels (
+  id                 TEXT PRIMARY KEY,
+  run_id             TEXT NOT NULL,
+  correlation_id     TEXT NOT NULL,
+  item_id            TEXT NOT NULL,
+  label              TEXT NOT NULL,
+  reason_code        TEXT,
+  before_artifact_id TEXT,
+  after_artifact_id  TEXT,
+  agent_role_id      TEXT,
+  definition_version INTEGER,
+  prompt_hash        TEXT,
+  actor              TEXT NOT NULL DEFAULT '',
+  decided_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_human_labels_run_idx ON agent_human_labels(run_id, correlation_id);
+CREATE INDEX IF NOT EXISTS agent_human_labels_cohort_idx ON agent_human_labels(agent_role_id, definition_version, decided_at DESC);
+
+-- Artifact lineage — what makes a visible defect traceable backward to source evidence. Producer and
+-- digest are stamped by the runtime, never by a model.
+CREATE TABLE IF NOT EXISTS agent_artifact_lineage (
+  artifact_id            TEXT PRIMARY KEY,
+  run_id                 TEXT NOT NULL,
+  kind                   TEXT NOT NULL,
+  digest                 TEXT NOT NULL,
+  producer_role_id       TEXT,
+  producer_agent_key     TEXT,
+  producer_version       INTEGER,
+  producer_instance_id   TEXT,
+  derived_from           JSONB NOT NULL DEFAULT '[]'::jsonb,
+  superseded_by          TEXT,
+  human_edited           BOOLEAN NOT NULL DEFAULT FALSE,
+  review_correlation_id  TEXT,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_artifact_lineage_run_idx ON agent_artifact_lineage(run_id, kind);

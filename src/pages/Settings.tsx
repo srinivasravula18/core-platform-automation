@@ -12,10 +12,11 @@ import { showConfirm } from '@/src/lib/dialog';
 import { FEATURE_OPTIONS } from '../lib/features';
 import { useUrlState } from '@/src/lib/useUrlState';
 
-type Provider = 'gemini' | 'openai' | 'anthropic';
+/** The one AI runtime. Kept as a named constant because usage records and RBAC grants key on it. */
+const CODEX_RUNTIME = 'codex';
 
 type ProviderInfo = {
-  name: Provider;
+  name: string;
   defaultModel: string;
   alternatives: string[];
   enabled: boolean;
@@ -23,10 +24,21 @@ type ProviderInfo = {
   apiKeyConfigured: boolean;
   callable: boolean;
   model: string;
+  effort: string;
   authMode: 'api_key' | 'account';
-  accountTool: string;
-  accountCliAllowed: boolean;
   apiKeyMasked: string;
+  /** Live runtime auth, not stored config — whether Codex can actually run right now. */
+  authenticated: boolean;
+  authMethod: string | null;
+  authError: string;
+};
+
+type DeviceLogin = {
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+  state: 'pending' | 'success' | 'error' | 'cancelled';
+  error?: string;
 };
 
 type AgentPrompt = {
@@ -63,19 +75,25 @@ type WebsiteUser = {
 
 type SaveStatus = { type: 'success' | 'error' | 'idle'; message: string };
 
-const PROVIDER_LABELS: Record<Provider, string> = {
-  gemini: 'Google Gemini',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-};
+/** The orchestration roster, in pipeline order. Maestro supervises; each specialist owns one deliverable. */
+const ORCHESTRATION_ROSTER = ['maestro', 'atlas', 'compass', 'appInspector', 'scribeRequirements', 'testPlanner', 'suiteDesigner', 'forgeCases', 'sentinel', 'anvil', 'sleuth', 'herald'];
 
-const AGENT_LABELS: Record<string, { label: string; description: string }> = {
+const AGENT_LABELS: Record<string, { label: string; description: string; role?: string }> = {
+  maestro: { label: 'Maestro — Orchestrator', description: 'Decides only scope ambiguity, repair-vs-escalate, and budget breach. Never routes nodes.', role: 'Supervisor' },
+  atlas: { label: 'Atlas — Repo Cartographer', description: 'Reads the codebase once and produces the repo map every other agent depends on.', role: 'Grounding' },
+  compass: { label: 'Compass — Scope Resolver', description: 'Subtraction: reduces the repo map to the minimal slice needed to test the target.', role: 'Grounding' },
+  scribeRequirements: { label: 'Scribe — Requirements Analyst', description: 'Produces testable requirements with acceptance criteria and source references.', role: 'Authoring' },
+  forgeCases: { label: 'Forge — Test Case Designer', description: 'Designs executable cases from one approved requirement, using only inventory selectors.', role: 'Authoring' },
+  sentinel: { label: 'Sentinel — Critic', description: 'Adversarially refutes ungrounded, duplicate, unverifiable, or unsafe drafts before compile.', role: 'Verification' },
+  anvil: { label: 'Anvil — Script Engineer', description: 'Generates executable specs from approved cases; evidence capture comes from the shared fixture.', role: 'Authoring' },
+  sleuth: { label: 'Sleuth — Triage Analyst', description: 'Triages one stable failure, ruling out the test before blaming the product.', role: 'Analysis' },
+  herald: { label: 'Herald — Report Composer', description: 'Composes the run report: verdict, counts, new defects, regressions, suite health, coverage.', role: 'Analysis' },
   chatAssistant: { label: 'Chat Assistant', description: 'Routes greetings, QA tasks, and names artifacts/runs.' },
   caseWriter: { label: 'Case Writer', description: 'Writes, reworks, expands cases, and covers code changes.' },
-  testPlanner: { label: 'Test Planner', description: 'Drafts a structured test plan from a user request.' },
-  suiteDesigner: { label: 'Suite & Folder Organizer', description: 'Groups cases into suites and organizes the repository.' },
+  testPlanner: { label: 'Test Planner', description: 'Drafts a structured test plan from a user request.' , role: 'Planning' },
+  suiteDesigner: { label: 'Suite & Folder Organizer', description: 'Groups cases into suites and organizes the repository.' , role: 'Planning' },
   playwrightCoder: { label: 'Playwright Coder', description: 'Generates Playwright TypeScript scripts.' },
-  appInspector: { label: 'Application Inspector', description: 'Drives a headless browser to inspect a flow.' },
+  appInspector: { label: 'Application Inspector', description: 'Drives a headless browser to inspect a flow.' , role: 'Grounding' },
   defectTriage: { label: 'Defect & Report Analyst', description: 'Triages defects and writes report narratives.' },
   featureAnalyst: { label: 'Feature Analyst', description: 'Analyzes one source-grounded feature and its business rules.' },
   featureDiscoveryAgent: { label: 'Feature Discovery', description: 'Maps source-grounded features and subfeatures across the app.' },
@@ -88,7 +106,7 @@ export default function Settings() {
   const admin = isAdmin();
 
   const tabs: Array<[typeof tab, string, any]> = [
-    ['providers', 'AI Providers', Bot],
+    ['providers', 'AI Runtime', Bot],
     ['prompts', 'System Prompts', MessageSquare],
     ['credentials', 'Credentials', Globe],
     ['cost', 'Cost & Logs', Activity],
@@ -110,7 +128,7 @@ export default function Settings() {
     <div className="app-page-shell space-y-6 px-1 sm:px-0">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">AI providers, prompts, credentials, and cost. Set autonomy from the Agent Console chat.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">AI runtime, prompts, credentials, and cost. Set autonomy from the Agent Console chat.</p>
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 text-sm">
@@ -148,7 +166,7 @@ function DataSection() {
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
 
   const clearArtifacts = async () => {
-    if (!await showConfirm("Delete all QA artifacts and this signed-in user's chat history? Other users' chat history and all automation data and uploads will be kept.", { tone: 'danger' })) return;
+    if (!await showConfirm('Reset the workspace? This permanently deletes ALL data — test artifacts, agent runs, every user\'s chat history, and all automation data. Only users, projects/apps, and settings are kept. This cannot be undone.', { tone: 'danger' })) return;
     setBusy(true);
     setStatus({ type: 'idle', message: '' });
     try {
@@ -159,7 +177,11 @@ function DataSection() {
       Object.keys(localStorage)
         .filter((key) => key.startsWith('tfa_active_conversation::'))
         .forEach((key) => localStorage.removeItem(key));
-      setStatus({ type: 'success', message: `Deleted ${total} stored record${total === 1 ? '' : 's'}, including your chat history. Other users' chats and automation data were kept.` });
+      const byGroup = Object.entries(data.removed || {})
+        .filter(([, value]) => Number(value) > 0)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(' · ');
+      setStatus({ type: 'success', message: `Workspace reset — ${total} record${total === 1 ? '' : 's'} deleted.${byGroup ? ` (${byGroup})` : ''} Users, projects, and settings were kept.` });
     } catch (error: any) {
       setStatus({ type: 'error', message: error?.message || 'Failed to delete artifacts' });
     } finally {
@@ -173,10 +195,31 @@ function DataSection() {
       <div className="rounded-xl border border-red-500/40 bg-[var(--bg-card)] p-4 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 className="text-lg font-medium text-red-400">Delete Stored Artifacts</h2>
+            <h2 className="text-lg font-medium text-red-400">Reset Workspace Data</h2>
             <p className="mt-1 max-w-2xl text-sm text-[var(--text-muted)]">
-              Clears folders, plans, suites, test cases, runs, scripts, reports, requirements, links, defects, agent runs, selector blackboards, and the signed-in user's chat history. Other users' chat history, run memory, automation agents, recordings, jobs, schedules, uploaded automation artifacts, settings, credentials, users, projects, and apps are kept.
+              Permanently deletes everything except users, projects, and settings. This is not a soft delete — nothing lands in the Recycle Bin and it cannot be undone.
             </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-red-400">Deleted</div>
+                <ul className="mt-1 space-y-0.5 text-xs text-[var(--text-muted)]">
+                  <li>Test cases, plans, suites, runs, requirements, reports, folders, defects, scripts, tags</li>
+                  <li>Agent runs, orchestration ledger, blackboard facts, messages, run memory, graph checkpoints</li>
+                  <li>Chat history for <span className="font-medium text-[var(--text-primary)]">every user</span></li>
+                  <li>Automation: paired agents, recordings, jobs, schedules, datasets, uploads</li>
+                  <li>Activity and audit logs</li>
+                </ul>
+              </div>
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">Kept</div>
+                <ul className="mt-1 space-y-0.5 text-xs text-[var(--text-muted)]">
+                  <li>Users, sessions, and access groups</li>
+                  <li>Projects and apps</li>
+                  <li>All settings, including system-prompt overrides</li>
+                  <li>Website credentials and connected repositories</li>
+                </ul>
+              </div>
+            </div>
           </div>
           <button
             onClick={clearArtifacts}
@@ -184,7 +227,7 @@ function DataSection() {
             className="inline-flex items-center justify-center gap-2 rounded-md border border-red-500 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-            Delete Artifacts
+            Reset Workspace
           </button>
         </div>
       </div>
@@ -418,7 +461,7 @@ const TIER_VERBS: Record<'readOnly' | 'editor' | 'full', (verbs: string[]) => st
   full: (v) => v,
 };
 
-const PROVIDER_OPTIONS = [{ id: 'gemini', name: 'Gemini' }, { id: 'openai', name: 'OpenAI' }, { id: 'anthropic', name: 'Anthropic' }];
+const PROVIDER_OPTIONS = [{ id: CODEX_RUNTIME, name: 'Codex' }];
 const EMPTY_GRANTS: GroupGrants = { features: [], projects: [], websites: [], providers: [] };
 
 const humanizeToken = (s: string) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -705,7 +748,7 @@ function GroupsSection() {
             <GrantCheckboxes title="Features" options={FEATURE_OPTIONS} value={editing.grants.features} onChange={(v) => setGrant('features', v)} />
             <GrantCheckboxes title="Projects" options={projects} value={editing.grants.projects} onChange={(v) => setGrant('projects', v)} />
             <GrantCheckboxes title="Deployment URLs" options={websites} value={editing.grants.websites} onChange={(v) => setGrant('websites', v)} />
-            <GrantCheckboxes title="AI Providers" options={PROVIDER_OPTIONS} value={editing.grants.providers} onChange={(v) => setGrant('providers', v)} />
+            <GrantCheckboxes title="AI Runtime" options={PROVIDER_OPTIONS} value={editing.grants.providers} onChange={(v) => setGrant('providers', v)} />
           </div>
 
           {catalog && (
@@ -901,202 +944,313 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: '
 }
 
 function ProvidersSection() {
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [defaultProvider, setDefaultProvider] = useState<Provider>('gemini');
-  const [agentMap, setAgentMap] = useState<Record<string, Provider>>({});
+  const [runtime, setRuntime] = useState<ProviderInfo | null>(null);
+  const [agentModels, setAgentModels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<SaveStatus>({ type: 'idle', message: '' });
+  const [login, setLogin] = useState<DeviceLogin | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/ai/providers');
       const data = await res.json();
-      setProviders(data.providers || []);
-      setDefaultProvider(data.defaultProvider || 'gemini');
-      setAgentMap(data.agentProviderMap || {});
-    } catch (e) {
-      setStatus({ type: 'error', message: 'Failed to load providers' });
+      setRuntime((data.providers || [])[0] || null);
+      setAgentModels(data.agentModelMap || {});
+    } catch {
+      setStatus({ type: 'error', message: 'Failed to load the AI runtime' });
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  // All mutations update local state optimistically and DON'T refetch the whole list,
-  // so changing a model/provider/toggle never flashes or "refreshes" the page. We only
-  // re-sync from the server (load) if a request actually fails.
-  const saveKey = async (provider: Provider, apiKey: string) => {
+  // Mutations update local state optimistically and do NOT refetch, so changing a model or
+  // toggle never flashes the page. We only re-sync from the server when a request fails.
+  const save = async (body: Record<string, unknown>, optimistic: Partial<ProviderInfo>, message: string) => {
     setStatus({ type: 'idle', message: '' });
-    const masked = apiKey.length <= 8 ? '****' : `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`;
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider
-        ? { ...p, apiKeyMasked: masked, configured: p.authMode === 'account' ? p.configured : true, callable: (p.authMode === 'account' ? p.configured : true) && p.enabled }
-        : p
-    )));
-    const res = await fetch(`/api/ai/providers/${provider}`, {
+    setRuntime((prev) => (prev ? { ...prev, ...optimistic } : prev));
+    const res = await fetch(`/api/ai/providers/${CODEX_RUNTIME}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey }),
+      body: JSON.stringify(body),
     });
-    if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved` });
-    } else {
-      setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} key` });
-      load();
-    }
+    if (res.ok) setStatus({ type: 'success', message });
+    else { setStatus({ type: 'error', message: `Failed to save — ${message.toLowerCase()}` }); load(); }
   };
 
-  const setAuthMode = async (provider: Provider, authMode: ProviderInfo['authMode']) => {
-    setStatus({ type: 'idle', message: '' });
-    const current = providers.find((p) => p.name === provider);
-    if (authMode === 'account' && current && !current.accountCliAllowed) {
-      setStatus({ type: 'error', message: 'Subscription/account CLI auth is local-only. Use API key mode in test and production.' });
-      return;
-    }
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider
-        ? {
-            ...p,
-            authMode,
-            configured: authMode === 'api_key' ? !!p.apiKeyMasked : p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
-            callable: authMode === 'api_key' ? !!p.apiKeyMasked && p.enabled : p.enabled && p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
-            accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
-          }
-        : p
-    )));
-    const res = await fetch(`/api/ai/providers/${provider}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ authMode }),
-    });
-    if (res.ok) {
-      setStatus({
-        type: 'success',
-        message: authMode === 'api_key'
-          ? `${PROVIDER_LABELS[provider]} will use API key billing`
-          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
-      });
-    } else {
-      setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
-      load();
-    }
-  };
-
-  const setEnabled = async (provider: Provider, enabled: boolean) => {
-    setStatus({ type: 'idle', message: '' });
-    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
-    if (enabled && providers.find((p) => p.name === provider)?.configured && !providers.find((p) => p.name === defaultProvider)?.callable) {
-      setDefaultProvider(provider);
-    }
-    const res = await fetch(`/api/ai/providers/${provider}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
-    } else {
-      setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
-      load();
-    }
-  };
-
-  const setModel = async (provider: Provider, model: string) => {
-    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model } : p)));
-    const res = await fetch(`/api/ai/providers/${provider}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
-    });
+  const clearKey = async () => {
+    if (!await showConfirm('Remove the OpenAI API key? Codex will fall back to your ChatGPT login.', { tone: 'danger' })) return;
+    setRuntime((prev) => (prev ? { ...prev, apiKeyMasked: '', apiKeyConfigured: false, authMode: 'account' } : prev));
+    const res = await fetch(`/api/ai/providers/${CODEX_RUNTIME}/key`, { method: 'DELETE' });
     if (!res.ok) load();
   };
 
-  const clearKey = async (provider: Provider) => {
-    if (!await showConfirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`, { tone: 'danger' })) return;
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
-    )));
-    const res = await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
-    if (!res.ok) load();
+  const test = async () => {
+    setTesting(true);
+    setTestResult({ type: 'idle', message: '' });
+    try {
+      const res = await fetch(`/api/ai/providers/${CODEX_RUNTIME}/test`, { method: 'POST' });
+      const data = await res.json();
+      setTestResult(data.ok
+        ? { type: 'success', message: `Connected · ${data.model || 'default model'}` }
+        : { type: 'error', message: `Failed · ${data.error || 'unreachable'}` });
+    } catch (error) {
+      setTestResult({ type: 'error', message: `Failed · ${error instanceof Error ? error.message : 'unreachable'}` });
+    } finally {
+      setTesting(false);
+    }
   };
 
-  const test = async (provider: Provider): Promise<SaveStatus> => {
+  // Device-code sign-in: the admin completes the code in their OWN browser, so a deployed
+  // server needs neither a browser nor shell access. We poll until the runtime settles it.
+  const startSignIn = async () => {
+    setSigningIn(true);
     setStatus({ type: 'idle', message: '' });
     try {
-      const res = await fetch(`/api/ai/providers/${provider}/test`, { method: 'POST' });
+      const res = await fetch('/api/ai/runtime/login', { method: 'POST' });
       const data = await res.json();
-      return data.ok
-        ? { type: 'success', message: `Connected · ${data.model || 'default model'}` }
-        : { type: 'error', message: `Failed · ${data.error || 'unreachable'}` };
+      if (!res.ok) throw new Error(data?.error || 'Could not start sign-in');
+      setLogin(data);
     } catch (error) {
-      return { type: 'error', message: `Failed · ${error instanceof Error ? error.message : 'unreachable'}` };
+      setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Could not start sign-in' });
+      setSigningIn(false);
     }
   };
 
-  const setDefault = async (provider: Provider, model: string) => {
-    setDefaultProvider(provider);
-    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model, enabled: true, callable: p.configured } : p)));
-    setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
-    const res = await fetch('/api/ai/default-provider', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, model }),
-    });
-    if (!res.ok) load();
+  const cancelSignIn = async (loginId: string) => {
+    await fetch(`/api/ai/runtime/login/${loginId}/cancel`, { method: 'POST' }).catch(() => {});
+    setLogin(null);
+    setSigningIn(false);
   };
 
-  const setAgentProvider = async (agent: string, provider: Provider) => {
-    setAgentMap((prev) => ({ ...prev, [agent]: provider }));
+  const signOut = async () => {
+    if (!await showConfirm('Sign out of the ChatGPT account? Agents stop running until you sign in again.', { tone: 'danger' })) return;
+    const res = await fetch('/api/ai/runtime/logout', { method: 'POST' });
+    setStatus(res.ok
+      ? { type: 'success', message: 'Signed out of Codex' }
+      : { type: 'error', message: 'Could not sign out' });
+    load();
+  };
+
+  useEffect(() => {
+    if (!login || login.state !== 'pending') return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/ai/runtime/login/${login.loginId}`);
+        if (!res.ok) return;
+        const data: DeviceLogin = await res.json();
+        if (data.state === 'pending') return;
+        setLogin(data.state === 'success' ? null : data);
+        setSigningIn(false);
+        if (data.state === 'success') {
+          setStatus({ type: 'success', message: 'Signed in to ChatGPT — Codex is connected' });
+          load();
+        } else if (data.state === 'error') {
+          setStatus({ type: 'error', message: data.error || 'Sign-in did not complete' });
+        }
+      } catch { /* transient; the next tick retries */ }
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [login, load]);
+
+  const setAgentModel = async (agent: string, model: string) => {
+    setAgentModels((prev) => ({ ...prev, [agent]: model }));
     const res = await fetch('/api/ai/agent-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent, provider }),
+      body: JSON.stringify({ agent, model }),
     });
     if (!res.ok) load();
   };
 
-  // Only show the skeleton on the very first load. Refetches after a save/toggle
-  // (load() flips `loading` again) must NOT unmount the section — otherwise the whole
-  // page flashes/reconfigures and the API key being typed in a card is lost.
-  if (loading && providers.length === 0) return <SkeletonCard />;
-  const enabledProviders = providers.filter((p) => p.enabled);
+  // Only skeleton on the very first load — a refetch after a save must not unmount the
+  // section, or the page flashes and a key being typed is lost.
+  if (loading && !runtime) return <SkeletonCard />;
+  if (!runtime) return <StatusBanner status={{ type: 'error', message: 'The AI runtime could not be loaded.' }} />;
+
+  const models = [runtime.defaultModel, ...runtime.alternatives];
+  const usingApiKey = runtime.authMode === 'api_key';
 
   return (
     <div className="space-y-6">
       <StatusBanner status={status} />
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">AI Providers</h2>
+        <h2 className="text-lg font-medium">AI Runtime</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Keep service configuration here. API key mode is used by Test Flow AI server calls; subscription/account mode documents external Codex or Claude Code auth and is not called as an API key.
+          Every agent runs on Codex. <strong>Sign in with ChatGPT</strong> below to connect an account — it works on a
+          deployed server too: you get a short code and finish in a browser on your own machine, so the server needs
+          neither a browser nor an API key. Subscription turns are not billed per token. Add an OpenAI API key instead
+          to run in API-key mode, where spend is tracked under Cost.
         </p>
 
-        <div className="mt-6 space-y-4">
-          {providers.map((p) => (
-            <ProviderCard
-              key={p.name}
-              provider={p}
-              onSaveKey={(apiKeyValue) => saveKey(p.name, apiKeyValue)}
-              onSetEnabled={(enabled) => setEnabled(p.name, enabled)}
-              onSetAuthMode={(authMode) => setAuthMode(p.name, authMode)}
-              onSetModel={(m) => setModel(p.name, m)}
-              onClearKey={() => clearKey(p.name)}
-              onTest={() => test(p.name)}
-              onSetDefault={(m) => setDefault(p.name, m)}
-              isDefault={defaultProvider === p.name}
-            />
-          ))}
+        <div className="mt-6 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[var(--bg-primary)] text-[var(--accent)]">
+              <Bot className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-medium">Codex</h3>
+                {runtime.callable && runtime.authenticated ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
+                    <CheckCircle className="h-3 w-3" /> Active
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
+                    <AlertCircle className="h-3 w-3" /> {runtime.enabled ? 'Not signed in' : 'Disabled'}
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-[var(--text-muted)]">
+                {usingApiKey
+                  ? runtime.apiKeyMasked ? `API key: ${runtime.apiKeyMasked}` : 'API key mode'
+                  : runtime.authenticated ? `Signed in with ${runtime.authMethod === 'apikey' ? 'an API key' : 'a ChatGPT account'}` : (runtime.authError || 'Not signed in')}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => save({ enabled: !runtime.enabled }, { enabled: !runtime.enabled, callable: !runtime.enabled }, `Runtime ${runtime.enabled ? 'disabled' : 'enabled'}`)}
+                className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
+                  runtime.enabled
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                    : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
+                }`}
+              >
+                {runtime.enabled ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                onClick={test}
+                disabled={testing}
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                {testing ? 'Testing…' : 'Test connection'}
+              </button>
+              {runtime.authenticated ? (
+                <button type="button" onClick={signOut} className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-red-500/40 hover:text-red-500">
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startSignIn}
+                  disabled={signingIn}
+                  className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] disabled:opacity-50"
+                >
+                  {signingIn ? 'Waiting…' : 'Sign in with ChatGPT'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {login && login.state === 'pending' && (
+            <div className="mt-4 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/5 p-4">
+              <div className="text-sm font-medium">Finish signing in from any browser</div>
+              <ol className="mt-2 space-y-2 text-sm text-[var(--text-muted)]">
+                <li>
+                  1. Open{' '}
+                  <a href={login.verificationUrl} target="_blank" rel="noreferrer" className="text-[var(--accent)] underline">
+                    {login.verificationUrl}
+                  </a>
+                </li>
+                <li className="flex flex-wrap items-center gap-2">
+                  2. Enter this code:
+                  <code className="rounded bg-[var(--bg-primary)] px-2 py-1 font-mono text-base tracking-widest text-[var(--text-primary)]">{login.userCode}</code>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(login.userCode)}
+                    className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
+                  >
+                    Copy
+                  </button>
+                </li>
+                <li>3. Approve the request. This page updates on its own.</li>
+              </ol>
+              <p className="mt-3 text-xs text-[var(--text-muted)]">
+                The server never opens a browser — you complete this on your own machine, and the code expires shortly.
+              </p>
+              <button type="button" onClick={() => cancelSignIn(login.loginId)} className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs">
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {testResult.type !== 'idle' && (
+            <div className={`mt-3 text-xs ${testResult.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{testResult.message}</div>
+          )}
+
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium text-[var(--text-muted)]">Model</label>
+              <select
+                value={runtime.model}
+                onChange={(e) => save({ model: e.target.value }, { model: e.target.value }, 'Model saved')}
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm"
+              >
+                {models.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-[var(--text-muted)]">Default reasoning effort</label>
+              <select
+                value={runtime.effort || 'medium'}
+                onChange={(e) => save({ effort: e.target.value }, { effort: e.target.value }, 'Reasoning effort saved')}
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm"
+              >
+                {['low', 'medium', 'high'].map((e) => <option key={e} value={e}>{e}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="text-xs font-medium text-[var(--text-muted)]">OpenAI API key (optional)</label>
+            <div className="mt-1 flex flex-wrap gap-2">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={runtime.apiKeyMasked || 'Leave empty to use the ChatGPT login'}
+                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm"
+              />
+              <button type="button" onClick={() => setShowKey(!showKey)} className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs">
+                {showKey ? 'Hide' : 'Show'}
+              </button>
+              <button
+                type="button"
+                disabled={!apiKey.trim()}
+                onClick={() => {
+                  const value = apiKey.trim();
+                  const masked = value.length <= 8 ? '****' : `${value.slice(0, 4)}****${value.slice(-4)}`;
+                  save({ apiKey: value, authMode: 'api_key' }, { apiKeyMasked: masked, apiKeyConfigured: true, authMode: 'api_key' }, 'API key saved');
+                  setApiKey('');
+                }}
+                className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] disabled:opacity-50"
+              >
+                Save
+              </button>
+              {runtime.apiKeyMasked && (
+                <button type="button" onClick={clearKey} className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs text-red-500">
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Per-Agent Provider</h2>
+        <h2 className="text-lg font-medium">Per-Agent Model</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Route a specific agent (e.g. Playwright Coder) to a specific provider. Useful when one model is better at code than another.
+          Route a specific agent to a specific Codex model — for example a larger model for the Playwright Coder and a faster one for routine chat.
         </p>
         <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
           {Object.keys(AGENT_LABELS).map((agent) => (
@@ -1106,236 +1260,14 @@ function ProvidersSection() {
                 <div className="text-xs text-[var(--text-muted)]">{AGENT_LABELS[agent].description}</div>
               </div>
               <select
-                value={agentMap[agent] || defaultProvider}
-                onChange={(e) => setAgentProvider(agent, e.target.value as Provider)}
+                value={agentModels[agent] || runtime.model}
+                onChange={(e) => setAgentModel(agent, e.target.value)}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {(enabledProviders.length ? enabledProviders : providers).map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {PROVIDER_LABELS[p.name]}
-                  </option>
-                ))}
+                {models.map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
           ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault }: React.PropsWithChildren<{
-  provider: ProviderInfo;
-  onSaveKey: (apiKeyValue: string) => void;
-  onSetEnabled: (enabled: boolean) => void;
-  onSetAuthMode: (authMode: ProviderInfo['authMode']) => void;
-  onSetModel: (model: string) => void;
-  onClearKey: () => void;
-  onTest: () => Promise<SaveStatus>;
-  onSetDefault: (model: string) => void;
-  isDefault: boolean;
-}>) {
-  const [apiKey, setApiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<SaveStatus>({ type: 'idle', message: '' });
-  const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
-  const accountCliSupported = provider.name === 'openai' || provider.name === 'anthropic';
-  const showAccountMode = provider.accountCliAllowed && accountCliSupported;
-  // Testing always uses the credential saved on the provider. Text currently in
-  // the input is not persisted and must not enable a connection attempt.
-  const canTest = authMode === 'api_key' ? provider.apiKeyConfigured : provider.configured;
-  const testUnavailableReason = authMode === 'api_key'
-    ? 'Save an API key before testing this provider'
-    : 'Sign in to the local account before testing this provider';
-
-  return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[var(--bg-primary)] text-[var(--accent)]">
-          {provider.name === 'gemini' ? <Sparkles className="h-5 w-5" /> : provider.name === 'openai' ? <Bot className="h-5 w-5" /> : <Shield className="h-5 w-5" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium">{PROVIDER_LABELS[provider.name]}</h3>
-            {provider.configured ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
-                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Configured'}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
-                <AlertCircle className="h-3 w-3" /> Not configured
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-[var(--text-muted)]">
-            {authMode === 'api_key'
-              ? provider.apiKeyMasked ? `key: ${provider.apiKeyMasked}` : 'API Key Mode'
-              : provider.accountTool ? `Local CLI: ${provider.accountTool}` : 'Subscription/Account Auth'}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => onSetEnabled(!provider.enabled)}
-            className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
-              provider.enabled
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
-                : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
-            }`}
-          >
-            {provider.enabled ? 'On' : 'Off'}
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              setTesting(true);
-              setTestResult({ type: 'idle', message: '' });
-              setTestResult(await onTest());
-              setTesting(false);
-            }}
-            // The connection check tests the configured credential, not whether the
-            // provider is toggled on — so it's available as soon as a key is saved
-            // (or account auth is available), even if the provider is currently Off.
-            disabled={!canTest || testing}
-            title={!canTest ? testUnavailableReason : testResult.message || 'Run a connection check'}
-            className={`inline-flex max-w-72 cursor-pointer items-center gap-1 rounded-md border bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 ${
-              testResult.type === 'success'
-                ? 'border-emerald-500/40 text-emerald-500'
-                : testResult.type === 'error'
-                  ? 'border-red-500/40 text-red-500'
-                  : 'border-[var(--border)]'
-            }`}
-          >
-            {testing
-              ? <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-              : testResult.type === 'success'
-                ? <CheckCircle className="h-3 w-3 shrink-0" />
-                : testResult.type === 'error'
-                  ? <AlertCircle className="h-3 w-3 shrink-0" />
-                  : <Activity className="h-3 w-3 shrink-0" />}
-            <span className="truncate">{testing ? 'Testing…' : testResult.message || 'Test'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.enabled || !provider.configured || isDefault}
-            title={isDefault ? 'This is the current default provider' : !provider.enabled || !provider.configured ? 'Enable and configure this provider before making it the default' : 'Make this the default provider'}
-            className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-default ${
-              isDefault
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
-                : 'border-[var(--border)] bg-[var(--bg-primary)] hover:border-[var(--accent)] disabled:opacity-50'
-            }`}
-          >
-            {isDefault ? <CheckCircle className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
-            {isDefault ? 'Default' : 'Set as Default'}
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={() => onSetAuthMode('api_key')}
-          className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm ${authMode === 'api_key' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
-        >
-          <input
-            type="radio"
-            checked={authMode === 'api_key'}
-            readOnly
-            tabIndex={-1}
-            className="mt-1 pointer-events-none accent-[var(--accent)]"
-          />
-          <span>
-            <span className="block font-medium">API Key</span>
-            <span className="block text-xs text-[var(--text-muted)]">Used by Test Flow AI backend calls and cost tracking.</span>
-          </span>
-        </button>
-        {showAccountMode && (
-          <button
-            type="button"
-            onClick={() => onSetAuthMode('account')}
-            className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm ${authMode === 'account' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
-          >
-            <input
-              type="radio"
-              checked={authMode === 'account'}
-              readOnly
-              tabIndex={-1}
-              className="mt-1 pointer-events-none accent-[var(--accent)]"
-            />
-            <span>
-              <span className="block font-medium">Subscription / Account</span>
-              <span className="block text-xs text-[var(--text-muted)]">
-                Uses your local Codex or Claude Code login where supported.
-              </span>
-            </span>
-          </button>
-        )}
-      </div>
-
-      {authMode === 'account' && showAccountMode && (
-        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
-          Test Flow AI will run {provider.accountTool} locally for this provider, using the account already authenticated on this machine.
-        </div>
-      )}
-
-      <div className={`mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] ${authMode === 'account' ? 'opacity-50' : ''}`}>
-        <div className="flex gap-2">
-          <input
-            type={showKey ? 'text' : 'password'}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={provider.apiKeyMasked ? 'Replace API key' : 'Paste API key'}
-            disabled={authMode === 'account'}
-            className="flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-          />
-          <button
-            type="button"
-            onClick={() => setShowKey((s) => !s)}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-xs hover:border-[var(--accent)]"
-            title={showKey ? 'Hide' : 'Show'}
-          >
-            {showKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-          </button>
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              if (!apiKey) return;
-              onSaveKey(apiKey);
-              setApiKey('');
-            }}
-            disabled={!apiKey || authMode === 'account'}
-            className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-          >
-            <Save className="h-3 w-3" /> Save Key
-          </button>
-          {provider.apiKeyMasked && (
-            <button
-              type="button"
-              onClick={onClearKey}
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-xs text-red-500 hover:border-red-500"
-            >
-              <Trash2 className="h-3 w-3" /> Remove
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-3">
-        <label className="text-xs text-[var(--text-muted)]">Model</label>
-        <div className="mt-1 flex flex-wrap gap-2">
-          <select
-            value={provider.model}
-            onChange={(e) => onSetModel(e.target.value)}
-            className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-          >
-            {[provider.defaultModel, ...provider.alternatives].map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
         </div>
       </div>
     </div>
@@ -1446,6 +1378,18 @@ function PromptsSection() {
               Every AI agent is governed by a layered system prompt: identity, scope policy, safety, output format, and the agent's own instructions.
               Override any of them here. New versions are saved with the default as a fallback.
             </p>
+            <div className="mt-3 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3 text-xs text-[var(--text-muted)]">
+              <div className="font-semibold text-[var(--accent)]">Agent orchestration</div>
+              <p className="mt-1">
+                A run is planned as a <span className="font-medium text-[var(--text-primary)]">mission</span> — the request decides which agents wake and where the run stops.
+                <span className="font-medium text-[var(--text-primary)]"> Maestro</span> supervises but never routes nodes; deterministic graph edges do that.
+                Specialists propose, and evidence, critique, compile and human-review gates decide. A specialist can only read facts the coordinator has
+                <span className="font-medium text-[var(--text-primary)]"> accepted</span>, never another agent's private reasoning.
+              </p>
+              <p className="mt-2">
+                {ORCHESTRATION_ROSTER.map((a) => AGENT_LABELS[a]?.label?.split(' — ')[0]).filter(Boolean).join(' → ')}
+              </p>
+            </div>
           </div>
           <button onClick={load} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs hover:border-[var(--accent)]">
             <RefreshCw className="h-3 w-3" /> Reload
@@ -1457,6 +1401,7 @@ function PromptsSection() {
             const isExpanded = expanded === p.agent;
             const isEditing = editing === p.agent;
             const meta = AGENT_LABELS[p.agent] || { label: p.agent, description: '' };
+            const inRoster = ORCHESTRATION_ROSTER.includes(p.agent);
             return (
               <div key={p.agent} className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]">
                 <button
@@ -1466,6 +1411,11 @@ function PromptsSection() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{meta.label}</span>
+                      {inRoster && meta.role && (
+                        <span className="inline-flex items-center rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)]">
+                          {meta.role}
+                        </span>
+                      )}
                       {p.source === 'override' ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-500">
                           <Pencil className="h-3 w-3" /> Override v{p.version}

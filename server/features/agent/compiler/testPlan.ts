@@ -33,8 +33,8 @@ export type PlanAssert = typeof PLAN_ASSERTS[number];
 // `id` is stamped after authoring (never emitted by the LLM) — it correlates this step to the raw
 // Playwright execution events the runtime reports back, for the live per-step progress UI. Optional
 // so every existing producer/consumer of PlanStep stays valid until stamped.
-export interface ActionStep { id?: string; action: PlanAction; target: string; value?: string }
-export interface AssertStep { id?: string; assert: PlanAssert; target: string; value?: string }
+export interface ActionStep { id?: string; sourceStep?: number; action: PlanAction; target: string; value?: string }
+export interface AssertStep { id?: string; sourceStep?: number; assert: PlanAssert; target: string; value?: string }
 export type PlanStep = ActionStep | AssertStep;
 
 export interface TestPlan {
@@ -56,6 +56,7 @@ export const planStepSchema = z.object({
   assert: z.enum(PLAN_ASSERTS).optional(),
   target: z.string().min(1),
   value: z.string().optional(),
+  sourceStep: z.number().int().positive().optional(),
 }).refine((s) => (!!s.action) !== (!!s.assert), { message: 'each step needs exactly one of action|assert' });
 
 // Kept for back-compat with any importer; both now alias the permissive step.
@@ -96,6 +97,7 @@ export function normalizeTestPlanInput(raw: unknown): unknown {
     else if (action && ACTION_SET.has(action)) out.action = action;
     else return null; // no recognizable verb → drop the step rather than fail the plan
     if (s.value != null) out.value = asStr(s.value);
+    if (Number.isInteger(s.sourceStep) && s.sourceStep > 0) out.sourceStep = s.sourceStep;
     return out;
   }).filter(Boolean);
 
@@ -165,6 +167,7 @@ function describeStrictPlanIssues(raw: unknown, error: z.ZodError): string[] {
     if (action !== undefined && assertV !== undefined) issues.push(`step ${n}: has both action and assert (exactly one allowed)`);
     if (action === undefined && assertV === undefined) issues.push(`step ${n}: no action or assert verb`);
     if (s.value !== undefined && typeof s.value !== 'string') issues.push(`step ${n}: value must be a string`);
+    if (s.sourceStep !== undefined && (!Number.isInteger(s.sourceStep) || s.sourceStep < 1)) issues.push(`step ${n}: sourceStep must be a positive 1-based integer`);
   });
   // Anything the structural walk above missed still surfaces via the raw zod issues — never an empty reason list.
   if (!issues.length) for (const zi of error.issues) issues.push(`${zi.path.join('.') || 'plan'}: ${zi.message}`);
@@ -187,5 +190,5 @@ export function parseTestPlanStrict(json: unknown): { plan: TestPlan | null; iss
  * regardless of which planner produced it.
  */
 export function stampStepIds(plan: TestPlan): TestPlan {
-  return { ...plan, steps: plan.steps.map((step, index) => (step.id ? step : { ...step, id: `step:${index}` })) };
+  return { ...plan, steps: plan.steps.map((step, index) => (step.id ? step : { ...step, id: step.sourceStep ? `case:${step.sourceStep - 1}` : `step:${index}` })) };
 }

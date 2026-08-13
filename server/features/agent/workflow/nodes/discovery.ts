@@ -13,7 +13,6 @@ import { withPageSession, sessionArtifacts } from '../../pageSession';
 import { collectPageContext } from '../../inspectionService';
 import { captureVerifiedElementsForOpenPage, type VerifiedElement } from '../../domExplorer';
 import { probeFormBehavior, type BehaviorObservation } from '../../behaviorOracle';
-import { isBehaviorOracleEnabled } from '../../behaviorOracleFlag';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { MissionRef } from '../state';
 
@@ -193,15 +192,13 @@ async function exploreFormState(page: any, elements: VerifiedElement[], targetUr
       elements.push({ ...el, stateTag: 'form' });
     }
     // Observe-then-assert: probe the OPEN form's real validation/derive/transform before restoring. Non-destructive.
-    if (isBehaviorOracleEnabled()) {
-      behavior = await probeFormBehavior(page, scope || '').catch(() => null);
-      if (behavior?.probed) {
-        const req = behavior.fields.filter((f) => f.requiredObserved || f.requiredDeclared).map((f) => `${f.label}${f.requiredObserved ? '*' : '(decl)'}`);
-        const der = behavior.fields.filter((f) => f.autoDerivedFrom).map((f) => `${f.label}<${f.autoDerivedFrom}`);
-        console.log(`[behavior-oracle] probed ${behavior.fields.length} fields | required=[${req.join(', ')}] | triggered=${behavior.validationTriggered} | mechanism=${behavior.validationMechanism} | derives=[${der.join(', ')}] | submit=${behavior.submitLabel || '?'}`);
-      } else {
-        console.log('[behavior-oracle] probe produced no observation (form not readable)');
-      }
+    behavior = await probeFormBehavior(page, scope || '').catch(() => null);
+    if (behavior?.probed) {
+      const req = behavior.fields.filter((f) => f.requiredObserved || f.requiredDeclared).map((f) => `${f.label}${f.requiredObserved ? '*' : '(decl)'}`);
+      const der = behavior.fields.filter((f) => f.autoDerivedFrom).map((f) => `${f.label}<${f.autoDerivedFrom}`);
+      console.log(`[behavior-oracle] probed ${behavior.fields.length} fields | required=[${req.join(', ')}] | triggered=${behavior.validationTriggered} | mechanism=${behavior.validationMechanism} | derives=[${der.join(', ')}] | submit=${behavior.submitLabel || '?'}`);
+    } else {
+      console.log('[behavior-oracle] probe produced no observation (form not readable)');
     }
     if (scope) await page.evaluate(`(() => { const n = document.querySelector('[data-tf-form-scope]'); if (n) n.removeAttribute('data-tf-form-scope'); })()`).catch(() => undefined);
   } catch { /* opener not clickable / form didn't open — enrichment only, never fail discovery */ }
@@ -261,7 +258,7 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         await revalidatePriorElements(page, elements, input.priorElements);
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
         // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
-        // Also returns the observed form behaviour (BEHAVIOR_ORACLE_V1) probed while the form was open.
+        // Also returns the observed form behaviour probed while the form was open.
         const behavior = await exploreFormState(page, elements, targetUrl, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.

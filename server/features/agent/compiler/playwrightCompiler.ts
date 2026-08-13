@@ -10,8 +10,6 @@ import { resolveTarget } from '../graph/groundingEngine';
 import { isActionStep, isAssertStep, CONTEXT_ASSERTS, stampStepIds, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
 import { TestDataEngine, type FieldSemantics } from '../testdata';
 import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
-import { isAssertionGroundingEnabled } from './assertionGroundingFlag';
-import { isBehaviorOracleEnabled } from '../behaviorOracleFlag';
 
 /** A submit-intent CLICK — the button that commits a create/edit. App-agnostic verbs; matched against the
  * grounded control's role+label so completing the form before it fires makes create/submit flows succeed. */
@@ -254,6 +252,7 @@ function naturalActionForRole(roleValue: unknown, hasValue: boolean): ActionStep
 function coerceActionToRole(step: ActionStep, roleValue: unknown): ActionStep | null {
   const hasValue = String((step as any).value ?? '').trim().length > 0;
   const natural = naturalActionForRole(roleValue, hasValue);
+  if (hasValue && natural === 'CLICK') return null;
   if (!natural || natural === step.action) return null;
   return { ...step, action: natural } as ActionStep;
 }
@@ -321,6 +320,8 @@ export class PlaywrightCompiler implements Compiler {
     const planToResolved = new Map<string, string>();
     // Selectors the plan deliberately CLEARs — the only fields whose emptiness a HAS_VALUE "" may assert.
     const clearedSelectors = new Set<string>();
+    // Never discard a requested value by silently converting FILL/SELECT into a bare click.
+    const droppedValueActionSelectors = new Set<string>();
 
     // Required-field completion: the authored plan often fills only the fields the case happened to name, then
     // clicks Save — and the create fails because OTHER required fields are empty. Before the first submit, fill
@@ -386,7 +387,7 @@ export class PlaywrightCompiler implements Compiler {
 
     // Observe-then-assert hygiene: validation asserts that can't be true (before the submit, or on a field
     // filled at submit) are dropped so the plan author's scattered expectValidation can't fail the script.
-    const validationDrops = isBehaviorOracleEnabled() ? invalidValidationSteps(plan, evidenceGraph, run) : new Set<number>();
+    const validationDrops = invalidValidationSteps(plan, evidenceGraph, run);
 
     // The step body is unchanged below — only extracted into a named function so the forEach wrapper
     // can measure exactly which lines this one step emitted (for the test.step() wrap), regardless of
@@ -429,6 +430,11 @@ export class PlaywrightCompiler implements Compiler {
         if (coerced) {
           diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} coerced to ${coerced.action} to fit role "${g.node?.role || 'unknown'}".`, severity: 'skippable' });
           step = coerced;
+        } else if (String((step as any).value ?? '').trim() && ['FILL', 'SELECT'].includes(step.action)) {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} dropped: role "${g.node?.role || 'unknown'}" cannot accept the requested value.`, severity: 'skippable' });
+          if (g.selector) droppedValueActionSelectors.add(String(g.selector));
+          body.push(`  // INVALID_STEP: dropped ${step.action} on role "${g.node?.role || 'unknown'}"; a value-bearing action must not become a bare click`);
+          return;
         } else {
           diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".`, severity: 'blocking' });
           body.push(`  // INVALID_STEP: ${step.action} cannot target role "${g.node?.role || 'unknown'}" (${JSON.stringify(target)})`);
@@ -456,6 +462,11 @@ export class PlaywrightCompiler implements Compiler {
         body.push(emitAction(step, spec, value));
       } else {
         const assertStep = step as AssertStep;
+        if (g.selector && droppedValueActionSelectors.has(String(g.selector))) {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: 'Assertion dropped because the value-setting action for this control was invalid.', severity: 'skippable' });
+          body.push('  // INVALID_STEP: dropped assertion derived from an invalid value-setting action');
+          return;
+        }
         // In a NEGATIVE/validation case, a HAS_VALUE assert expresses "this requirement is enforced" — assert a
         // validation error is shown (robust), not a specific field value (brittle: the field may auto-derive or
         // stay empty, so toHaveValue fails on a correct app). expectValidation confirms the constraint fired.
@@ -471,9 +482,9 @@ export class PlaywrightCompiler implements Compiler {
             ? resolvedBySelector.get(g.selector as string)
             : (planToResolved.get(raw.trim().toLowerCase()) ?? raw))
           : raw;
-        // ASSERTION_GROUNDING_V1: if a non-threaded expectText value only reformats the target's own label,
+        //: if a non-threaded expectText value only reformats the target's own label,
         // assert the REAL observed text (literal toContainText else fails a correct app).
-        if (isAssertionGroundingEnabled() && assertStep.assert === 'HAS_TEXT' && value === raw && raw.trim()) {
+        if (assertStep.assert === 'HAS_TEXT' && value === raw && raw.trim()) {
           const nodeLabel = String(g.node?.label ?? '').trim();
           const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
           if (nodeLabel && nodeLabel !== raw.trim() && norm(nodeLabel) === norm(raw)) {
@@ -522,11 +533,22 @@ export class PlaywrightCompiler implements Compiler {
         body.push(emitAssert(assertStep, spec, value));
       }
     };
+    const groups: Array<{ id: string; label: string; lines: string[] }> = [];
     plan.steps.forEach((step: PlanStep, i: number) => {
       const start = body.length;
       runStep(step, i);
-      wrapEmittedLines(body, start, String((step as any).id || `step:${i}`), describeStepForLabel(step));
+      const lines = body.splice(start);
+      if (!lines.length) return;
+      const id = String((step as any).id || `step:${i}`);
+      const previous = groups[groups.length - 1];
+      if (previous?.id === id) previous.lines.push(...lines);
+      else groups.push({ id, label: describeStepForLabel(step), lines });
     });
+    for (const group of groups) {
+      const start = body.length;
+      body.push(...group.lines);
+      wrapEmittedLines(body, start, group.id, group.label);
+    }
 
     // Fallback must stay user-presentable — it becomes the evidence-card header in the console.
     const title = String(plan.title || plan.module || plan.mission || 'Untitled test case').replace(/`/g, "'");

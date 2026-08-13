@@ -54,3 +54,16 @@ node node_modules/@playwright/mcp/cli.js --headless --isolated --no-sandbox --sh
 
 For local interactive clients, headed mode is fine. For CI/server use, keep `--headless --isolated --no-sandbox`.
 
+
+## Relationship to the Codex runtime's MCP bridge
+
+Two different MCP servers are in play; they do not overlap.
+
+- **This one (`playwright`)** is an EXTERNAL server the app starts itself to collect DOM facts. It is
+  configured in the developer's own Codex/Claude config, not by the app at turn time.
+- **The internal bridge (`testflow`)** is what exposes the application's own agent tools to Codex.
+  It is created per turn by `server/ai/codex/mcpBridge.ts`, bound to loopback, scoped to one
+  user/project/app with an explicit tool allowlist, and torn down when the turn ends.
+
+Only `testflow` tool calls are auto-approved by the app server client; any other MCP server's tool
+calls are declined during an agent turn. See `docs/CODEX-RUNTIME.md`.

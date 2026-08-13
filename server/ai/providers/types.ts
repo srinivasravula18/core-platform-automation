@@ -1,10 +1,12 @@
 /**
  * Test Flow AI — AI Provider Abstraction
  *
- * This file defines the supported Provider interface and model registry.
- * Test Flow AI currently exposes Gemini, OpenAI, and Anthropic as service providers.
+ * One runtime: Codex. This file keeps the provider-shaped seam every caller already uses
+ * (generateObject / generateText / generateTextStream / health) plus the model registry that
+ * governs context, output ceilings, and cost. Tool calling is native to the runtime — Codex
+ * reaches the application's tools through the scoped MCP bridge, not through this interface.
  *
- * All providers implement the same surface:
+ * The provider implements:
  *   - generateObject<T>({ system, prompt, schema, temperature }): T
  *   - generateText({ system, prompt, temperature }): { text, usage }
  *   - health(): { ok, model, error? }
@@ -13,7 +15,7 @@
  * Errors are normalized to a single shape via the `ProviderError` class.
  */
 
-export type ProviderName = 'gemini' | 'openai' | 'anthropic';
+export type ProviderName = 'codex';
 export type ProviderAuthMode = 'api_key' | 'account';
 
 /** An inline image attachment (raw base64, no data: prefix) for multimodal structured output. */
@@ -88,18 +90,6 @@ export interface ProviderHealth {
   checkedAt: string;
 }
 
-/* ----------------------------------------------------------------------------
- * Native tool-calling (function-calling) surface.
- *
- * `chatWithTools` is ONE round-trip: given the running message list and the tool
- * specs, the provider returns either final assistant text OR a set of tool-call
- * requests (using each SDK's native function-calling — Anthropic tool_use, OpenAI
- * tool_calls, Gemini functionCall). The agent LOOP (server/ai/agentLoop.ts) owns
- * the iteration: it executes the requested tools, appends the results as `tool`
- * messages, and calls chatWithTools again until the model returns text, an accept
- * check passes, or a budget is hit. No Vercel AI SDK — native SDKs only.
- * -------------------------------------------------------------------------- */
-
 /** A tool exposed to the model. `parameters` is a JSON Schema object. */
 export interface ToolSpec {
   name: string;
@@ -107,64 +97,13 @@ export interface ToolSpec {
   parameters: Record<string, unknown>;
 }
 
-export interface ToolCallRequest {
-  /** Provider-assigned call id (used to correlate the tool result). */
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
-
-export interface ChatMessage {
-  role: ChatRole;
-  /** Text content (assistant text, user text, or a serialized tool result). */
-  content?: string;
-  /** Present on assistant turns that requested tool calls. */
-  toolCalls?: ToolCallRequest[];
-  /** Present on role:'tool' messages — correlates to a prior ToolCallRequest.id. */
-  toolCallId?: string;
-  toolName?: string;
-  /** Opaque provider output items needed to continue a stateless native tool turn.
-   * Providers that do not use them ignore this field. */
-  providerItems?: unknown[];
-}
-
-export interface ChatWithToolsOptions {
-  system?: string;
-  messages: ChatMessage[];
-  tools?: ToolSpec[];
-  temperature?: number;
-  maxTokens?: number;
-  effort?: 'low' | 'medium' | 'high';
-  model?: string;
-  signal?: AbortSignal;
-}
-
-export interface ChatWithToolsResult {
-  /** Final assistant text, if the model answered instead of calling tools. */
-  text?: string;
-  /** Tool calls the model wants executed this round (empty when it answered). */
-  toolCalls: ToolCallRequest[];
-  usage?: ProviderUsage;
-  model: string;
-  provider: ProviderName;
-  stopReason: 'tool_calls' | 'stop' | 'length' | 'other';
-  latencyMs: number;
-  /** Provider-native output items to replay with the next tool results. */
-  providerItems?: unknown[];
-}
-
 export interface AIProvider {
   readonly name: ProviderName;
   health(): Promise<ProviderHealth>;
   generateObject<T>(opts: GenerateObjectOptions<unknown>): Promise<ProviderResponse<T>>;
   generateText(opts: GenerateTextOptions): Promise<ProviderResponse<string>>;
-  /** Optional token stream. Yields text deltas as they arrive. */
+  /** Token stream. Yields text deltas as they arrive. */
   generateTextStream?(opts: GenerateTextOptions): AsyncIterable<string>;
-  /** Optional native tool-calling round-trip. Providers that implement it enable
-   * the agent loop; the account/CLI provider may omit it. */
-  chatWithTools?(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult>;
 }
 
 export class ProviderError extends Error {
@@ -187,20 +126,13 @@ export function classifyError(provider: ProviderName, status: number | undefined
   return new ProviderError(provider, 'unknown', body, status);
 }
 
+/** `codex-default` defers to the local Codex config instead of pinning a model id. */
 export const DEFAULT_MODELS: Record<ProviderName, { default: string; alternatives: string[] }> = {
-  gemini: { default: 'gemini-2.5-flash', alternatives: ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'] },
-  openai: { default: 'gpt-5.6-sol', alternatives: ['gpt-5.6-terra', 'gpt-5.6-luna'] },
-  anthropic: { default: 'claude-opus-4-8', alternatives: ['claude-sonnet-4-6', 'claude-haiku-4-5'] },
+  codex: { default: 'gpt-5.6-sol', alternatives: ['gpt-5.6-terra', 'gpt-5.6-luna', 'codex-default'] },
 };
 
-export const LOCAL_ONLY_MODELS: Partial<Record<ProviderName, string[]>> = {
-  openai: ['codex-spark'],
-};
-
-export function listAvailableModels(provider: ProviderName, opts?: { includeLocalOnly?: boolean }): string[] {
-  const base = [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives];
-  if (!opts?.includeLocalOnly) return base;
-  return [...base, ...(LOCAL_ONLY_MODELS[provider] || [])];
+export function listAvailableModels(provider: ProviderName = 'codex'): string[] {
+  return [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives];
 }
 
 export interface ModelPricing {
@@ -215,46 +147,21 @@ export interface ModelPricing {
   cacheWrite?: number;
 }
 
-// Per-1M-token prices from each provider's OFFICIAL pricing page (verified July 2026):
-//   OpenAI  developers.openai.com/api/docs/pricing  (cache-write = input pre-5.6, 1.25× input for GPT-5.6+; cached READS discounted 90%)
-//   Anthropic platform.claude.com/docs/en/about-claude/pricing (5m cache-write = 1.25× input, read = 0.1× input)
-//   Google  ai.google.dev/gemini-api/docs/pricing  (standard tier; cache-write billed as hourly storage, approximated as input here)
+// Per-1M-token prices from developers.openai.com/api/docs/pricing (verified July 2026).
+// GPT-5.6 (Sol/Terra/Luna, GA 2026-07-09): cache-write = 1.25× input, cached READS discounted 90%.
+// Only billed in API-key mode — subscription/ChatGPT Codex turns record zero cost.
 export const PRICING_PER_1M_TOKENS: Record<string, ModelPricing> = {
-  // OpenAI GPT-5.x
-  // GPT-5.6 (Sol/Terra/Luna, GA 2026-07-09): cache-write = 1.25× input — changed from the 1.0× used by 5.5/5.4 below.
   'gpt-5.6-sol': { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 6.25 },
   'gpt-5.6-terra': { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
   'gpt-5.6-luna': { input: 1.0, output: 6.0, cacheRead: 0.1, cacheWrite: 1.25 },
-  'gpt-5.5': { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 5.0 },
-  'gpt-5.4': { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 2.5 },
-  'gpt-5.4-mini': { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
-  'gpt-5.4-nano': { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0.2 },
-  // Anthropic Claude
-  'claude-fable-5': { input: 10.0, output: 50.0, cacheRead: 1.0, cacheWrite: 12.5 },
-  'claude-opus-4-8': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
-  'claude-opus-4-7': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
-  'claude-opus-4-6': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
-  'claude-sonnet-5': { input: 2.0, output: 10.0, cacheRead: 0.2, cacheWrite: 2.5 }, // intro thru 2026-08-31
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
-  'claude-haiku-4-5': { input: 1.0, output: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
-  // Google Gemini (standard tier)
-  'gemini-3.5-flash': { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
-  'gemini-3.1-pro': { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
-  'gemini-3.1-flash-lite': { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0.25 },
-  'gemini-2.5-flash': { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.3 },
-  'gemini-2.5-pro': { input: 1.25, output: 10.0, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 },
 };
 
 /* ----------------------------------------------------------------------------
  * Model capability registry — context window + max OUTPUT tokens per model.
  *
- * The point: limits follow the MODEL the user picks in Settings, never a scattered
- * hardcoded cap. Providers derive their default max-output from `maxOutputFor(model)`
- * instead of a fixed 8192/4096 (which truncated long agent outputs). For API-key usage
- * the user monitors real spend via the cost tracker, so a roomy model-defined ceiling is
- * the right default. Update these when a provider ships new context/output sizes — it is
- * the single source of truth.
+ * Limits follow the MODEL the user picks in Settings, never a scattered hardcoded cap.
+ * Context budgeting reads these to size prompts against the real limit. Update here only
+ * when Codex ships new context/output sizes — this is the single source of truth.
  * -------------------------------------------------------------------------- */
 export interface ModelCaps {
   /** Total context window (input + output) the model accepts, in tokens. */
@@ -263,43 +170,17 @@ export interface ModelCaps {
   maxOutput: number;
 }
 
-// Verified against official provider docs (June 2026): platform.claude.com/docs (Models
-// overview), developers.openai.com (GPT-5.4/5.5), ai.google.dev (Gemini). Update here only.
+// Verified against developers.openai.com model docs (June 2026).
 export const MODEL_CAPS: Record<string, ModelCaps> = {
-  // Gemini — 1,048,576 context, 65,536 max output.
-  'gemini-2.5-flash': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  'gemini-2.5-flash-lite': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  'gemini-2.5-pro': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  'gemini-3.5-flash': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  'gemini-3.1-pro': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  'gemini-3.1-flash-lite': { contextWindow: 1_048_576, maxOutput: 65_536 },
-  // OpenAI GPT-5.x — GPT-5.4 / 5.5 have a 1.05M context window, 128k max output. (mini/nano
-  // specs aren't published separately; kept conservative at 400k context, 128k output.)
-  // GPT-5.6 Sol/Terra/Luna all ship a 1.05M context window + 128k max output (per OpenAI model docs).
   'gpt-5.6-sol': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.6-terra': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.6-luna': { contextWindow: 1_050_000, maxOutput: 128_000 },
-  'gpt-5.5': { contextWindow: 1_050_000, maxOutput: 128_000 },
-  'gpt-5.4': { contextWindow: 1_050_000, maxOutput: 128_000 },
-  'gpt-5.4-mini': { contextWindow: 400_000, maxOutput: 128_000 },
-  'gpt-5.4-nano': { contextWindow: 400_000, maxOutput: 128_000 },
-  'codex-spark': { contextWindow: 400_000, maxOutput: 128_000 },
-  // Anthropic Claude 4.x — Opus 4.8 & Sonnet 4.6 are 1M context; Haiku 4.5 is 200k. Max output:
-  // Opus 128k, Sonnet & Haiku 64k. (Batch API can extend output to 300k via beta header.)
-  'claude-opus-4-8': { contextWindow: 1_000_000, maxOutput: 128_000 },
-  'claude-sonnet-4-6': { contextWindow: 1_000_000, maxOutput: 64_000 },
-  'claude-haiku-4-5': { contextWindow: 200_000, maxOutput: 64_000 },
-  'claude-fable-5': { contextWindow: 1_000_000, maxOutput: 128_000 },
 };
 
-/** Family-based fallback so an unknown/newer model id still gets sane, model-appropriate caps. */
+/** Fallback so an unknown/newer Codex model id still gets sane caps. */
 function familyCaps(model: string): ModelCaps {
   const m = String(model || '').toLowerCase();
-  if (m.includes('gemini')) return { contextWindow: 1_048_576, maxOutput: 65_536 };
-  if (m.includes('gpt') || m.startsWith('o')) return { contextWindow: 400_000, maxOutput: 128_000 };
-  if (m.includes('haiku')) return { contextWindow: 200_000, maxOutput: 64_000 };
-  if (m.includes('opus') || m.includes('fable') || m.includes('mythos')) return { contextWindow: 1_000_000, maxOutput: 128_000 };
-  if (m.includes('sonnet') || m.includes('claude')) return { contextWindow: 1_000_000, maxOutput: 64_000 };
+  if (m.includes('gpt') || m.includes('codex')) return { contextWindow: 400_000, maxOutput: 128_000 };
   return { contextWindow: 128_000, maxOutput: 16_000 };
 }
 
