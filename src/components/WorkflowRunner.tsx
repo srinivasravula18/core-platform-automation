@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
+import { commandPaletteShortcut } from '@/src/components/ShortcutHint';
 import { CheckCircle2, Circle, Loader2, XCircle, AlertCircle, Play, Ban, FileText, Layers, Bug, TestTube2, PlayCircle, ClipboardList, Bot, FolderTree } from 'lucide-react';
 
 interface SideEffect {
@@ -287,7 +288,7 @@ export function PlanList({ plans, onExecutePlan, onCancelPlan }: { plans: Plan[]
       <div className="flex flex-col items-center justify-center py-12 text-[var(--text-muted)]">
         <Bot className="w-10 h-10 mb-3 opacity-50" />
         <p className="text-sm">No AI Workflows Yet</p>
-        <p className="text-xs mt-1">Press Cmd+K to create one</p>
+        <p className="text-xs mt-1">Press {commandPaletteShortcut} to create one</p>
       </div>
     );
   }

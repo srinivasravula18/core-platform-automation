@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2 } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2 } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
-import { ProjectSwitcher } from '@/src/components/ProjectSwitcher';
+import { ModifierIcon, commandPaletteHint, commandPaletteTitle } from '@/src/components/ShortcutHint';
 import { useProjects } from '@/src/store/project';
 import { AuthGate, logout, getUsername, getGrants } from '@/src/components/AuthGate';
 import { FEATURES, grantAllows, featureKeyForPath } from '@/src/lib/features';
@@ -36,6 +36,7 @@ import RecordPlay from '@/src/pages/RecordPlay';
 import LocalAgent from '@/src/pages/automation/LocalAgent';
 import Schedules from '@/src/pages/automation/Schedules';
 import DataBindings from '@/src/pages/automation/DataBindings';
+import Projects from '@/src/pages/Projects';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -59,6 +60,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
       items: [
         { name: 'Agent Console', href: '/', icon: MessagesSquare },
         { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+        { name: 'Projects', href: '/projects', icon: FolderGit2 },
       ],
     },
     {
@@ -340,13 +342,13 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       <div id="topbar-actions" className="flex items-center gap-2" />
       <div className="flex items-center gap-2 sm:gap-4">
         <RunningIndicator />
-        <ProjectSwitcher />
         <button
           onClick={onCommandBarOpen}
+          title={commandPaletteTitle}
           className="hidden sm:flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-colors"
         >
-          <Command className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Cmd+K</span>
+          <ModifierIcon className="w-3.5 h-3.5" />
+          <span className="hidden md:inline">{commandPaletteHint}</span>
         </button>
         <button
           onClick={toggleTheme}
@@ -576,6 +578,7 @@ export default function App() {
           <Route path="/" element={<AgentConsole />} />
           <Route path="/chat/:chatId" element={<AgentConsole />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/projects" element={<Projects />} />
           <Route path="/repository" element={<TestRepository />} />
           <Route path="/plans" element={<TestPlans />} />
           <Route path="/plans/:planId" element={<TestPlans />} />

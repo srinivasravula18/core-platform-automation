@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Search, Command, Loader2, ArrowRight, Bot, LayoutDashboard, TestTube2, Bug, BrainCircuit, PlayCircle, FolderTree, Layers, ClipboardList, GitBranch, Settings, Sparkles } from 'lucide-react';
+import { Search, Loader2, ArrowRight, Bot, LayoutDashboard, TestTube2, Bug, BrainCircuit, PlayCircle, FolderTree, Layers, ClipboardList, GitBranch, Settings, Sparkles } from 'lucide-react';
 import { WorkflowRunner, type Plan } from '@/src/components/WorkflowRunner';
 import { useProjects } from '@/src/store/project';
 import { navigationHref } from '@/src/lib/controllerIntent';
+import { ModifierIcon, commandPaletteHint } from '@/src/components/ShortcutHint';
 
 interface ClassifyResult {
   intents: any[];
@@ -298,7 +299,7 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
             {classifying && <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />}
             {!classifying && mode === 'command' && (
               <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--text-muted)]">
-                <Command className="w-2.5 h-2.5" />K
+                <ModifierIcon className="w-2.5 h-2.5" />{commandPaletteHint}
               </kbd>
             )}
           </div>
