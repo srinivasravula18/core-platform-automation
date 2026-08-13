@@ -96,7 +96,22 @@ function mergeCaseStepProgress(prior: Record<string, any>, detail: Record<string
   return next;
 }
 
+/** A step that errored inside a test that ultimately PASSED was caught or retried by the script, so it
+ *  is not a failure — the reporter can only tell us once the test ends. */
+function clearRecoveredSteps(prior: Record<string, any>, detail: Record<string, any>): Record<string, any> {
+  const stepIds = new Set((Array.isArray(detail.stepIds) ? detail.stepIds : []).map(String));
+  const caseStepIds = new Set((Array.isArray(detail.caseStepIds) ? detail.caseStepIds : []).map(String));
+  const recover = <T extends { id: string; status: string; error?: string }>(steps: T[], ids: Set<string>): T[] =>
+    steps.map((step) => (ids.has(String(step.id)) && step.status === 'Failed' ? { ...step, status: 'Passed' as const, error: undefined } : step));
+  return {
+    ...prior,
+    ...(Array.isArray(prior.executionSteps) && stepIds.size ? { executionSteps: recover(prior.executionSteps, stepIds) } : {}),
+    ...(Array.isArray(prior.caseSteps) && caseStepIds.size ? { caseSteps: recover(prior.caseSteps, caseStepIds) } : {}),
+  };
+}
+
 export function mergeExecutionProgress(prior: Record<string, any>, detail: Record<string, any>): Record<string, any> {
+  if (detail.event === 'steps_recovered') return clearRecoveredSteps(prior, detail);
   if (detail.event === 'case_step_started' || detail.event === 'case_step_finished') return mergeCaseStepProgress(prior, detail);
   const next = { ...prior, ...detail };
   if (detail.event !== 'step_started' && detail.event !== 'step_finished') return next;

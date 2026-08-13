@@ -26,3 +26,14 @@ const tf = {
   },
 };
 `;
+
+// Chromium's screencast trails the page by a fraction of a second, so a test that ends the instant it
+// fails loses exactly the frames that show the failure. Holding teardown briefly lets those frames land.
+// No fixtures are requested here: taking `page` would create one for scripts that never opened it.
+export const videoTailPreludeSource = `
+import { test as __testflowVideoTest } from 'playwright/test';
+__testflowVideoTest.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+});
+`;

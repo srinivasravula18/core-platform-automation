@@ -85,4 +85,26 @@ assert.equal(applyExecutionProgress(
   [{ id: 'case:0', title: 'CLICK Save', status: 'Failed', startedAt: 100, durationMs: 200, error: 'Element not found' }],
 )[0].error, 'Element not found');
 
+// A step the script caught (login guards use .catch(() => {})) reports step.error, so it lands as
+// Failed while running. When the test itself passes, the reporter says so and the step must recover —
+// otherwise the execution list shows Failed for a step the case list shows as Passed.
+const withCaughtError = mergeExecutionProgress(
+  mergeExecutionProgress({}, { event: 'step_started', stepId: 's1', stepIndex: 1, stepTitle: 'locator.click', stepStartedAt: 10 }),
+  { event: 'step_finished', stepId: 's1', stepIndex: 1, stepTitle: 'locator.click', stepDurationMs: 40, stepError: 'locator timeout' },
+);
+assert.equal(withCaughtError.executionSteps[0].status, 'Failed');
+const recovered = mergeExecutionProgress(withCaughtError, { event: 'steps_recovered', stepIds: ['s1'], caseStepIds: [] });
+assert.equal(recovered.executionSteps[0].status, 'Passed');
+assert.equal(recovered.executionSteps[0].error, undefined);
+
+// A genuine failure is never recovered: it is not in the reported id list.
+const realFailure = mergeExecutionProgress(withCaughtError, { event: 'steps_recovered', stepIds: ['other'], caseStepIds: [] });
+assert.equal(realFailure.executionSteps[0].status, 'Failed');
+
+// Case steps recover the same way, and a run with neither list is untouched.
+const caseStepFailed = mergeExecutionProgress({}, { event: 'case_step_finished', caseStepId: 'case:0', caseStepTitle: 'Log in', caseStepDurationMs: 20, caseStepError: 'caught' });
+assert.equal(caseStepFailed.caseSteps[0].status, 'Failed');
+assert.equal(mergeExecutionProgress(caseStepFailed, { event: 'steps_recovered', stepIds: [], caseStepIds: ['case:0'] }).caseSteps[0].status, 'Passed');
+assert.deepEqual(mergeExecutionProgress({}, { event: 'steps_recovered', stepIds: ['s1'], caseStepIds: [] }), {});
+
 console.log('automation progress checks passed');

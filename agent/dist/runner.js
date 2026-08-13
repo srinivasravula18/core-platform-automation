@@ -16,7 +16,7 @@ import { collectArtifacts } from './artifacts.js';
 import { chromiumChannel } from './browsers.js';
 import { playwrightFailure } from './playwrightFailure.js';
 import { startPauseControl } from './pauseControl.js';
-import { pausePreludeSource } from './preludeSource.js';
+import { pausePreludeSource, videoTailPreludeSource } from './preludeSource.js';
 import { browserPermissionPrelude, normalizeBrowserPermissionSettings } from './browserPermissions.js';
 const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
 const require = createRequire(import.meta.url);
@@ -26,7 +26,7 @@ export function bundledTestRuntime(source) {
 }
 const progressReporterSource = `
 class TestFlowProgressReporter {
-  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); }
+  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); this.erroredStepIds = []; this.erroredCaseStepIds = []; }
   emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
   tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
   title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
@@ -41,7 +41,17 @@ class TestFlowProgressReporter {
   }
   onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
   onTestBegin(test) { this.emit('test_started', test); }
-  onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
+  // A step whose error the script caught (the generated login guards use .catch(() => {})) still carries
+  // step.error, which showed passing steps as Failed while the case step and the test itself passed.
+  // The verdict is only knowable at test end: if the test passed, those errors were recovered.
+  onTestEnd(test, result) {
+    this.completed += 1;
+    if (result.status === 'passed' && (this.erroredStepIds.length || this.erroredCaseStepIds.length)) {
+      console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'steps_recovered', stepIds: this.erroredStepIds, caseStepIds: this.erroredCaseStepIds }));
+    }
+    this.erroredStepIds = []; this.erroredCaseStepIds = [];
+    this.emit('test_finished', test, result.status);
+  }
   onStepBegin(_test, _result, step) {
     const cs = this.caseStep(step);
     if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_started', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() })); return; }
@@ -51,9 +61,10 @@ class TestFlowProgressReporter {
   }
   onStepEnd(_test, _result, step) {
     const cs = this.caseStep(step);
-    if (cs) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_finished', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() - Number(step.duration || 0), caseStepDurationMs: Number(step.duration || 0), caseStepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); return; }
+    if (cs) { if (step.error) this.erroredCaseStepIds.push(cs.id); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'case_step_finished', caseStepId: cs.id, caseStepTitle: cs.label, caseStepStartedAt: Date.now() - Number(step.duration || 0), caseStepDurationMs: Number(step.duration || 0), caseStepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); return; }
     if (!this.tracked(step)) return;
     this.stepCompleted += 1;
+    if (step.error) this.erroredStepIds.push(step.id);
     console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' }));
   }
 }
@@ -156,7 +167,7 @@ export class Runner {
             fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
             fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed, hasPauses, browserPermissions));
             fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
-            fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, job.appUrl)}${hasPauses ? pausePreludeSource : ''}${bundledTestRuntime(job.script || '')}`);
+            fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, job.appUrl)}${videoTailPreludeSource}${hasPauses ? pausePreludeSource : ''}${bundledTestRuntime(job.script || '')}`);
             this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed, pauses: hasPauses }, 'job started');
             this.send('job.progress', { jobId: job.jobId, phase: 'running' });
             ({ exitCode, output } = await this.execute(job, runDir, control));

@@ -22,7 +22,7 @@ import { parseAtomicSteps, wrapRecordedScriptSteps } from './stepGrouping';
 import { mergeExecutionProgress } from '../../../core/shared/automationProgress';
 import { playwrightFailure } from '../../../agent/src/playwrightFailure';
 import { startPauseControl, type PauseControl } from '../../../agent/src/pauseControl';
-import { pausePreludeSource } from '../../../agent/src/preludeSource';
+import { pausePreludeSource, videoTailPreludeSource } from '../../../agent/src/preludeSource';
 import { closeOpenPausesForJob, listJobPauses, recordPause, registerLocalPauseResolver } from './pauseService';
 import { isPauseResumeEnabled } from './flag';
 import { normalizeBrowserPermissionSettings, type BrowserPermissionSettings } from '../../../core/shared/browserPermissions';
@@ -47,15 +47,18 @@ function resolvePlaywrightCli(): string {
 
 const progressReporterSource = `
 class TestFlowProgressReporter {
-  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); }
+  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); this.erroredStepIds = []; }
   emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
   tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
   title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
   onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
   onTestBegin(test) { this.emit('test_started', test); }
-  onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
+  // A step whose error the script caught (the generated login guards use .catch(() => {})) still carries
+  // step.error, which showed passing steps as Failed while the case step and the test itself passed.
+  // The verdict is only knowable at test end: if the test passed, those errors were recovered.
+  onTestEnd(test, result) { this.completed += 1; if (result.status === 'passed' && this.erroredStepIds.length) console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'steps_recovered', stepIds: this.erroredStepIds, caseStepIds: [] })); this.erroredStepIds = []; this.emit('test_finished', test, result.status); }
   onStepBegin(_test, _result, step) { if (!this.tracked(step)) return; const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() })); }
-  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
+  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; if (step.error) this.erroredStepIds.push(step.id); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
 }
 module.exports = TestFlowProgressReporter;
 `;
@@ -215,7 +218,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium', hasPauses, browserPermissions, storageStatePath));
   fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
   if (/from\s+['"]\.\/mission-runner['"]/.test(scriptSource)) fs.writeFileSync(path.join(runDir, 'tests', 'mission-runner.ts'), MISSION_RUNNER_SOURCE);
-  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${authSessionPrelude(sessionStorageState)}${hasPauses ? pausePreludeSource : ''}${wrapRecordedScriptSteps(scriptSource)}`);
+  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), `${browserPermissionPrelude(browserPermissions, rec?.appUrl || '')}${authSessionPrelude(sessionStorageState)}${videoTailPreludeSource}${hasPauses ? pausePreludeSource : ''}${wrapRecordedScriptSteps(scriptSource)}`);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });
