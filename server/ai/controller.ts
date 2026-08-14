@@ -1132,7 +1132,7 @@ ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''
 Question: ${topic}`;
 }
 
-export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
+export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[]; model?: string; effort?: string; signal?: AbortSignal } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain');
   const refsPast = needsHistory(topic);
@@ -1142,6 +1142,7 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
     prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps),
     userMessage: topic,
     hasHistory: !!conversation,
+    signal: options.signal,
   });
   if (shortCircuit) return sanitizeAnswer(shortCircuit);
   const answer = sanitizeAnswer(text) || 'No answer available.';
@@ -1149,7 +1150,7 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
 }
 
 /** Streaming variant of explainIntent — yields text deltas as they arrive. */
-export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[]; model?: string; effort?: string; signal?: AbortSignal } = {}): AsyncGenerator<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain-stream');
   const refsPast = needsHistory(topic);
@@ -1160,7 +1161,7 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   let hold = '';
   let flushed = false;
   try {
-    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation })) {
+    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation, signal: options.signal })) {
       if (flushed) { yield delta; continue; }
       hold += delta;
       if (!hold.includes('\n\n') && hold.length < 800) continue;

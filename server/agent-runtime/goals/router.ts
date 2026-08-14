@@ -85,6 +85,26 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
   return coverageAsk || whatToTest;
 }
 
+/**
+ * Questions that can use the authenticated Codex SDK directly, without publishing the
+ * full application tool catalogue. Product/code/workspace questions stay on the grounded
+ * Supervisor path; general explanations get one streamed model turn.
+ */
+export function shouldUseConversationalFastPath(message: string): boolean {
+  const text = cleanText(message);
+  const conversationalAsk = looksLikeQuestionOrCoverageAsk(message)
+    || /^(?:explain|define|describe|compare)\b/.test(text);
+  if (!conversationalAsk) return false;
+  return !/\b(?:code(?:base)?|repo(?:sitory)?|implementation|component|database|schema|endpoint|api|selector|dom|page|screen|feature|workflow|list\s+view|workspace|artifact|test\s+cases?|suite|plan|run|script|defect|report|requirement|failed|failure|error)\b/.test(text);
+}
+
+/** Explicit live-test commands can enter the reviewed scope workflow without an LLM routing turn. */
+export function shouldPrepareTestScope(message: string): boolean {
+  const text = cleanText(message);
+  return /^(?:please\s+)?(?:test|verify|validate|exercise)\b/.test(text)
+    || /^(?:please\s+)?(?:run|execute)\s+(?:a\s+|the\s+)?(?:test|verification)\b/.test(text);
+}
+
 function resolveNamedTarget(message: string, ctx: RoutingContext): RouteTarget | undefined {
   const text = cleanText(message).replace(/[_-]+/g, ' ');
   const candidates = [

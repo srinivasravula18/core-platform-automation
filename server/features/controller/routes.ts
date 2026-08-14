@@ -4,6 +4,9 @@ import { runSupervisor } from '../../ai/supervisor';
 import { reqScope } from '../../shared/scope';
 import { normalizeInput, preLLMPolicyCheck } from '../../ai/guardrails';
 import { ChatConversations } from '../../db/repository';
+import { quickWorkspaceAnswer } from '../../ai/tools/registry';
+import { quickUrlHealthAnswer, urlHealthTool } from '../../agent-core/registry/urlHealthTool';
+import { shouldPrepareTestScope, shouldUseConversationalFastPath } from '../../agent-runtime/goals/router';
 
 async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string, scope?: { userId?: string; projectId?: string; appId?: string | null }) {
   if (typeof conversationId !== 'string' || !conversationId) return;
@@ -44,6 +47,34 @@ function smallTalkReply(userMessage: string, history: unknown, conversationId: u
     normalized,
   );
   return verdict.kind === 'respond' ? verdict.reply : null;
+}
+
+async function deterministicReply(
+  userMessage: string,
+  history: unknown,
+  conversationId: unknown,
+  scope: { userId?: string; projectId?: string; appId?: string | null },
+  apps?: Array<{ name?: string; baseUrl?: string }>,
+): Promise<{ reply: string; source: string; actions?: Array<{ tool: string; arguments: Record<string, unknown>; result: unknown }> } | null> {
+  const smallTalk = smallTalkReply(userMessage, history, conversationId);
+  if (smallTalk) return { reply: smallTalk, source: 'small-talk' };
+  const workspace = await quickWorkspaceAnswer(userMessage, scope);
+  if (workspace) return { reply: workspace, source: 'workspace' };
+  const health = await quickUrlHealthAnswer(userMessage, { ...scope, userMessage });
+  if (health) return { reply: health, source: 'url-health' };
+  const targetUrl = String(apps?.find((app) => app?.baseUrl)?.baseUrl || '').trim();
+  if (targetUrl && shouldPrepareTestScope(userMessage)) {
+    const checked: any = await urlHealthTool.execute({ url: targetUrl }, { ...scope, userMessage });
+    const checkedAction = { tool: 'check_url', arguments: { url: targetUrl }, result: checked };
+    if (!checked?.ok) return { reply: `Cannot test ${targetUrl}: ${checked?.meaning || checked?.error || 'the target is unavailable'}.`, source: 'url-health', actions: [checkedAction] };
+    const prepared = { scope: userMessage, targetUrl };
+    return {
+      reply: `The target is reachable. Preparing the reviewed test scope for ${targetUrl}.`,
+      source: 'test-scope',
+      actions: [checkedAction, { tool: 'prepare_test_scope', arguments: prepared, result: prepared }],
+    };
+  }
+  return null;
 }
 
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
@@ -174,22 +205,27 @@ export function registerControllerRoutes(app: Express) {
   // The model chooses + executes capabilities in a loop until the goal is met.
   app.post('/api/controller/supervise', async (req, res, next) => {
     try {
-      const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps } = req.body || {};
+      const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps, model, effort } = req.body || {};
       const scope = reqScope(req);
       const effectiveUserId = scope.userId || userId;
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
       // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
-      const smallTalk = smallTalkReply(userMessage, history, conversationId);
-      if (smallTalk) {
-        await persistExchange(conversationId, workspaceId, userMessage, smallTalk, scope);
-        return res.json({ reply: smallTalk, accepted: true, fast: true, actions: [], trace: [] });
+      const quick = await deterministicReply(userMessage, history, conversationId, scope, apps);
+      if (quick) {
+        await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
+        return res.json({ reply: quick.reply, accepted: true, fast: true, source: quick.source, actions: quick.actions || [], trace: [] });
       }
-      // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
-      // done deterministically), instead of the slow multi-step tool loop. Include the recent
-      // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
-      // or a pasted case that follows a prior instruction — instead of being answered blind.
+      if (shouldUseConversationalFastPath(userMessage)) {
+        const reply = await explainIntent(userMessage, {
+          workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
+          conversationId, history, apps, model, effort,
+        });
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
+        return res.json({ reply, accepted: true, fast: true, source: 'codex-sdk', actions: [], trace: [] });
+      }
+      // Requests that need product evidence or actions retain the scoped Supervisor tool loop.
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -200,6 +236,8 @@ export function registerControllerRoutes(app: Express) {
         history,
         pageContext,
         apps,
+        model,
+        effort,
       });
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       res.json({
@@ -223,27 +261,45 @@ export function registerControllerRoutes(app: Express) {
   // so the chat can show LIVE activity ("Searching the codebase for …", "Reading …"),
   // then a final line with the answer. Mirrors the /explain/stream pattern.
   app.post('/api/controller/supervise/stream', async (req, res) => {
-    const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps } = req.body || {};
+    const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps, model, effort } = req.body || {};
     const scope = reqScope(req);
     const effectiveUserId = scope.userId || userId;
     if (!userMessage || typeof userMessage !== 'string') {
       return res.status(400).json({ error: 'userMessage is required' });
     }
     prepareStreamingResponse(res);
+    const abort = new AbortController();
+    const abortOnClose = () => { if (!res.writableEnded) abort.abort(); };
+    res.on('close', abortOnClose);
     const send = (obj: any) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n${STREAM_PROXY_PAD}`); } catch { /* client gone */ } };
     const heartbeat = startStreamHeartbeat(res, send);
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
       flushStream(res);
       // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
-      const smallTalk = smallTalkReply(userMessage, history, conversationId);
-      if (smallTalk) {
-        await persistExchange(conversationId, workspaceId, userMessage, smallTalk, scope);
-        await sendFinalReply(res, send, smallTalk, { fast: true });
+      const quick = await deterministicReply(userMessage, history, conversationId, scope, apps);
+      if (quick) {
+        await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
+        await sendFinalReply(res, send, quick.reply, { accepted: true, fast: true, source: quick.source, actions: quick.actions || [] });
         return res.end();
       }
-      // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
-      // retrieval. Emits the search/read progress so the UI still animates the live steps.
+      if (shouldUseConversationalFastPath(userMessage)) {
+        let reply = '';
+        for await (const delta of streamExplain(userMessage, {
+          workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
+          conversationId, history, apps, model, effort, signal: abort.signal,
+        })) {
+          reply += delta;
+          send({ type: 'answer_delta', delta });
+          flushStream(res);
+        }
+        reply = reply.trim() || 'No answer available.';
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
+        send({ type: 'final', reply, accepted: true, fast: true, source: 'codex-sdk' });
+        return res.end();
+      }
+      // Grounded/action path: emit tool progress and native answer deltas as they arrive.
+      let streamedReply = '';
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -254,6 +310,8 @@ export function registerControllerRoutes(app: Express) {
         history,
         pageContext,
         apps,
+        model,
+        effort,
         onStep: (s) => {
           send({
             type: 'step',
@@ -263,17 +321,26 @@ export function registerControllerRoutes(app: Express) {
           });
           flushStream(res);
         },
+        onTextDelta: (delta) => {
+          streamedReply += delta;
+          send({ type: 'answer_delta', delta });
+          flushStream(res);
+        },
+        signal: abort.signal,
       });
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
-      await sendFinalReply(res, send, result.finalText, {
+      const final = {
         accepted: result.accepted,
         usage: result.usage,
         actions: result.toolResults.map((tool) => ({ tool: tool.name, arguments: tool.arguments, result: tool.result })),
-      });
+      };
+      if (streamedReply) send({ type: 'final', reply: result.finalText, ...final });
+      else await sendFinalReply(res, send, result.finalText, final);
     } catch (err: any) {
-      send({ type: 'error', error: err?.message || 'supervisor failed' });
+      if (!abort.signal.aborted) send({ type: 'error', error: err?.message || 'supervisor failed' });
     } finally {
       clearInterval(heartbeat);
+      res.off('close', abortOnClose);
       res.end();
     }
   });

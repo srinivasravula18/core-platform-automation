@@ -66,6 +66,7 @@
     "test:agent-critic-exchange": "tsx scripts/test-agent-critic-exchange.ts",
     "test:agent-capability-invocation": "tsx scripts/test-agent-capability-invocation.ts",
     "test:agent-artifact-durability": "tsx scripts/test-agent-artifact-durability.ts",
+    "test:agent-prerun-attribution": "tsx scripts/test-agent-prerun-attribution.ts",
     "test:agent-workflow-state": "tsx scripts/test-agent-workflow-state.ts",
     "test:agent-discovery-graph": "tsx scripts/test-agent-discovery-graph.ts",
     "test:agent-authoring-graph": "tsx scripts/test-agent-authoring-graph.ts",

@@ -27,6 +27,10 @@ export function MultiSelectDropdown({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
+  // Never count deleted linked records, but do not auto-save while options are still loading.
+  const available = new Set(options.map((option) => option.id));
+  const selected = value.filter((id) => available.has(id));
+
   const place = useCallback(() => {
     const button = ref.current?.getBoundingClientRect();
     if (!button) return;
@@ -57,15 +61,15 @@ export function MultiSelectDropdown({
     };
   }, [open, menuPortal, place]);
 
-  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((item) => item !== id) : [...value, id]);
-  const selectedName = value.length === 1 ? options.find((option) => option.id === value[0])?.name : '';
-  const summary = selectedName || (value.length ? `${value.length} selected` : label);
+  const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+  const selectedName = selected.length === 1 ? options.find((option) => option.id === selected[0])?.name : '';
+  const summary = selectedName || (selected.length ? `${selected.length} selected` : label);
 
   const items = options.length ? options.map((option) => (
     <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
       <input
         type="checkbox"
-        checked={value.includes(option.id)}
+        checked={selected.includes(option.id)}
         onChange={() => toggle(option.id)}
       />
       <span className="min-w-0 truncate" title={option.name}>{option.name}</span>

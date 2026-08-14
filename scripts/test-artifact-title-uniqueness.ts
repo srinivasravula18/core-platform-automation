@@ -9,7 +9,6 @@ const artifacts = [
   { repo: Plans, store: 'plans', field: 'name', label: 'plan' },
   { repo: Suites, store: 'suites', field: 'name', label: 'suite' },
   { repo: Cases, store: 'cases', field: 'title', label: 'case' },
-  { repo: Runs, store: 'runs', field: 'name', label: 'run' },
   { repo: Defects, store: 'defects', field: 'title', label: 'defect' },
   { repo: Reports, store: 'reports', field: 'name', label: 'report' },
   { repo: Scripts, store: 'scripts', field: 'name', label: 'script' },
@@ -46,5 +45,10 @@ for (const artifact of artifacts) {
   db[artifact.store].find((item: any) => item.id === first.id).deletedAt = new Date().toISOString();
   await artifact.repo.upsert({ id: `${artifact.label}-4`, projectId: 'project-a', ownerId: 'owner-a', [artifact.field]: 'CHECKOUT FLOW' });
 }
+
+db.runs = [];
+await Runs.upsert({ id: 'run-1', projectId: 'project-a', name: 'Nightly Regression' });
+await Runs.upsert({ id: 'run-2', projectId: 'project-a', name: 'Nightly Regression' });
+assert.equal(db.runs.length, 2, 'runs: duplicate names are allowed because ids are unique');
 
 console.log(`artifact title uniqueness: ${artifacts.length}/${artifacts.length} artifact types passed`);

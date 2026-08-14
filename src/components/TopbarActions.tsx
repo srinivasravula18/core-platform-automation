@@ -12,6 +12,8 @@ type ProviderInfo = {
   callable: boolean;
   model: string;
   effort: string;
+  models?: Array<{ id: string; displayName?: string; supportedReasoningEfforts?: string[] }>;
+  efforts?: string[];
 };
 
 type TopbarActionsProps = {
@@ -57,13 +59,17 @@ export function TopbarActions({
     );
   }
 
-  const models = [current.defaultModel, ...current.alternatives].filter((m) => m !== selectedModel);
-  const efforts = ['low', 'medium', 'high'];
+  const modelOptions: Array<{ id: string; displayName?: string; supportedReasoningEfforts?: string[] }> = current.models?.length
+    ? current.models
+    : [current.defaultModel, ...current.alternatives].map((id) => ({ id }));
+  const efforts = modelOptions.find((model) => model.id === selectedModel)?.supportedReasoningEfforts?.filter(Boolean)
+    || current.efforts?.filter(Boolean)
+    || ['low', 'medium', 'high'];
 
   return (
     <div className="flex items-center gap-1.5">
       {/* Model dropdown */}
-      {models.length > 0 && (
+      {modelOptions.length > 0 && (
         <div ref={modelRef} className="relative">
           <button
             onClick={() => { setModelOpen(!modelOpen); setEffortOpen(false); }}
@@ -74,18 +80,18 @@ export function TopbarActions({
           </button>
           {modelOpen && (
             <div className="absolute top-full right-0 mt-1 min-w-[10rem] max-h-60 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-xl z-50">
-              {[current.defaultModel, ...current.alternatives].map((m) => (
+              {modelOptions.map((model) => (
                 <button
-                  key={m}
-                  onClick={() => { onModelChange(m); setModelOpen(false); }}
+                  key={model.id}
+                  onClick={() => { onModelChange(model.id); setModelOpen(false); }}
                   className={cn(
                     'flex w-full items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors',
-                    m === selectedModel
+                    model.id === selectedModel
                       ? 'text-[var(--accent)] bg-[var(--accent)]/10'
                       : 'text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]',
                   )}
                 >
-                  {m}
+                  {model.displayName || model.id}
                 </button>
               ))}
             </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RequiredMark } from '@/src/components/RequiredMark';
+import { can } from '@/src/components/AuthGate';
 
 type FolderSelectProps = {
   value: string;
@@ -13,6 +14,7 @@ type FolderSelectProps = {
 };
 
 export function FolderSelect({ value, onChange, label = 'Repository Folder', required = false, includeNone = true, className = '', allowCreate = true }: FolderSelectProps) {
+  const visible = can('folders:read');
   const [folders, setFolders] = useState<any[]>([]);
   const [newPath, setNewPath] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -25,8 +27,8 @@ export function FolderSelect({ value, onChange, label = 'Repository Folder', req
   };
 
   useEffect(() => {
-    fetchFolders();
-  }, []);
+    if (visible) fetchFolders();
+  }, [visible]);
 
   const createFolder = async () => {
     const path = newPath.trim();
@@ -48,6 +50,8 @@ export function FolderSelect({ value, onChange, label = 'Repository Folder', req
       setIsCreating(false);
     }
   };
+
+  if (!visible) return null;
 
   return (
     <div className={className}>

@@ -1,10 +1,9 @@
 /**
  * CodexRuntime — the single model-execution seam.
  *
- * Every turn runs on the Codex App Server over local stdio: text, structured output, streaming,
- * persistent threads, cancellation, and native tool calls through the scoped MCP bridge. The
- * app server is what makes native tools possible at all — a tool call raises an approval request
- * that only a connected client can answer.
+ * Plain and structured turns use the authenticated Codex SDK. Scoped MCP turns use App Server;
+ * both transports expose the same normalized streaming, thread, and cancellation contract here.
+ * App Server remains the approval-capable transport for scoped application tools.
  *
  * Everything above this file (guardrails, prompt assembly, evidence gates, usage, tracing) stays
  * application-owned. The runtime only executes turns.
@@ -14,7 +13,8 @@ import { getAppServerClient, type CodexAccountInfo, type CodexModelInfo } from '
 import { streamSdkTurn } from './sdkClient';
 import { estimateCost, type ProviderUsage } from '../providers/types';
 
-export type CodexEffort = 'low' | 'medium' | 'high';
+/** Runtime-reported value (for example low/medium/high/xhigh); kept open for future models. */
+export type CodexEffort = string;
 
 /** Sentinel meaning "let the local Codex config choose" — never sent as a model id. */
 export const CODEX_LOCAL_DEFAULT_MODEL = 'codex-default';
@@ -34,6 +34,8 @@ export interface CodexRunOptions {
   model?: string;
   effort?: CodexEffort;
   signal?: AbortSignal;
+  /** Optional observer used by higher-level streams while run() still collects the final result. */
+  onTextDelta?: (delta: string) => void;
   /** JSON Schema for a strict structured answer. */
   outputSchema?: unknown;
   /** Resume this Codex thread instead of starting a new one. */
@@ -437,6 +439,7 @@ export class CodexRuntime {
     for await (const event of this.stream(opts, cancelKey)) {
       switch (event.type) {
         case 'thread.started': threadId = event.threadId; break;
+        case 'text.delta': opts.onTextDelta?.(event.delta); break;
         case 'tool.completed': toolCalls.push(event.call); break;
         case 'message': lastMessage = event.text; break;
         case 'usage': usage = event.usage; break;

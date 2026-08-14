@@ -55,3 +55,14 @@ export const urlHealthTool: AgentTool = {
     }
   },
 };
+
+/** Fast deterministic answer for a plain URL-health question; null means another route owns it. */
+export async function quickUrlHealthAnswer(message: string, ctx: ToolContext = {}): Promise<string | null> {
+  if (!/\b(?:up|online|alive|running|reachable|responding|available|status)\b/i.test(message)) return null;
+  const match = String(message || '').match(/https?:\/\/[^\s<>"')\]]+/i);
+  const url = match?.[0]?.replace(/[.,;:!?]+$/, '');
+  if (!url) return null;
+  const result: any = await urlHealthTool.execute({ url }, ctx);
+  if (result?.ok) return `Yes - ${url} is ${result.meaning || 'responding'}.`;
+  return `No - ${url} is not available: ${result?.meaning || result?.error || 'the server did not respond'}.`;
+}

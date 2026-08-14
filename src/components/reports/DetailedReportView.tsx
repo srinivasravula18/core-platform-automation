@@ -13,6 +13,8 @@ export interface DetailedReportStep {
   outcome?: string;
   reason?: string;
   actual?: string;
+  expectedResult?: string;
+  actualResult?: string;
   durationMs?: number;
   testCaseTitle?: string;
   testCaseId?: string;
@@ -51,7 +53,6 @@ interface TestGroup {
 }
 
 const outcomeOf = (value: unknown): Outcome => /fail|block/i.test(String(value || '')) ? 'failed' : /pass/i.test(String(value || '')) ? 'passed' : 'skipped';
-const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'test';
 const duration = (ms: number) => ms >= 60_000 ? `${Math.floor(ms / 60_000)}m ${Math.round(ms % 60_000 / 1000)}s` : ms > 0 ? `${Math.round(ms / 100) / 10}s` : '—';
 
 function groupTests(report: DetailedReportData): TestGroup[] {
@@ -63,12 +64,17 @@ function groupTests(report: DetailedReportData): TestGroup[] {
       key,
       title,
       caseId: String(step.testCaseId || ''),
-      file: step.file || `${slug(title)}.spec.ts`,
+      file: step.file || '',
       steps: [],
       outcome: 'passed' as Outcome,
       durationMs: 0,
     };
-    current.steps.push({ ...step, sourceIndex });
+    current.steps.push({
+      ...step,
+      expected: step.expected || step.expectedResult || '',
+      actual: step.actual || step.actualResult || step.reason || '',
+      sourceIndex,
+    });
     current.durationMs += Number(step.durationMs || 0);
     const status = outcomeOf(step.outcome);
     if (status === 'failed') current.outcome = 'failed';
@@ -100,12 +106,12 @@ export function DetailedReportView({ report, jobId, context, evidenceFor, onView
   const resolvedTags = useMemo(() => reportTags(report, context || {}), [report, context]);
   const tagsFor = (group: TestGroup) => resolvedTags.byCase.get(group.caseId) || resolvedTags.byCase.get(group.title) || [];
   const features = [...new Set([report.planName, report.suiteName, ...groups.map((group) => group.title)].filter(Boolean))] as string[];
-  const files = [...new Set(groups.map((group) => group.file))].map((name) => {
+  const files = [...new Set(groups.map((group) => group.file).filter(Boolean))].map((name) => {
     const related = groups.filter((group) => group.file === name);
     return { name, passed: related.filter((group) => group.outcome === 'passed').length, failed: related.filter((group) => group.outcome === 'failed').length, skipped: related.filter((group) => group.outcome === 'skipped').length };
   });
   const environment = report.environment || report.metadata?.environment || '—';
-  const browser = report.browser || report.metadata?.browser || 'Chromium (Desktop)';
+  const browser = report.browser || report.metadata?.browser || (report.runId ? 'Chromium (Desktop)' : '—');
   const failedGroups = groups.filter((group) => group.outcome === 'failed');
   const skippedGroups = groups.filter((group) => group.outcome === 'skipped');
   const percentage = (value: number) => counts.all ? `${value / counts.all * 100}%` : '0%';
@@ -135,18 +141,18 @@ export function DetailedReportView({ report, jobId, context, evidenceFor, onView
         <h2 className="qa-section-title">Overview (Plain Summary)</h2>
         <div className="qa-plain">Out of <b>{counts.all} checks</b> run against {report.targetUrl ? <b>{report.targetUrl}</b> : 'this application'}, <b>{counts.passed} worked correctly</b>{counts.failed ? <>, <b>{counts.failed} failed</b></> : ''}{counts.skipped ? <>, and <b>{counts.skipped} were skipped</b></> : ''}.</div>
 
-        {(failedGroups.length > 0 || skippedGroups.length > 0) && <>
+        {(failedGroups.some((group) => group.file) || skippedGroups.some((group) => group.file)) && <>
           <h2 className="qa-section-title">Rerun commands</h2>
-          {failedGroups.length > 0 && <div className="qa-rerun-all"><div className="qa-rerun-title">Rerun all failed tests</div>{failedGroups.map((group) => { const command = `npx playwright test ${group.file} --grep ${JSON.stringify(group.title)}`; return <div className="qa-rerun-item" key={group.key}><div><b>{group.title}</b><small>{group.file}</small></div><div className="qa-rerun-row"><code>{command}</code><button type="button" onClick={() => copy(command)}><Copy size={13} />Copy</button></div></div>; })}</div>}
-          {skippedGroups.length > 0 && <div className="qa-rerun-all skipped"><div className="qa-rerun-title">Rerun skipped tests</div>{skippedGroups.map((group) => { const command = `npx playwright test ${group.file} --grep ${JSON.stringify(group.title)}`; return <div className="qa-rerun-item" key={group.key}><div><b>{group.title}</b><small>{group.file}</small></div><div className="qa-rerun-row"><code>{command}</code><button type="button" onClick={() => copy(command)}><Copy size={13} />Copy</button></div></div>; })}</div>}
+          {failedGroups.some((group) => group.file) && <div className="qa-rerun-all"><div className="qa-rerun-title">Rerun all failed tests</div>{failedGroups.filter((group) => group.file).map((group) => { const command = `npx playwright test ${group.file} --grep ${JSON.stringify(group.title)}`; return <div className="qa-rerun-item" key={group.key}><div><b>{group.title}</b><small>{group.file}</small></div><div className="qa-rerun-row"><code>{command}</code><button type="button" onClick={() => copy(command)}><Copy size={13} />Copy</button></div></div>; })}</div>}
+          {skippedGroups.some((group) => group.file) && <div className="qa-rerun-all skipped"><div className="qa-rerun-title">Rerun skipped tests</div>{skippedGroups.filter((group) => group.file).map((group) => { const command = `npx playwright test ${group.file} --grep ${JSON.stringify(group.title)}`; return <div className="qa-rerun-item" key={group.key}><div><b>{group.title}</b><small>{group.file}</small></div><div className="qa-rerun-row"><code>{command}</code><button type="button" onClick={() => copy(command)}><Copy size={13} />Copy</button></div></div>; })}</div>}
         </>}
 
-        <h2 className="qa-section-title">Files Executed</h2>
-        <div className="qa-file-grid">{files.map((file) => <div className={`qa-file-card ${file.failed ? 'has-fail' : ''}`} key={file.name}><div className="qa-file-name"><FileText size={15} />{file.name}</div><div className="qa-file-stats">{file.passed > 0 && <><span className="dot pass" />{file.passed} passed</>}{file.failed > 0 && <><span className="dot fail" />{file.failed} failed</>}{file.skipped > 0 && <><span className="dot skip" />{file.skipped} skipped</>}</div></div>)}</div>
+        {files.length > 0 && <><h2 className="qa-section-title">Files Executed</h2>
+        <div className="qa-file-grid">{files.map((file) => <div className={`qa-file-card ${file.failed ? 'has-fail' : ''}`} key={file.name}><div className="qa-file-name"><FileText size={15} />{file.name}</div><div className="qa-file-stats">{file.passed > 0 && <><span className="dot pass" />{file.passed} passed</>}{file.failed > 0 && <><span className="dot fail" />{file.failed} failed</>}{file.skipped > 0 && <><span className="dot skip" />{file.skipped} skipped</>}</div></div>)}</div></>}
 
         <h2 className="qa-section-title">Test Results</h2>
         {!visible.length && <div className="qa-filter-empty">No tests match this filter.</div>}
-        {visible.map((group) => <details className="qa-test" key={group.key}><summary className="qa-test-head"><span className={`qa-status-dot ${group.outcome}`} /><div className="qa-test-title"><b>{group.title}</b>{tagsFor(group).length > 0 && <small className="qa-tags">{tagsFor(group).map((tag) => <span key={tag}>{tag}</span>)}</small>}</div><code>{group.file}</code><time>{duration(group.durationMs)}</time><ChevronRight className="qa-chevron" size={15} /></summary><div className="qa-test-body">
+        {visible.map((group) => <details className="qa-test" key={group.key}><summary className="qa-test-head"><span className={`qa-status-dot ${group.outcome}`} /><div className="qa-test-title"><b>{group.title}</b>{tagsFor(group).length > 0 && <small className="qa-tags">{tagsFor(group).map((tag) => <span key={tag}>{tag}</span>)}</small>}</div>{group.file && <code>{group.file}</code>}<time>{duration(group.durationMs)}</time><ChevronRight className="qa-chevron" size={15} /></summary><div className="qa-test-body">
           <div className="qa-plain">{group.steps[0]?.expected || group.title}</div>
           <div className="qa-steps">{group.steps.map((step, index) => { const status = outcomeOf(step.outcome); const evidence = evidenceFor(step, step.sourceIndex); return <div className="qa-step" key={`${step.step || index}-${step.action}`}><span className={`qa-step-icon ${status}`}>{status === 'passed' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : <CircleMinus size={12} />}</span><div className="qa-step-text"><b>{step.action || `Step ${index + 1}`}</b><code>{step.action || '—'}</code><p><strong>Expected:</strong> {step.expected || '—'}</p>{(step.actual || step.reason) && <p className={status === 'failed' ? 'qa-actual' : ''}><strong>Actual:</strong> {step.actual || step.reason}</p>}{status === 'failed' && <><div className="qa-fail-location"><MapPin size={18} /><div><b>Failure location</b><code>{group.file} · step {step.step || index + 1}</code></div></div><div className="qa-compare"><div className="expected"><b>Expected</b><p>{step.expected || '—'}</p></div><div className="actual"><b>Actual</b><p>{step.actual || step.reason || report.failureReason || 'No actual result was recorded.'}</p></div></div>{(step.reason || report.failureReason) && <pre className="qa-error-box">{step.reason || report.failureReason}</pre>}</>}{evidence && <button type="button" className="qa-media-tag" onClick={() => onViewEvidence(evidence)}><Image size={14} />screenshot</button>}</div><span className={`qa-step-status ${status}`}>{status}</span></div>; })}</div>
           <div className="qa-media-row">{group.steps.some((step) => evidenceFor(step, step.sourceIndex)) && <span className="qa-media-tag"><Image size={14} />screenshots</span>}{jobId && <button type="button" className="qa-media-tag" aria-expanded={showVideo} onClick={() => setShowVideo((visible) => !visible)}><Video size={14} />video.webm</button>}</div>

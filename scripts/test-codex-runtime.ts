@@ -92,6 +92,12 @@ async function main() {
     }
     ok(deltas.length > 0, 'the stream produced deltas');
     ok(/5/.test(deltas.join('')), 'the concatenated deltas contain the full answer');
+    const observed: string[] = [];
+    const collected = await runtime.run({
+      prompt: 'Reply with exactly: CALLBACK_STREAM_OK', effort: 'low',
+      onTextDelta: (delta) => observed.push(delta),
+    });
+    ok(observed.length > 0 && /CALLBACK_STREAM_OK/.test(collected.text), 'run() forwards native deltas while collecting the final answer');
   }
 
   console.log('Section 7 — cancellation aborts the live turn');

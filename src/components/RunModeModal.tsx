@@ -15,6 +15,7 @@ type RunModeModalProps = {
   agents: any[];
   onClose: () => void;
   onRun: (mode: RunMode, headed: boolean, agentId: string) => void;
+  onGenerateMissing?: () => void;
   canAutomate?: boolean;
   hasAutomation?: boolean;
   initialMode?: RunMode;
@@ -29,7 +30,7 @@ type RunModeModalProps = {
 };
 
 export function RunModeModal({
-  isOpen, count, busy, agents, onClose, onRun,
+  isOpen, count, busy, agents, onClose, onRun, onGenerateMissing,
   canAutomate = true, hasAutomation = true,
   initialMode = 'manual', initialBrowserMode = 'headless', initialAgentId = '',
   needsTags = false, tags = [], tagOptions = [], onTagsChange, previewGroups = [],
@@ -107,7 +108,10 @@ export function RunModeModal({
               <span><span className="text-sm font-semibold text-[var(--text-primary)]">Automated run</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run the saved Playwright script for every selected case.</span></span>
             </label>
           </div>
-          {!canAutomate && hasAutomation && <p className="mt-2 text-xs text-amber-500">Automated runs need a saved automation script for every selected case.</p>}
+          {!canAutomate && hasAutomation && <div className="mt-2 flex items-center justify-between gap-3 text-xs text-amber-500">
+            <span>Automated runs need a saved Playwright script for every selected case.</span>
+            {onGenerateMissing && <button type="button" onClick={onGenerateMissing} className="shrink-0 rounded border border-amber-500/40 px-2 py-1 font-medium hover:bg-amber-500/10">Generate missing scripts</button>}
+          </div>}
         </fieldset>
         {mode === 'automated' && <fieldset>
           <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Automated browser mode</legend>

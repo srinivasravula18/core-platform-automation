@@ -85,7 +85,7 @@ export async function* streamSdkTurn(
     sandboxMode: opts.sandboxMode ?? ('read-only' as const),
     approvalPolicy: opts.approvalPolicy ?? ('never' as const),
     ...(opts.networkAccessEnabled !== undefined ? { networkAccessEnabled: opts.networkAccessEnabled } : {}),
-    ...(opts.effort ? { modelReasoningEffort: opts.effort as CodexEffort } : {}),
+    ...(opts.effort ? { modelReasoningEffort: opts.effort as any } : {}),
   };
   const thread = opts.threadId ? codex.resumeThread(opts.threadId, threadOptions) : codex.startThread(threadOptions);
   const streamed = await thread.runStreamed(prompt(opts), {

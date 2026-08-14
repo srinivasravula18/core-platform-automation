@@ -278,8 +278,19 @@ type Step = { action: string; expected: string };
 type Case = {
   title: string;
   description?: string;
+  preconditions?: string;
   priority?: string;
   type?: string;
+  status?: string;
+  automationStatus?: string;
+  testingScope?: string;
+  testingType?: string;
+  testingTypes?: string[];
+  assignedTo?: string;
+  requestedBy?: string;
+  configuration?: string;
+  targetUrl?: string;
+  captureEvidenceOnManualRun?: boolean;
   tags?: string[];
   steps?: Step[];
   captureEvidence?: boolean;
@@ -1244,7 +1255,7 @@ export function DeepRunResult({
       {/* P7 — when the live A2A substrate exists it is the PRIMARY view (rendered + expanded by default),
           not hidden behind the query-logs toggle; the templated chip log remains only as the fallback. */}
       {(showQueryLogs || hasA2A) && (
-      <details open={hasA2A} className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+      <details className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
           {hasA2A ? 'Agent-to-agent Communication' : 'Background Communication'}
@@ -1863,6 +1874,10 @@ export function DeepRunResult({
                             className={cn('block h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Description'))}
                           />
                         </label>
+                        <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                          Preconditions
+                          <textarea value={c.preconditions || ''} onChange={(e) => patchCase(i, { preconditions: e.target.value })} placeholder="Conditions required before execution" className="block h-16 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                        </label>
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
                             Priority
@@ -1887,6 +1902,35 @@ export function DeepRunResult({
                             />
                           </label>
                         </div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status
+                            <select value={c.status || 'Draft'} onChange={(e) => patchCase(i, { status: e.target.value })} className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]"><option>Draft</option><option>Under Review</option><option>Approved</option><option>Automated</option><option>Deprecated</option></select>
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Testing Scope
+                            <select value={c.testingScope || (c.type === 'Manual' ? 'Manual' : 'Automation')} onChange={(e) => patchCase(i, { testingScope: e.target.value, type: e.target.value === 'Automation' ? 'Automated' : 'Manual' })} className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]"><option>Manual</option><option>Automation</option></select>
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Automation Status
+                            <select value={c.automationStatus || 'Not Automated'} onChange={(e) => patchCase(i, { automationStatus: e.target.value })} className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]"><option>Automated</option><option>Not Automated</option><option>Automation Not Required</option><option>Cannot Be Automated</option></select>
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Testing Types
+                            <input value={(c.testingTypes || [c.testingType || 'Functional']).join(', ')} onChange={(e) => patchCase(i, { testingTypes: e.target.value.split(',').map((value) => value.trim()).filter(Boolean) })} placeholder="Functional, Regression" className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]" />
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Target URL
+                            <input value={c.targetUrl || ''} onChange={(e) => patchCase(i, { targetUrl: e.target.value })} placeholder="https://app.example.com" className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]" />
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Assigned To
+                            <input value={c.assignedTo || ''} onChange={(e) => patchCase(i, { assignedTo: e.target.value })} className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]" />
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requested By
+                            <input value={c.requestedBy || ''} onChange={(e) => patchCase(i, { requestedBy: e.target.value })} className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]" />
+                          </label>
+                        </div>
+                        <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Configuration
+                          <textarea value={c.configuration || ''} onChange={(e) => patchCase(i, { configuration: e.target.value })} className="block h-16 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)]" />
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-[var(--text-primary)]"><input type="checkbox" checked={c.captureEvidenceOnManualRun !== false} onChange={(e) => patchCase(i, { captureEvidenceOnManualRun: e.target.checked })} /> Capture evidence during manual runs</label>
 
                         <div className="space-y-1.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">

@@ -133,7 +133,7 @@ function stripNullsDeep(value: unknown): unknown {
 interface ModelRoute {
   provider: ProviderName;
   model: string;
-  effort: 'low' | 'medium' | 'high';
+  effort: string;
 }
 
 /** Per-run overrides from the Agent Console topbar — authoritative over Settings, same as the legacy path. */

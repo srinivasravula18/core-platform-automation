@@ -73,7 +73,8 @@ export class CodexProvider implements AIProvider {
   }
 
   private effort(v?: string): CodexEffort | undefined {
-    return v === 'low' || v === 'medium' || v === 'high' ? v : undefined;
+    const value = String(v || '').trim();
+    return /^[a-z][a-z0-9_-]{0,31}$/i.test(value) ? value : undefined;
   }
 
   async health(): Promise<ProviderHealth> {

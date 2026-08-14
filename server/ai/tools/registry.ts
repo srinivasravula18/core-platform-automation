@@ -555,7 +555,7 @@ export async function quickWorkspaceAnswer(
   const countText = /\bsettings?\b/.test(t) ? t.replace(/\bconfigured\b/g, ' ') : t;
   const residue = countText
     .replace(/[^a-z0-9 ]+/g, ' ')
-    .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests|automation|local|uploaded|them|items|data|overall|everything|each|kind)\b/g, ' ')
+    .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|we|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests|automation|local|uploaded|them|items|data|overall|everything|each|kind)\b/g, ' ')
     .replace(/\b(steps?|cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
     .replace(/\s+/g, ' ').trim();
   if (residue && !/\b(total|overall)\b/.test(t)) return null;

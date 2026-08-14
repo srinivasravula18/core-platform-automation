@@ -5,6 +5,7 @@ import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showAlert } from '@/src/lib/dialog';
 import { FolderSelect } from './FolderSelect';
 import { RequiredMark } from './RequiredMark';
+import { can } from './AuthGate';
 import { readSseJson } from '@/src/lib/sse';
 
 interface AIActionModalProps {
@@ -20,7 +21,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedData, setGeneratedData] = useState<any>(null);
   const [folderId, setFolderId] = useState('');
-  const requiresFolder = taskType !== 'defect';
+  const requiresFolder = taskType !== 'defect' && can('folders:read');
 
   const appendSpeechTranscript = useCallback((transcript: string) => {
     setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);

@@ -4,7 +4,7 @@ import { DEFAULT_MODELS, type ProviderName } from '../ai/providers/types';
 import { isPostgresEnabled, query } from '../db/pool';
 
 const PROVIDERS: ProviderName[] = ['codex'];
-type ProviderSetting = { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' };
+type ProviderSetting = { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: string };
 const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, ProviderSetting> = {
   codex: { apiKey: '', model: '', authMode: 'account', enabled: true, effort: 'medium' },
 };
@@ -27,7 +27,7 @@ function normalizeProviderSettings(settings: any) {
       model: typeof stored.model === 'string' ? stored.model : '',
       authMode: apiKey && stored.authMode !== 'account' ? 'api_key' : 'account',
       enabled: typeof stored.enabled === 'boolean' ? stored.enabled : true,
-      effort: ['low', 'medium', 'high'].includes(stored.effort) ? stored.effort : 'medium',
+      effort: typeof stored.effort === 'string' && /^[a-z][a-z0-9_-]{0,31}$/i.test(stored.effort) ? stored.effort : 'medium',
     } as ProviderSetting,
   } as Record<ProviderName, ProviderSetting>;
 

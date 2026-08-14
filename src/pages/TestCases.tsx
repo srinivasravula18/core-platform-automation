@@ -84,6 +84,7 @@ export default function TestCases() {
   const aiSearch = useAiSearch('test cases');
   const [runs, setRuns] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
+  const [generatingScriptIds, setGeneratingScriptIds] = useState<Set<string>>(new Set());
   const [scriptViewer, setScriptViewer] = useState<{ id: string; title: string; filename: string; code: string } | null>(null);
   const [videoViewer, setVideoViewer] = useState<{ title: string; url?: string; jobId?: string } | null>(null);
   const [scriptDraft, setScriptDraft] = useState('');
@@ -710,6 +711,36 @@ export default function TestCases() {
     const candidates = runId ? (scriptsByRun.get(runId) || []) : scripts;
     return candidates.find((script) => normalizeTitle(script.title) === title || normalizeTitle(script.test_case_title) === title)
       || (runId && candidates.length === 1 ? candidates[0] : null);
+  };
+  const generateScript = async (testCase: any) => {
+    const caseId = String(testCase.id);
+    if (generatingScriptIds.has(caseId)) return;
+    const linkedRun = runs.find((run) => (run.caseIds || []).map(String).includes(caseId) || String(run.testCaseId || '') === caseId);
+    const targetUrl = String(testCase.targetUrl || linkedRun?.targetUrl || '').trim();
+    if (!targetUrl) {
+      void showAlert('Add a Target URL to this test case before generating its Playwright script.');
+      return;
+    }
+    setGeneratingScriptIds((current) => new Set(current).add(caseId));
+    try {
+      const goal = [testCase.title, testCase.description, ...(testCase.steps || []).map((step: any, index: number) => `${index + 1}. ${step.action || ''} Expected: ${step.expected || ''}`)].filter(Boolean).join('\n');
+      const authored = await fetch('/api/agent/author-test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goal, app_url: targetUrl }),
+      });
+      const authoredBody = await authored.json().catch(() => ({}));
+      if (!authored.ok || !authoredBody.script) throw new Error(authoredBody.error || 'Could not generate the Playwright script.');
+      const saved = await fetch('/api/scripts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caseId, code: authoredBody.script, title: testCase.title, targetUrl }),
+      });
+      const savedBody = await saved.json().catch(() => ({}));
+      if (!saved.ok) throw new Error(savedBody.error || 'Could not save the Playwright script.');
+      await fetchScripts();
+    } catch (error: any) {
+      void showAlert(error.message || 'Could not generate the Playwright script.');
+    } finally {
+      setGeneratingScriptIds((current) => { const next = new Set(current); next.delete(caseId); return next; });
+    }
   };
   // videoJobId is the live-captured-during-recording preview (current path); videoPreviewJobId is the
   // older re-executed preview, kept as a fallback for recordings made before the live-capture change.
@@ -1631,7 +1662,14 @@ export default function TestCases() {
                     <td className="py-3 px-4">
                       {(() => {
                         const script = relatedScript(tc);
-                        if (!script) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+                        if (!script) return <button
+                          onClick={(event) => { event.stopPropagation(); void generateScript(tc); }}
+                          disabled={generatingScriptIds.has(String(tc.id))}
+                          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)] disabled:opacity-50"
+                        >
+                          {generatingScriptIds.has(String(tc.id)) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                          Generate
+                        </button>;
                         return <div className="flex items-center gap-1">
                           <button
                             onClick={(event) => { event.stopPropagation(); openScript(script, tc); }}

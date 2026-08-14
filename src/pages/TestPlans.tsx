@@ -100,6 +100,7 @@ export default function TestPlans() {
   const [suites, setSuites] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
+  const [scripts, setScripts] = useState<any[]>([]);
   const [activeDetailTab, setActiveDetailTab] = useUrlState('tab', 'suites', ['suites', 'cases', 'runs'] as const);
   const [loading, setLoading] = useState(true);
   const [planView, setPlanView] = useUrlState('view', 'active', ['active', 'closed'] as const);
@@ -156,11 +157,13 @@ export default function TestPlans() {
       fetch('/api/suites').then(r => r.json()),
       fetch('/api/cases').then(r => r.json()),
       fetch('/api/runs').then(r => r.json()),
+      fetch('/api/scripts').then(r => r.json()),
     ])
-      .then(([suiteData, caseData, runData]) => {
+      .then(([suiteData, caseData, runData, scriptData]) => {
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setRuns(Array.isArray(runData) ? runData : []);
+        setScripts(Array.isArray(scriptData) ? scriptData : []);
       })
       .catch(console.error);
   };
@@ -400,10 +403,14 @@ export default function TestPlans() {
     const caseIds = Array.from(new Set(runPlanIds.flatMap((id) => getPlanCases(id).map((testCase: any) => String(testCase.id)))));
     setIsStartingRun(true);
     try {
-      if (mode === 'manual') await startSelectedRun({ planIds: runPlanIds, caseIds, mode }, navigate);
-      else for (const caseId of caseIds) {
-        const response = await fetch('/api/automation/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, headed, ...(headed ? { agentId } : {}) }) });
-        const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
+      const run = await startSelectedRun({ planIds: runPlanIds, caseIds, mode }, navigate);
+      if (mode === 'automated') {
+        const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/execute`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferLocalAgent: headed, ...(agentId ? { agentId } : {}) }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Could not start automated run.');
       }
       setRunModalOpen(false); bulk.clearSelection();
     } catch (error: any) { void showAlert(error.message || 'Failed to start selected test plan run.'); }
@@ -412,6 +419,11 @@ export default function TestPlans() {
 
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
   const getPlanCases = (planId: string) => casesForPlan(cases, suites, planId);
+  const runPlanCasesSelection = Array.from(new Map(runPlanIds.flatMap((id) => getPlanCases(id)).map((testCase: any) => [String(testCase.id), testCase])).values());
+  const runPlanCanAutomate = runPlanCasesSelection.length > 0 && runPlanCasesSelection.every((testCase: any) => scripts.some((script: any) =>
+    String(script.caseId || '') === String(testCase.id)
+    || (String(script.title || script.test_case_title || '').trim().toLowerCase() === String(testCase.title || '').trim().toLowerCase()
+      && String(script.agentRunId || '') === String(testCase.agentRunId || ''))));
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const selectedParentPlan = selectedDetailPlan ? plans.find((plan) => plan.id === selectedDetailPlan.parentPlanId) || null : null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
@@ -1324,6 +1336,9 @@ export default function TestPlans() {
         agents={runAgents}
         onClose={() => setRunModalOpen(false)}
         onRun={runPlanCases}
+        canAutomate={runPlanCanAutomate}
+        hasAutomation={runPlanCasesSelection.some((testCase: any) => testCase.testingScope === 'Automation' || testCase.type === 'Automated')}
+        onGenerateMissing={() => { setRunModalOpen(false); navigate('/cases'); }}
         previewGroups={runPlanIds.map((id) => ({
           label: plans.find((plan) => plan.id === id)?.name || id,
           items: getPlanCases(id).map((testCase: any) => testCase.title || testCase.id),

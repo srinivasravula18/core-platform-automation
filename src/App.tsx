@@ -238,12 +238,27 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setSearching(true);
-      fetch('/api/controller/classify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userMessage: q, workspaceId: 'default' }),
-      })
-        .then((r) => r.json())
+      const sources = [
+        { api: 'plans', label: 'Test Plan', path: '/plans' },
+        { api: 'suites', label: 'Test Suite', path: '/suites' },
+        { api: 'cases', label: 'Test Case', path: '/cases' },
+        { api: 'runs', label: 'Test Run', path: '/runs' },
+        { api: 'reports', label: 'Report', path: '/reports' },
+      ];
+      Promise.all(sources.map(async (source) => ({ source, rows: await fetch(`/api/${source.api}?q=${encodeURIComponent(q)}`).then((response) => response.json()) })))
+        .then(async (matches) => {
+          const intents = matches.flatMap(({ source, rows }) => (Array.isArray(rows) ? rows : []).slice(0, 3).map((row: any) => ({
+            kind: 'navigate',
+            title: `${source.label}: ${row.name || row.title || row.id}`,
+            description: row.id,
+            params: { path: source.path, search: row.name || row.title || row.id },
+          }))).slice(0, 8);
+          if (intents.length) return { intents, summary: `${intents.length} matching records` };
+          return fetch('/api/controller/classify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userMessage: q, workspaceId: 'default' }),
+          }).then((response) => response.json());
+        })
         .then((data) => {
           if (data?.intents?.length) {
             setSearchResults(data);

@@ -63,6 +63,7 @@ import {
   AgentRuns,
   Agents,
   AutomationJobs,
+  Audit,
   isPgEnabled,
 } from '../../db/repository';
 import { applyExecutionProgress } from '../../../core/shared/automationProgress';
@@ -1089,6 +1090,26 @@ export function registerResourceRoutes(app: Express) {
   });
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
   app.get('/api/scripts', async (req, res) => res.json(scopeFilter(await Scripts.list(), reqScope(req))));
+  app.post('/api/scripts', asyncRoute(async (req, res) => {
+    const caseId = String(req.body?.caseId || '').trim();
+    const code = String(req.body?.code || '').trim();
+    const testCase = caseId ? await Cases.get(caseId) : null;
+    if (!testCase || !scopeFilter([testCase], reqScope(req)).length) return res.status(404).json({ error: 'Test case not found.' });
+    if (!code) return res.status(400).json({ error: 'Script code is required.' });
+    const id = `SCR-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const filename = String(req.body?.filename || `${caseId.toLowerCase()}.spec.ts`).replace(/[^A-Za-z0-9._-]+/g, '-');
+    const script = await Scripts.upsert({
+      ...scopeStamp(reqScope(req)), id, caseId, code, filename,
+      name: String(req.body?.name || `${testCase.title || caseId} - ${id}`),
+      title: String(req.body?.title || testCase.title || caseId),
+      targetUrl: normalizeTargetUrl(req.body?.targetUrl || testCase.targetUrl || ''),
+      language: 'typescript', framework: 'playwright', status: 'Generated',
+      createdBy: reqScope(req).username || 'QA Assistant',
+    });
+    if (!isPgEnabled()) persistDataInBackground('created script');
+    logActivity(req, `Generated Playwright script: ${script.title || script.name}`, { type: 'script', entityId: script.id });
+    res.status(201).json({ success: true, script });
+  }));
   app.get('/api/reports', async (req, res) => res.json(scopeFilter(await Reports.list(), reqScope(req))));
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();
@@ -1367,14 +1388,26 @@ export function registerResourceRoutes(app: Express) {
       }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
+      if (e.name === 'plans' && Array.isArray(req.body?.runIds)) {
+        const linked = new Set(uniqueStrings(req.body.runIds));
+        for (const run of await Runs.list()) {
+          const selected = linked.has(String(run.id));
+          if (selected && String(run.testPlanId || '') !== String(existing.id)) await Runs.upsert({ ...run, testPlanId: existing.id });
+          else if (!selected && String(run.testPlanId || '') === String(existing.id)) await Runs.upsert({ ...run, testPlanId: '' });
+        }
+      }
       if (e.name === 'scripts' && 'code' in req.body) {
         const recording = (await Recordings.list()).find((item: any) =>
           item.metadata?.scriptId === existing.id || (existing.caseId && item.metadata?.caseId === existing.caseId));
         if (recording) await Recordings.upsert({ ...recording, script: updated.code });
       }
+      if (e.name === 'reports') {
+        const scope = reqScope(req);
+        await Audit.push({ workspaceId: scope.userId || 'default', actor: scope.userId || 'user', actorName: scope.username || '', action: 'update', entityType: 'report', entityId: existing.id, ownerId: scope.userId || '', detail: `Updated report: ${updated.name || updated.id}` });
+      }
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
       if ('tags' in req.body) await ensureTagsInCatalog(updated.tags, reqScope(req));
-      logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
+      logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`, { type: e.name.slice(0, -1), entityId: updated.id });
       res.json({ success: true });
     }));
 
@@ -1542,13 +1575,17 @@ export function registerResourceRoutes(app: Express) {
       failureReason: r.failureReason || '',
       date: r.date || new Date().toISOString().split('T')[0],
       targetUrl,
+      environment: String(r.environment || ''),
+      tags: normalizeCaseTags(r.tags || []),
       folderId: r.folderId || '',
       steps: processedSteps,
       caseRevisions,
     };
     await Reports.upsert(newReport);
+    const scope = reqScope(req);
+    await Audit.push({ workspaceId: scope.userId || 'default', actor: scope.userId || 'user', actorName: scope.username || '', action: 'create', entityType: 'report', entityId: newReport.id, ownerId: scope.userId || '', detail: `Created report: ${name}` });
     if (!isPgEnabled()) persistDataInBackground('report');
-    logActivity(req, `Logged Test Report: ${name}`);
+    logActivity(req, `Logged Test Report: ${name}`, { type: 'report', entityId: newReport.id });
     res.json({ success: true, report: newReport });
   }));
 

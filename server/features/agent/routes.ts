@@ -62,6 +62,7 @@ import { scoreCaseReuse } from './caseReuse';
 import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
 import { agentRunStatusForList, isPendingReviewTestRun } from '../../../core/shared/testRunStatus';
+import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, Plans, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { subjectChanged } from './workflow/goalTerms';
@@ -861,11 +862,9 @@ async function ensureFolderInPg(folderId: string) {
 }
 
 function agentPlanId(run: any): string {
-  if (run.testPlanId) return run.testPlanId;
-  // Synthesize a plan id ONLY when the run produced cases (so a Plan row is created to satisfy the
-  // cases.test_plan_id FK); a run with no cases carries no plan reference.
-  const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
-  return hasCases ? `PLAN-${run.id.substring(0, 8).toUpperCase()}` : '';
+  // Generating cases must never create a Test Plan implicitly. Cases and suites may be unplanned;
+  // only an explicitly selected plan is linked and persisted.
+  return String(run.testPlanId || '');
 }
 
 function agentSuiteId(run: any): string {
@@ -1068,7 +1067,9 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     ownerId: run.ownerId || '',
   });
 
-  await Reports.upsert({
+  // A report is execution evidence, not a generation receipt. Case-only/script-only agent runs stay
+  // visible in their own repositories but do not create an empty report.
+  if (Array.isArray(run.execution_result?.tests) && run.execution_result.tests.length > 0) await Reports.upsert({
     id: agentReportId(run),
     name: `${baseName} — Report`,
     runId: runRecordId,
@@ -1972,7 +1973,17 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     : [];
   // P3 (shadow, flag-gated): the orchestrator delegates the run's plan over the bus before the deterministic
   // graph executes. Fire-and-forget so it never blocks or fails the run — the graph remains the executor.
-  void orchestrateRunStart({ runId: run.id, goal: run.prompt || '', context: (resolveUnderstanding(run) || '').trim().slice(0, 1200) || undefined })
+  // The graph already owns execution routing. Keep the diagnostic A2A handoff deterministic so a
+  // second model request cannot contend with (and delay) the real case-authoring request.
+  void orchestrateRunStart({
+    runId: run.id,
+    goal: run.prompt || '',
+    context: (resolveUnderstanding(run) || '').trim().slice(0, 1200) || undefined,
+    classify: async (input) => ({
+      steps: [{ agent: 'caseWriter', task: input.goal.slice(0, 500) }],
+      rationale: 'The deterministic test-authoring graph owns execution routing.',
+    }),
+  })
     .catch(() => undefined);
   await startGraphRun({
     runId: run.id,
@@ -2379,7 +2390,7 @@ async function persistAgentRunArtifacts(run: any) {
     ownerId: run.ownerId || '',
   });
 
-  await Reports.upsert({
+  if (Array.isArray(run.execution_result?.tests) && run.execution_result.tests.length > 0) await Reports.upsert({
     id: existingReportId,
     name: `${baseName} — Report`,
     runId: existingRunId,
@@ -6810,7 +6821,12 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
           priority: c.priority || 'Medium',
           automationStatus: c.automationStatus || 'Not Automated',
           testingScope: c.testingScope || ((c.type || 'Automated') === 'Automated' ? 'Automation' : 'Manual'),
-          testingType: c.testingType || 'Functional',
+          ...testCaseTypeFields(c.testingTypes, c.testingType),
+          captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
+          assignedTo: c.assignedTo || '',
+          requestedBy: c.requestedBy || '',
+          configuration: c.configuration || '',
+          targetUrl: c.targetUrl || linkedRun?.app_url || '',
           folderId: c.folderId || linkedRun?.folderId || null,
           createdBy: c.createdBy || 'QA Assistant',
           proposedBy: 'QA Assistant',

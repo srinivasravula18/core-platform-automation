@@ -9,6 +9,7 @@ import { cn } from '@/src/lib/utils';
 import { showAlert } from '@/src/lib/dialog';
 import { relativeTime } from '@/src/lib/time';
 import { absoluteTime } from '@/src/lib/time/absolute';
+import { can } from '@/src/components/AuthGate';
 
 // Recent Activity: per-type icon + the page each entry deep-links to.
 const ACTIVITY_ICON: Record<string, any> = { case: TestTube2, plan: Target, suite: Layers, run: PlayCircle, defect: ShieldAlert, report: FileText };
@@ -158,7 +159,7 @@ export default function Dashboard() {
 
   const handleNewPlan = () => {
     if (!formData.name.trim()) return;
-    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
+    if (can('folders:read') && !formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     fetch('/api/plans', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -502,4 +503,3 @@ export default function Dashboard() {
     </div>
   );
 }
-

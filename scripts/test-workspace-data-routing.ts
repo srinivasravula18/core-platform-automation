@@ -50,6 +50,10 @@ try {
     { id: 'CASE-3', ownerId: 'USER-2', steps: [{ action: 'Hidden' }] },
   ] as any;
   assert.equal(
+    await quickWorkspaceAnswer('how many test cases do we have?', { userId: 'USER-1' }),
+    'There are 2 test cases in the workspace.',
+  );
+  assert.equal(
     await quickWorkspaceAnswer('how many test steps?', { userId: 'USER-1' }),
     'There are 3 test steps in the workspace.',
   );

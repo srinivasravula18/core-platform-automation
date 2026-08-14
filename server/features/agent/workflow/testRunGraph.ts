@@ -36,8 +36,8 @@ import { stashArtifactsDurable, stashArtifacts, readArtifacts } from './artifact
 import { renderBehaviorForPrompt } from '../behaviorOracle';
 import { classifyOutcomes } from '../outcomeValidator';
 import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
-import { advanceLedgerForStage, planMissionForRun, runCriticExchange, settleOpenTasks } from './nodes/agentCoordination';
-import type { WorkflowOrchestration } from './state';
+import { advanceLedgerForStage, attributePreRunUnderstanding, planMissionForRun, runCriticExchange, settleOpenTasks } from './nodes/agentCoordination';
+import { emptyOrchestration, type WorkflowOrchestration } from './state';
 import type { MissionKind } from '../../../agent-core/orchestration/contracts';
 import { publishGroundingFacts } from '../../../agent-core/grounding/groundingFacts';
 import { invokeCapability } from '../../../agent-core/registry/capabilities';
@@ -297,7 +297,23 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // A review-first run terminates at accepted cases; approving at the gate promotes it to a full run.
     const reviewFirst = state.request.reviewPolicy === 'manual' || state.request.executionPolicy === 'skip';
     const missionKind: MissionKind = reviewFirst ? 'cases' : 'deep_test_run';
-    const orchestration = planMissionForRun({ runId: state.runId, goal: state.request.goal, missionKind });
+    let orchestration = planMissionForRun({ runId: state.runId, goal: state.request.goal, missionKind });
+    // The repo/scope/requirements work already happened in the pre-run understanding flow; adopt it so
+    // the ledger shows what was actually done instead of reporting those stages as skipped.
+    if (orchestration?.tasks) {
+      const adopted = await attributePreRunUnderstanding({
+        runId: state.runId,
+        understanding: state.request.understanding || '',
+        orchestration: { ...emptyOrchestration(), ...orchestration } as WorkflowOrchestration,
+      });
+      if (adopted) {
+        orchestration = {
+          ...orchestration,
+          tasks: { ...orchestration.tasks, ...(adopted.tasks ?? {}) },
+          acceptedFactRefs: [...(orchestration.acceptedFactRefs ?? []), ...(adopted.acceptedFactRefs ?? [])],
+        };
+      }
+    }
     return {
       context: { ...(state.context ?? { metadata: null, repository: null, roles: [], budget: [] }), metadata: result.context.metadata },
       status: 'running',

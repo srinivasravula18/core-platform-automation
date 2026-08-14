@@ -4,7 +4,7 @@ import { getMessageBus } from '../../../../agent-core/bus/messageBus';
 import { captureRegistrySnapshot } from '../../../../agent-core/registry/agents';
 import { buildExecutionPlan } from '../../../../agent-core/orchestration/coordinator';
 import { missionProfile, missionTaskSpecs } from '../../../../agent-core/orchestration/missionProfiles';
-import { buildAgentInstanceId, type AgentExecutionPlan, type AgentTask, type MissionKind, type TaskStatus } from '../../../../agent-core/orchestration/contracts';
+import { buildAgentInstanceId, type AgentExecutionPlan, type AgentTask, type FactRef, type MissionKind, type TaskStatus } from '../../../../agent-core/orchestration/contracts';
 import { critiqueCases, type CritiqueCase, type CritiqueResult } from '../../../../agent-core/critic/caseCritic';
 import type { BehaviorObservation } from '../../behaviorOracle';
 import type { WorkflowOrchestration } from '../state';
@@ -69,6 +69,55 @@ export function advanceLedgerForStage(
     if (t && t.status === 'queued') settled[id] = { ...t, status: 'skipped', updatedAt: new Date().toISOString() };
   }
   return { tasks: settled };
+}
+
+/** What the pre-run understanding flow already produced, keyed to the task it satisfies. */
+const PRE_RUN_WORK: Array<{ taskId: string; kind: string; describe: (u: string) => Record<string, unknown> }> = [
+  { taskId: 'map_repo', kind: 'evidence.repository', describe: (u) => ({ source: 'pre-run understanding', chars: u.length }) },
+  { taskId: 'resolve_scope', kind: 'scope.resolved', describe: (u) => ({ source: 'pre-run understanding', summary: u.slice(0, 800) }) },
+  { taskId: 'author_requirements', kind: 'requirements.draft', describe: (u) => ({ source: 'pre-run understanding', summary: u.slice(0, 800) }) },
+];
+
+/** Named as the producer on adopted facts — never an agent display name, because no agent thread ran. */
+const PRE_RUN_PRODUCER = 'PreRunUnderstanding';
+
+/**
+ * Record work the pre-run understanding flow already did, so the ledger reflects the run instead of
+ * showing repo/scope/requirements as skipped. This ADOPTS existing output — it runs no model and
+ * invents nothing: provenance names the understanding flow, and `agentInstanceId` stays null because
+ * no agent thread executed. With no understanding there is nothing to adopt and the tasks stay queued.
+ */
+export async function attributePreRunUnderstanding(input: {
+  runId: string;
+  understanding: string;
+  orchestration: WorkflowOrchestration | undefined;
+}): Promise<Partial<WorkflowOrchestration> | null> {
+  const understanding = String(input.understanding || '').trim();
+  const tasks = input.orchestration?.tasks;
+  if (!understanding || !tasks) return null;
+
+  const bb = getBlackboard();
+  const adopted: Record<string, AgentTask> = {};
+  const acceptedFactRefs: FactRef[] = [];
+
+  for (const work of PRE_RUN_WORK) {
+    const task = tasks[work.taskId];
+    if (!task || task.status !== 'queued') continue;
+    try {
+      const fact = await bb.put(input.runId, work.kind, work.describe(understanding), PRE_RUN_PRODUCER, {
+        taskId: work.taskId, status: 'accepted',
+      });
+      acceptedFactRefs.push({ factId: fact.id, kind: fact.kind, key: fact.key, digest: fact.digest });
+      // The work was dispatched to the pre-run flow, ran, and is accepted — walk that real sequence
+      // rather than jumping straight to accepted, which the lifecycle rightly forbids.
+      adopted[work.taskId] = { ...task, status: 'accepted', attempt: 1, updatedAt: new Date().toISOString() };
+    } catch (err) {
+      console.warn(`[orchestration] could not attribute ${work.taskId}:`, (err as Error)?.message);
+    }
+  }
+  if (!Object.keys(adopted).length) return null;
+  console.log(`[orchestration] adopted pre-run understanding for: ${Object.keys(adopted).join(', ')}`);
+  return { tasks: adopted, acceptedFactRefs };
 }
 
 /** At terminal time, a task still queued never ran — record it as skipped rather than leaving it pending. */

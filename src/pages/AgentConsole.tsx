@@ -82,8 +82,8 @@ import { GeneratedCases } from '@/src/components/GeneratedCases';
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
 // GEN_VERB_RE, siteActionable, isQuestionForSupervisor, isCoreListViewText, isProceedLike,
 // extractTargetUrl, findCoreAdminWebsite, …) has been retired. The routing decision is now
-// made by ONE backend call to POST /api/agent/goal (see send() below), which returns a typed
-// `kind` the console dispatches on. Only the small helpers still used by preserved EXECUTION
+// made by the backend controller stream, which selects a deterministic reply, one authenticated
+// SDK turn, or the grounded Supervisor. Only the small helpers used by preserved EXECUTION
 // and rendering flows (describeAgentStep, isNoiseAnswer/lastAssistantAnswer for grounding,
 // escapeRegExp/findWebsiteInText for resolving a named app to a websiteId) remain.
 
@@ -380,7 +380,17 @@ const CONV_KEY_BASE = 'tfa_active_conversation';
 // The runtime's model/effort are workspace-wide settings; these remember the user's own pick for them.
 const MODEL_PREF_KEY = 'tfa_runtime_model';
 const EFFORT_PREF_KEY = 'tfa_runtime_effort';
-const EFFORT_LEVELS = ['low', 'medium', 'high'];
+const DEFAULT_EFFORT_LEVELS = ['low', 'medium', 'high'];
+function runtimeModelIds(runtime: any): string[] {
+  const live = Array.isArray(runtime?.models) ? runtime.models.map((model: any) => String(model?.id || '')).filter(Boolean) : [];
+  return live.length ? live : [runtime?.defaultModel, ...(Array.isArray(runtime?.alternatives) ? runtime.alternatives : [])].filter(Boolean).map(String);
+}
+function runtimeEfforts(runtime: any, modelId: string): string[] {
+  const model = Array.isArray(runtime?.models) ? runtime.models.find((item: any) => item?.id === modelId) : null;
+  const live = Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts.map(String).filter(Boolean) : [];
+  const provider = Array.isArray(runtime?.efforts) ? runtime.efforts.map(String).filter(Boolean) : [];
+  return live.length ? live : (provider.length ? provider : DEFAULT_EFFORT_LEVELS);
+}
 // Each unique project + app is its own chat workspace. We namespace the chat
 // workspace id and the "active conversation" pointer by the selected scope, so
 // switching project/app swaps the console to that context's own history.
@@ -687,7 +697,14 @@ export default function AgentConsole() {
   const handleModelChange = useCallback((model: string) => {
     setSelectedModel(model);
     writeScopedStorage(MODEL_PREF_KEY, model || null);
-  }, []);
+    const runtime = providers.find((provider: any) => provider.callable);
+    const efforts = runtimeEfforts(runtime, model);
+    if (!efforts.includes(selectedEffort)) {
+      const next = efforts.includes(runtime?.effort) ? runtime.effort : (efforts[0] || 'medium');
+      setSelectedEffort(next);
+      writeScopedStorage(EFFORT_PREF_KEY, next);
+    }
+  }, [providers, selectedEffort]);
 
   const handleEffortChange = useCallback((effort: string) => {
     setSelectedEffort(effort);
@@ -1060,12 +1077,14 @@ export default function AgentConsole() {
         setProviders(list);
         const runtime = list.find((p: any) => p.callable);
         if (runtime) {
-          const offered = [runtime.defaultModel, ...(Array.isArray(runtime.alternatives) ? runtime.alternatives : [])].filter(Boolean).map(String);
+          const offered = runtimeModelIds(runtime);
           const savedModel = readScopedStorage(MODEL_PREF_KEY) || '';
           const savedEffort = readScopedStorage(EFFORT_PREF_KEY) || '';
           // A remembered model the runtime no longer offers is dropped rather than sent and rejected.
-          setSelectedModel(offered.includes(savedModel) ? savedModel : (runtime.model || runtime.defaultModel));
-          setSelectedEffort(EFFORT_LEVELS.includes(savedEffort) ? savedEffort : (runtime.effort || 'medium'));
+          const nextModel = offered.includes(savedModel) ? savedModel : (offered.includes(runtime.model) ? runtime.model : offered[0]);
+          const efforts = runtimeEfforts(runtime, nextModel);
+          setSelectedModel(nextModel);
+          setSelectedEffort(efforts.includes(savedEffort) ? savedEffort : (efforts.includes(runtime.effort) ? runtime.effort : (efforts[0] || 'medium')));
         }
       })
       .catch(() => {});
@@ -1585,10 +1604,10 @@ export default function AgentConsole() {
         apps: data.app_options.apps,
         runArgs,
       });
-    } else if (data?.chat_response) {
-      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
     } else if (data?.task_id) {
       commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+    } else if (data?.chat_response) {
+      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
     } else {
       commitTurn(args.thinkingId, {
         id: args.thinkingId,
@@ -1675,12 +1694,16 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     let understandingSource = 'fallback';
-    try {
-      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
-      understanding = generated.understanding || fallbackUnderstanding;
-      understandingSource = generated.source || understandingSource;
-    } catch {
-      /* use deterministic fallback */
+    // Explicit case-generation requests already enter the evidence-grounded workflow after review.
+    // Do not make the user wait for a second, pre-run research pass that duplicates that work.
+    if (!/\b(?:generate|create|write|draft|author)\b[\s\S]{0,80}\btest\s*cases?\b/i.test(originalRequest || prompt)) {
+      try {
+        const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
+        understanding = generated.understanding || fallbackUnderstanding;
+        understandingSource = generated.source || understandingSource;
+      } catch {
+        /* use deterministic fallback */
+      }
     }
     const caseCountPrompt = originalRequest || prompt;
     const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 };
@@ -2059,6 +2082,8 @@ export default function AgentConsole() {
       conversationId,
       projectId: selectedProjectId || undefined,
       appId: selectedAppId || undefined,
+      model: selectedModel || undefined,
+      effort: selectedEffort,
       history: buildHistory(),
       pageContext: { path: location.pathname },
       apps: getSelectedApps(),
@@ -2101,7 +2126,6 @@ export default function AgentConsole() {
           else if (ev.type === 'answer_delta') {
             liveReply += ev.delta || '';
             appendThinkingDebug(thinkingId, 'Supervisor answer delta', ev.delta || '');
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(liveReply || ' ') });
           }
           else if (ev.type === 'heartbeat') {
             // Keeps production proxies from treating a long AI call as idle.
@@ -2198,7 +2222,7 @@ export default function AgentConsole() {
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
       });
     }
-  }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps, presentDeepUnderstanding, selectedProjectId, selectedAppId, currentExecution]);
+  }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps, presentDeepUnderstanding, selectedProjectId, selectedAppId, selectedModel, selectedEffort, currentExecution]);
 
   const send = useCallback(
     async (raw?: string, editTurnIdArg?: string | null) => {
@@ -2308,7 +2332,7 @@ export default function AgentConsole() {
 
       // ── Preserved pre-checks (run BEFORE the unified router) ───────────────────────
       // These two flows are explicit, stateful, or have no equivalent backend route-kind,
-      // so they are kept exactly as before and short-circuit the /api/agent/goal call.
+      // so they are kept exactly as before and short-circuit the controller stream.
 
       // 1) Pending "Here's what I understood" review card: an affirmative reply ("proceed"/"yes")
       //    FINALIZES the deep run; any other reply REVISES the understanding. (Non-affirmative
@@ -2428,7 +2452,27 @@ export default function AgentConsole() {
         return;
       }
 
-      // Every ordinary message uses the same Codex Supervisor tool loop.
+      const directTargets = getSelectedApps();
+      const directCaseRequest = /\b(?:generate|create|write|draft|author)\b[\s\S]{0,80}\btest\s*cases?\b/i.test(text);
+      if (directCaseRequest && directTargets.length === 1) {
+        try {
+          await presentDeepUnderstanding({
+            thinkingId,
+            prompt: text,
+            originalRequest: text,
+            targetUrl: directTargets[0].baseUrl,
+            websiteName: directTargets[0].name,
+          });
+        } finally {
+          clearActiveRequest();
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
+
+      // The backend chooses the cheapest safe path: deterministic helpers, one authenticated
+      // Codex SDK turn, or the grounded Supervisor tool loop for actions/product evidence.
       try {
         updateThinkingLabel(thinkingId, 'Working on your request...');
         await runViaSupervisor(text, thinkingId);

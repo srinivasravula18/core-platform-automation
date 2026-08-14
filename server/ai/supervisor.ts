@@ -20,6 +20,7 @@ import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 import { draftRequirement } from '../features/requirements/requirementService';
 import { expandByReferences } from './exploration/referenceGraph';
+import { urlHealthTool } from '../agent-core/registry/urlHealthTool';
 import { z } from 'zod';
 
 /* ---------- Conversational Runtime delegation (Phase 6) ---------- */
@@ -147,8 +148,6 @@ export interface SupervisorResult {
   accepted: boolean;
   usage: { inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number };
 }
-
-export const hasSupervisorToolCall = (steps: AgentStep[]) => steps.some((step) => step.toolCalls.length > 0);
 
 // Only GRAMMATICAL fillers — NOT product nouns. Words like "list", "view", "features",
 // "page", "app", "table", "test" are exactly what we want to grep the codebase for, so they
@@ -615,7 +614,10 @@ export async function runSupervisor(input: {
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   pageContext?: { path?: string };
   apps?: Array<{ name: string; baseUrl: string }>;
+  model?: string;
+  effort?: string;
   onStep?: (step: AgentStep) => void;
+  onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<SupervisorResult> {
   const ctx: ToolContext = {
@@ -626,14 +628,15 @@ export async function runSupervisor(input: {
     userMessage: input.userMessage,
     conversationId: input.conversationId,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...corePlatformMetaTools, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools = buildSupervisorTools(ctx);
 
   const provider = resolveProviderForAgent('chatAssistant');
+  const model = resolveModelForAgent('chatAssistant', provider, input.model);
   const assembled = await assembleConversationContext({
     conversationId: input.conversationId,
     fallbackHistory: input.history,
     currentMessage: input.userMessage,
-    model: resolveModelForAgent('chatAssistant', provider),
+    model,
     path: 'controller.supervisor',
   });
   // The runtime carries real conversation threads, so history rides as seed messages and only the
@@ -647,7 +650,7 @@ export async function runSupervisor(input: {
     : '';
   const task = `${appsBlock}${historyBlock}${pageBlock}\n\nCurrent user request: ${input.userMessage}`.trim();
 
-  const orch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: ctx.workspaceId, userId: ctx.userId });
+  const orch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: ctx.workspaceId, userId: ctx.userId, model, effort: input.effort });
   const result = await orch.runToolLoop({
     task,
     guardrailInput: input.userMessage,
@@ -659,12 +662,21 @@ export async function runSupervisor(input: {
     maxTotalTokens: 120_000,
     contextManifestId: assembled.manifest.id,
     temperature: 0.2,
-    accept: ({ steps }) => hasSupervisorToolCall(steps)
-      ? { ok: true }
-      : { ok: false, feedback: 'You answered without using a capability. Call the tool that fulfills or grounds the request, then answer from its result.' },
-    maxAcceptRetries: 1,
     onStep: input.onStep,
+    onTextDelta: input.onTextDelta,
     signal: input.signal,
   });
   return { finalText: result.finalText, steps: result.steps, toolResults: result.toolResults, accepted: result.accepted, usage: result.totalUsage };
+}
+
+/** Single source for the Supervisor catalogue so contract tests verify what the runtime receives. */
+export function buildSupervisorTools(ctx: ToolContext): AgentTool[] {
+  return [
+    urlHealthTool,
+    queryWorkspaceTool, searchConversationTool, fetchArtifactTool,
+    searchCodebaseTool, readCodeFileTool, followImportsTool,
+    findUntestedEdgesTool, analyzeFeatureCoverageTool,
+    ...corePlatformDataTools(), ...corePlatformMetaTools,
+    ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx)),
+  ];
 }

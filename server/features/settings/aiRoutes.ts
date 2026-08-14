@@ -95,19 +95,30 @@ export function registerSettingsRoutes(app: Express) {
       runtime.health().catch(() => ({ ok: false, authMethod: null, error: 'The Codex runtime is unreachable.' })),
       runtime.accountInfo().catch(() => null),
     ]);
-    const models = live.length ? live.map((m) => m.id) : listAvailableModels(CODEX);
+    const modelOptions = live.length
+      ? live
+      : listAvailableModels(CODEX).map((id) => ({ id, supportedReasoningEfforts: ['low', 'medium', 'high'] }));
+    const models = modelOptions.map((m) => m.id);
+    const defaultModel = models[0] || DEFAULT_MODELS[CODEX].default;
+    const selectedModel = models.includes(stored?.model || '') ? stored!.model : defaultModel;
+    const selectedEfforts = modelOptions.find((m) => m.id === selectedModel)?.supportedReasoningEfforts || [];
+    const selectedEffort = selectedEfforts.includes(stored?.effort || '')
+      ? stored!.effort
+      : (selectedEfforts[0] || stored?.effort || 'medium');
     res.json({
       providers: [{
         name: CODEX,
-        defaultModel: DEFAULT_MODELS[CODEX].default,
-        alternatives: models.filter((m) => m !== DEFAULT_MODELS[CODEX].default),
+        defaultModel,
+        alternatives: models.filter((m) => m !== defaultModel),
+        models: modelOptions,
+        efforts: selectedEfforts.length ? selectedEfforts : ['low', 'medium', 'high'],
         enabled: stored?.enabled !== false,
         configured: true,
         apiKeyConfigured: hasApiKey,
         callable: providerIsCallable(),
-        model: stored?.model || DEFAULT_MODELS[CODEX].default,
+        model: selectedModel,
         authMode,
-        effort: stored?.effort || 'medium',
+        effort: selectedEffort,
         runtime: 'codex',
         apiKeyMasked: stored?.apiKey ? redactKey(stored.apiKey) : '',
         // LIVE auth, not stored config: whether Codex can actually run right now, and how it
@@ -190,7 +201,7 @@ export function registerSettingsRoutes(app: Express) {
     if (apiKey !== undefined) slot.apiKey = apiKey;
     if (model !== undefined) slot.model = model;
     if (effort !== undefined) {
-      if (!['low', 'medium', 'high'].includes(effort)) return res.status(400).json({ error: 'effort must be low, medium or high' });
+      if (typeof effort !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/i.test(effort)) return res.status(400).json({ error: 'effort must be a valid Codex reasoning effort' });
       slot.effort = effort;
     }
     if (authMode !== undefined) {

@@ -44,7 +44,7 @@ export interface GenerateObjectOptions<T> {
   schema: T;
   temperature?: number;
   maxTokens?: number;
-  effort?: 'low' | 'medium' | 'high';
+  effort?: string;
   model?: string;
   signal?: AbortSignal;
   /** Optional inline images sent with the prompt; providers without multimodal support ignore them. */
@@ -56,7 +56,7 @@ export interface GenerateTextOptions {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
-  effort?: 'low' | 'medium' | 'high';
+  effort?: string;
   model?: string;
   signal?: AbortSignal;
 }

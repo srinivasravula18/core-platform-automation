@@ -408,6 +408,8 @@ function mapReport(r: any) {
     status: r.status,
     failureReason: r.failure_reason,
     targetUrl: r.target_url,
+    environment: r.environment || '',
+    tags: r.tags || [],
     steps: r.steps || [],
     evidence: r.evidence || [],
     narrative: r.narrative,
@@ -1288,7 +1290,7 @@ export const Cases = {
       (db as any).scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
       return db.cases.length < before;
     }
-    const res = await query('UPDATE cases SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
+    const res = await query('UPDATE cases SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL RETURNING id', [id, currentActor().id, currentActor().name]);
     if (res.length) {
       await query('UPDATE scripts SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE case_id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
       db.scripts = db.scripts.filter((s: any) => String(s.caseId || '') !== id);
@@ -1512,7 +1514,8 @@ export const Runs = {
     return mapRun(r);
   },
   async upsert(r: any): Promise<any> {
-    r = { ...r, name: await assertUniqueArtifactTitle({ table: 'runs', column: 'name', label: 'test run', records: db.runs }, r, 'Untitled Run') };
+    // Runs are identified by id, so repeated human-readable names are valid (for example, a nightly run).
+    r = { ...r, name: String(r.name || 'Untitled Run').trim() };
     if (!isPgEnabled()) {
       const idx = db.runs.findIndex((x: any) => x.id === r.id);
       if (idx < 0 && !r.triggerMeta?.sourceVersions) {
@@ -1716,13 +1719,14 @@ export const Reports = {
     const evidenceJson = JSON.stringify(rep.evidence || []);
     const caseRevisionsJson = JSON.stringify(rep.caseRevisions || {}); // execution snapshot: {caseId: revisionNo}
     const row = await queryOne(
-      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, steps, evidence, narrative, folder_id, date, case_revisions, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17, COALESCE($18, CURRENT_DATE), $19::jsonb,$20, now(), now())
+      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, environment, tags, steps, evidence, narrative, folder_id, date, case_revisions, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19, COALESCE($20, CURRENT_DATE), $21::jsonb,$22, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, plan_id=EXCLUDED.plan_id, suite_id=EXCLUDED.suite_id, run_id=EXCLUDED.run_id,
          plan_name=EXCLUDED.plan_name, suite_name=EXCLUDED.suite_name, requested_by=EXCLUDED.requested_by,
          execution_time=EXCLUDED.execution_time, total_executions=EXCLUDED.total_executions,
          status=EXCLUDED.status, failure_reason=EXCLUDED.failure_reason, target_url=EXCLUDED.target_url,
+         environment=EXCLUDED.environment, tags=EXCLUDED.tags,
          steps=EXCLUDED.steps, evidence=EXCLUDED.evidence, narrative=EXCLUDED.narrative,
          folder_id=EXCLUDED.folder_id, date=EXCLUDED.date, case_revisions=EXCLUDED.case_revisions,
          project_id=COALESCE(EXCLUDED.project_id, reports.project_id), updated_at=now()
@@ -1731,7 +1735,7 @@ export const Reports = {
         id, rep.name || 'Untitled Report', rep.planId || null, rep.suiteId || null, rep.runId || null,
         rep.planName || '', rep.suiteName || '', rep.requestedBy || 'human',
         rep.executionTime || '', rep.totalExecutions || 0, rep.status || 'Passed',
-        rep.failureReason || '', rep.targetUrl || '',
+        rep.failureReason || '', rep.targetUrl || '', rep.environment || '', rep.tags || [],
         stepsJson, evidenceJson, rep.narrative || '',
         rep.folderId || null, rep.date || null, caseRevisionsJson, rep.projectId || null,
       ],

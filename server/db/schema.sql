@@ -204,6 +204,8 @@ CREATE TABLE IF NOT EXISTS reports (
   status          TEXT DEFAULT 'Passed',
   failure_reason  TEXT DEFAULT '',
   target_url      TEXT DEFAULT '',
+  environment     TEXT DEFAULT '',
+  tags            TEXT[] DEFAULT ARRAY[]::TEXT[],
   steps           JSONB DEFAULT '[]'::jsonb,
   evidence        JSONB DEFAULT '[]'::jsonb,
   narrative       TEXT DEFAULT '',
@@ -752,7 +754,7 @@ DECLARE
   changed INT;
 BEGIN
   FOREACH artifact IN ARRAY ARRAY[
-    'plans:name', 'suites:name', 'cases:title', 'runs:name',
+    'plans:name', 'suites:name', 'cases:title',
     'defects:title', 'reports:name', 'scripts:name', 'requirements:title'
   ] LOOP
     table_name := split_part(artifact, ':', 1);
@@ -788,6 +790,9 @@ BEGIN
     );
   END LOOP;
 END $$;
+
+-- Run names are labels, not identities. The run id is the only uniqueness boundary.
+DROP INDEX IF EXISTS runs_active_project_title_unique;
 
 -- Folder names are unique among active siblings in the same user/project/app scope.
 -- Merge legacy duplicates first so the constraint can be applied without losing linked artifacts.
@@ -1705,6 +1710,8 @@ CREATE TABLE IF NOT EXISTS deletion_batches (
   app_id      TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS environment TEXT DEFAULT '';
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT ARRAY[]::TEXT[];
 CREATE INDEX IF NOT EXISTS deletion_batches_created_idx ON deletion_batches(created_at DESC);
 
 -- ---------------------------------------------------------------------------------------------

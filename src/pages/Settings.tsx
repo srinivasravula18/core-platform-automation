@@ -19,6 +19,8 @@ type ProviderInfo = {
   name: string;
   defaultModel: string;
   alternatives: string[];
+  models?: Array<{ id: string; displayName?: string; supportedReasoningEfforts?: string[] }>;
+  efforts?: string[];
   enabled: boolean;
   configured: boolean;
   apiKeyConfigured: boolean;
@@ -1137,7 +1139,12 @@ function ProvidersSection() {
   if (loading && !runtime) return <SkeletonCard />;
   if (!runtime) return <StatusBanner status={{ type: 'error', message: 'The AI runtime could not be loaded.' }} />;
 
-  const models = [runtime.defaultModel, ...runtime.alternatives];
+  const modelOptions: NonNullable<ProviderInfo['models']> = runtime.models?.length
+    ? runtime.models
+    : [runtime.defaultModel, ...runtime.alternatives].map((id) => ({ id }));
+  const efforts = modelOptions.find((model) => model.id === runtime.model)?.supportedReasoningEfforts
+    || runtime.efforts
+    || ['low', 'medium', 'high'];
   const usingApiKey = runtime.authMode === 'api_key';
 
   return (
@@ -1302,10 +1309,15 @@ function ProvidersSection() {
               <label className="text-xs font-medium text-[var(--text-muted)]">Model</label>
               <select
                 value={runtime.model}
-                onChange={(e) => save({ model: e.target.value }, { model: e.target.value }, 'Model saved')}
+                onChange={(e) => {
+                  const model = e.target.value;
+                  const supported = modelOptions.find((option) => option.id === model)?.supportedReasoningEfforts || runtime.efforts || [];
+                  const effort = supported.includes(runtime.effort) ? runtime.effort : (supported[0] || runtime.effort);
+                  void save({ model, effort }, { model, effort }, 'Model saved');
+                }}
                 className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm"
               >
-                {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.displayName || model.id}</option>)}
               </select>
             </div>
             <div>
@@ -1315,7 +1327,7 @@ function ProvidersSection() {
                 onChange={(e) => save({ effort: e.target.value }, { effort: e.target.value }, 'Reasoning effort saved')}
                 className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm"
               >
-                {['low', 'medium', 'high'].map((e) => <option key={e} value={e}>{e}</option>)}
+                {efforts.map((e) => <option key={e} value={e}>{e}</option>)}
               </select>
             </div>
           </div>
@@ -1373,7 +1385,7 @@ function ProvidersSection() {
                 onChange={(e) => setAgentModel(agent, e.target.value)}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.displayName || model.id}</option>)}
               </select>
             </div>
           ))}

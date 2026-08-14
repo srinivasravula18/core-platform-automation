@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity, Pencil, Check, X } from 'lucide-react';
+import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity, Pencil, Check, X, History } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
@@ -14,10 +14,11 @@ import { RequiredMark } from '@/src/components/RequiredMark';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
-import { showConfirm } from '@/src/lib/dialog';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useUrlState } from '@/src/lib/useUrlState';
 import { TESTING_TYPES } from '@/core/shared/testCaseTypes';
 import { DetailedReportView } from '@/src/components/reports/DetailedReportView';
+import { TagEditor } from '@/src/components/TagEditor';
 
 interface Step {
   step: string;
@@ -46,6 +47,8 @@ interface Report {
   status: 'Passed' | 'Failed' | 'Skipped';
   failureReason?: string;
   targetUrl?: string;
+  environment?: string;
+  tags?: string[];
   date: string;
   steps: Step[];
   evidence?: any[];
@@ -316,7 +319,12 @@ export default function Reports() {
   const [newReportFailureReason, setNewReportFailureReason] = useState('');
   const [newReportTargetUrl, setNewReportTargetUrl] = useState('');
   const [newReportFolderId, setNewReportFolderId] = useState('');
+  const [newReportEnvironment, setNewReportEnvironment] = useState('');
+  const [newReportTags, setNewReportTags] = useState<string[]>([]);
   const [newReportSteps, setNewReportSteps] = useState<Step[]>([]);
+  const [editingReportId, setEditingReportId] = useState('');
+  const [historyReport, setHistoryReport] = useState<Report | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<any[]>([]);
 
   // Evidence screenshot lightbox State
   const [lightboxKey, setLightboxKey] = useState<string | null>(null);
@@ -450,7 +458,30 @@ export default function Reports() {
     };
   }, []);
 
-  const handleCreateReport = () => {
+  const resetReportForm = () => {
+    setEditingReportId('');
+    setNewReportName(''); setNewReportPlan(''); setNewReportSuite(''); setNewReportRequestedBy('');
+    setNewReportTime(''); setNewReportStatus('Passed'); setNewReportFailureReason('');
+    setNewReportTargetUrl(''); setNewReportFolderId(''); setNewReportEnvironment(''); setNewReportTags([]); setNewReportSteps([]);
+  };
+
+  const openNewReport = () => { resetReportForm(); setIsNewReportModalOpen(true); };
+  const openEditReport = (report: Report) => {
+    setEditingReportId(report.id); setNewReportName(report.name || ''); setNewReportPlan(report.planName || '');
+    setNewReportSuite(report.suiteName || ''); setNewReportRequestedBy(report.requestedBy || '');
+    setNewReportTime(report.executionTime || ''); setNewReportStatus(report.status === 'Failed' ? 'Failed' : 'Passed');
+    setNewReportFailureReason(report.failureReason || ''); setNewReportTargetUrl(report.targetUrl || '');
+    setNewReportFolderId(report.folderId || ''); setNewReportEnvironment(report.environment || '');
+    setNewReportTags(Array.isArray(report.tags) ? report.tags : []); setNewReportSteps(Array.isArray(report.steps) ? report.steps : []);
+    setDetailReport(null); setIsNewReportModalOpen(true);
+  };
+  const openReportHistory = async (report: Report) => {
+    setHistoryReport(report); setHistoryEntries([]);
+    const data = await fetch(`/api/audit/report/${encodeURIComponent(report.id)}`).then((response) => response.json()).catch(() => ({}));
+    setHistoryEntries(Array.isArray(data?.entries) ? data.entries : []);
+  };
+
+  const handleCreateReport = async () => {
     if (!newReportName.trim() || !newReportSteps.length) return;
 
     const reportPayload = {
@@ -463,32 +494,19 @@ export default function Reports() {
       status: newReportStatus,
       failureReason: newReportStatus === 'Failed' ? newReportFailureReason : '',
       targetUrl: newReportTargetUrl,
+      environment: newReportEnvironment,
+      tags: newReportTags,
       folderId: newReportFolderId,
       steps: newReportSteps
     };
 
-    fetch('/api/reports', {
-      method: 'POST',
+    const response = await fetch(editingReportId ? `/api/reports/${encodeURIComponent(editingReportId)}` : '/api/reports', {
+      method: editingReportId ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reportPayload)
-    })
-      .then(r => r.json())
-      .then(rsp => {
-        if (rsp.success) {
-          setIsNewReportModalOpen(false);
-          fetchReports();
-          // Reset form fields
-          setNewReportName('');
-          setNewReportPlan('');
-          setNewReportSuite('');
-          setNewReportStatus('Passed');
-          setNewReportFailureReason('');
-          setNewReportTargetUrl('');
-          setNewReportFolderId('');
-          setNewReportSteps([]);
-        }
-      })
-      .catch(console.error);
+    });
+    if (!response.ok) return void showAlert((await response.json().catch(() => ({}))).error || 'Could not save this report.');
+    setIsNewReportModalOpen(false); resetReportForm(); fetchReports();
   };
 
   const bulk = useBulkDelete('reports', () => { setSelectedReport(null); fetchReports(); }, 'report');
@@ -603,7 +621,7 @@ export default function Reports() {
               { key: 'createdAt', label: 'Created', get: (r: any) => r.metadata?.createdAt || r.createdAt || '' },
             ]}
           />
-          <button onClick={() => setIsNewReportModalOpen(true)} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+          <button onClick={openNewReport} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Log Manual Report
           </button>
         </div>
@@ -766,6 +784,8 @@ export default function Reports() {
           <div className="flex w-full items-center justify-between gap-3">
             <div className="text-xs text-[var(--text-muted)]">Requested By {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
             <div className="flex gap-2">
+              {detailReport && !detailReport.runId && <button onClick={() => openEditReport(detailReport)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><Pencil className="h-4 w-4" /> Edit</button>}
+              {detailReport && !detailReport.runId && <button onClick={() => void openReportHistory(detailReport)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><History className="h-4 w-4" /> History</button>}
               <button onClick={() => detailReport && handleShareReport(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><ExternalLink className="h-4 w-4" /> Share</button>
               {detailReport && (
                 <ExportMenu
@@ -916,14 +936,25 @@ export default function Reports() {
         </div>
       )}
 
+      <Modal isOpen={!!historyReport} onClose={() => setHistoryReport(null)} title={`Change History — ${historyReport?.name || 'Report'}`}>
+        <div className="max-h-[60vh] space-y-2 overflow-auto">
+          {historyEntries.length ? historyEntries.map((entry) => (
+            <div key={entry.id || `${entry.at}-${entry.seq}`} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+              <div className="text-sm font-medium text-[var(--text-primary)]">{entry.detail || entry.action || 'Report updated'}</div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">{entry.actorName || entry.actor || 'System'} · <Timestamp value={entry.at} /></div>
+            </div>
+          )) : <div className="p-6 text-center text-sm text-[var(--text-muted)]">No changes have been recorded yet.</div>}
+        </div>
+      </Modal>
+
       {/* Manual Report Modal Layout */}
       <Modal
         isOpen={isNewReportModalOpen}
-        onClose={() => setIsNewReportModalOpen(false)}
-        title="Log Manual Run Audit Report"
+        onClose={() => { setIsNewReportModalOpen(false); resetReportForm(); }}
+        title={editingReportId ? 'Edit Manual Run Audit Report' : 'Log Manual Run Audit Report'}
         footer={
           <div className="flex justify-end gap-3">
-            <button type="button" onClick={() => setIsNewReportModalOpen(false)} className="px-4 py-2 border border-[var(--border)] text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded transition-all">
+            <button type="button" onClick={() => { setIsNewReportModalOpen(false); resetReportForm(); }} className="px-4 py-2 border border-[var(--border)] text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded transition-all">
                Cancel
             </button>
             <button
@@ -932,7 +963,7 @@ export default function Reports() {
               disabled={!newReportName.trim() || !newReportSteps.length}
               className="px-4 py-2 bg-[var(--accent)] text-white text-xs font-semibold rounded hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
             >
-               Save Verification Report
+               {editingReportId ? 'Save Changes' : 'Save Verification Report'}
             </button>
           </div>
         }
@@ -1012,6 +1043,17 @@ export default function Reports() {
                   <option value="Failed">Failed</option>
                 </select>
              </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Environment</label>
+              <input value={newReportEnvironment} onChange={(event) => setNewReportEnvironment(event.target.value)} placeholder="e.g. QA, Staging, Production" className="w-full rounded border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags</label>
+              <TagEditor options={Array.from(new Set(cases.flatMap((testCase: any) => Array.isArray(testCase.tags) ? testCase.tags : [])))} value={newReportTags} onChange={setNewReportTags} />
+            </div>
           </div>
 
           <FolderSelect

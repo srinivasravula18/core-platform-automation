@@ -281,6 +281,7 @@ export default function TestRuns() {
     });
   }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter]);
   const sortedRuns = sortRows(filteredRuns, sort, {
+    id: (run) => run.id,
     run: (run) => run.name || run.id,
     type: (run) => run.mode === 'manual' ? 'Manual' : `Automated ${run.executionMode || ''}`,
     scripts: (run) => scriptsForRun(run, casesForRun(run, cases, suites, plans), scripts).map(scriptLabel).join(', '),
@@ -1426,7 +1427,7 @@ export default function TestRuns() {
               rowHeight={72}
               height="100%"
               ariaLabel="Test runs"
-              tableClassName="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap"
+              tableClassName="w-full min-w-[2100px] table-fixed text-left text-sm whitespace-nowrap"
               onActivateRow={(index) => navigate(`/runs/${sortedRuns[index].id}`)}
               emptyState={<div className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</div>}
               renderHeaderRow={() => (
@@ -1435,6 +1436,7 @@ export default function TestRuns() {
                     <input type="checkbox" checked={bulk.allSelected(sortedRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(sortedRuns.map((run) => run.id))} />
                   </th>
                   <th className="px-4 py-3 w-10"></th>
+                  <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-48 px-4 py-3 font-medium" />
                   <SortableHeader label="Run" column="run" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
                   <SortableHeader label="Type" column="type" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
                   <SortableHeader label="Scripts" column="scripts" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-64 px-4 py-3 font-medium" />
@@ -1444,7 +1446,7 @@ export default function TestRuns() {
                   <SortableHeader label="Tests Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-56 px-4 py-3 font-medium" />
                   <SortableHeader label="Failure Analysis" column="failure" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-40 px-4 py-3 font-medium" />
                   <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
-                  <th className="w-20 px-4 py-3"></th>
+                  <th className="w-20 px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
               )}
               renderRow={(index, rowProps) => {
@@ -1472,6 +1474,7 @@ export default function TestRuns() {
                       <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
                     </td>
                     <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
+                    <td className="truncate px-4 py-4 font-mono text-xs text-[var(--text-muted)]" title={run.id}>{run.id}</td>
                     <td className="min-w-0 px-4 py-4">
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1">
@@ -1577,5 +1580,4 @@ export default function TestRuns() {
     </div>
   );
 }
-
 

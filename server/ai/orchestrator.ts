@@ -16,7 +16,6 @@ import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } fr
 import { CodexProvider } from './providers/codex';
 import { openBridgeSession } from './codex/mcpBridge';
 import { isKnownCodexModel } from './codex/runtime';
-import { CodexThreads } from '../db/repository';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
 import { recordUsage, getDailyCost } from './costTracker';
@@ -104,7 +103,8 @@ function isSelectableModel(model: string, provider: ProviderName): boolean {
   return !!model && (listAvailableModels(provider).includes(model) || isKnownCodexModel(model));
 }
 
-export function resolveModelForAgent(agent: string, provider: ProviderName = CODEX): string {
+export function resolveModelForAgent(agent: string, provider: ProviderName = CODEX, override?: string): string {
+  if (isSelectableModel(String(override || ''), provider)) return String(override);
   // 1) per-agent override (Settings → AI Runtime → per-agent model)
   const map = db.settings?.agentModelMap;
   const agentModel = map && (map as any)[agent] ? String((map as any)[agent]) : '';
@@ -116,7 +116,7 @@ export function resolveModelForAgent(agent: string, provider: ProviderName = COD
   return DEFAULT_MODELS[provider].default;
 }
 
-type ReasoningEffort = 'low' | 'medium' | 'high';
+type ReasoningEffort = string;
 
 /**
  * Agents whose output quality depends directly on reasoning depth. These run at
@@ -128,7 +128,7 @@ type ReasoningEffort = 'low' | 'medium' | 'high';
 const HIGH_EFFORT_AGENTS = new Set(['caseWriter', 'featureAnalyst', 'featureDiscoveryAgent', 'e2eFlowAgent', 'testPlanner']);
 
 function isEffort(v: unknown): v is ReasoningEffort {
-  return v === 'low' || v === 'medium' || v === 'high';
+  return typeof v === 'string' && /^[a-z][a-z0-9_-]{0,31}$/i.test(v);
 }
 
 /**
@@ -239,7 +239,7 @@ export class AgentOrchestrator {
   }
 
   // meta: prepared-invocation trace correlation (Conversational Runtime) — no routing logic here.
-  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; meta?: { requestId?: string; capability?: string; manifestId?: string } }) {
+  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; signal?: AbortSignal; meta?: { requestId?: string; capability?: string; manifestId?: string } }) {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -264,6 +264,7 @@ export class AgentOrchestrator {
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
       effort: this.effort,
+      signal: opts.signal,
     });
     await recordUsage({
       workspaceId: this.workspaceId,
@@ -301,7 +302,7 @@ export class AgentOrchestrator {
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
-  async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }): AsyncIterable<string> {
+  async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; signal?: AbortSignal }): AsyncIterable<string> {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -326,7 +327,7 @@ export class AgentOrchestrator {
       // answer at once. Emit it in small word-grouped chunks so the UI still renders
       // progressively instead of dumping a wall of text. (True low-latency token
       // streaming still requires an API-key/SDK provider.)
-      const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
+      const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, signal: opts.signal });
       const full = result.text || '';
       const tokens = full.match(/\S+\s*/g) || (full ? [full] : []);
       let buf = '';
@@ -338,7 +339,7 @@ export class AgentOrchestrator {
       if (buf) yield buf;
       return;
     }
-    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort })) {
+    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, signal: opts.signal })) {
       if (delta) yield delta;
     }
   }
@@ -422,32 +423,18 @@ export class AgentOrchestrator {
       },
     });
 
-    // Resume this conversation's Codex thread when we have one: the runtime already holds the
-    // exchange, so replaying the transcript would only duplicate it. A first turn (or a mapping
-    // the runtime has since forgotten) falls back to seeding history into the prompt.
-    const conversationId = ctx.conversationId ? String(ctx.conversationId) : '';
-    const mapping = conversationId ? await CodexThreads.get(conversationId, this.agent).catch(() => null) : null;
-    let threadId: string | undefined = mapping?.threadId;
-    const history = threadId ? '' : (opts.seedMessages || [])
+    // Each bridge URL is scoped to this request and revoked in finally. App Server retains the
+    // MCP URL on a resumed thread, so cross-request thread reuse would call the revoked URL and
+    // return 401. Seed application-owned history into a fresh thread; retries within this request
+    // may still reuse that thread while this bridge remains alive.
+    let threadId: string | undefined;
+    const history = (opts.seedMessages || [])
       .filter((m) => (m.content || '').trim())
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join('\n\n');
 
     let finalText = '';
     let acceptRetries = 0;
-    /** Record the thread once per loop so a restart resumes instead of forgetting. */
-    const rememberThread = async () => {
-      if (!conversationId || !threadId) return;
-      await CodexThreads.record({
-        conversationId,
-        agent: this.agent,
-        threadId,
-        model: (this.provider as any).defaultModel,
-        ownerId: this.userId,
-        projectId: ctx.projectId ? String(ctx.projectId) : undefined,
-        appId: ctx.appId ? String(ctx.appId) : undefined,
-      }).catch((error) => console.warn('[codex] thread mapping failed:', error?.message || error));
-    };
 
     try {
       let prompt = history ? `CONVERSATION SO FAR:\n${history}\n\nTASK:\n${opts.task}` : opts.task;
@@ -463,6 +450,7 @@ export class AgentOrchestrator {
           model: (this.provider as any).defaultModel,
           effort: this.effort,
           signal: opts.signal,
+          onTextDelta: opts.onTextDelta,
           threadId: resumeFrom,
           mcpServers: bridge.mcpServers,
           env: bridge.env,
@@ -472,16 +460,13 @@ export class AgentOrchestrator {
         try {
           turn = await runTurn(threadId);
         } catch (err: any) {
-          // A mapping the runtime no longer knows must not strand the conversation: drop it and
-          // start a fresh thread instead of failing the turn.
+          // A retry on this request's thread may still fail if App Server discarded it.
           if (!threadId || opts.signal?.aborted) throw err;
           console.warn(`[codex] resuming thread ${threadId} failed (${err?.message || err}); starting a new thread`);
-          if (conversationId) await CodexThreads.forget(conversationId, this.agent).catch(() => undefined);
           threadId = undefined;
           turn = await runTurn(undefined);
         }
         threadId = turn.threadId || threadId;
-        await rememberThread();
         finalText = turn.text || '';
 
         totalUsage.inputTokens += turn.usage.inputTokens ?? 0;
@@ -576,19 +561,19 @@ async function callWithRetry<T>(fn: () => Promise<T>, signal?: AbortSignal, atte
 }
 
 /** The Codex runtime always supports tool calling, so this is `getOrchestrator` with a guard. */
-export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
+export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; model?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
   if (!listConfiguredProviders(opts.userId).length) {
     throw new Error(providerBlockerReason() || NO_PROVIDER_MESSAGE);
   }
   return getOrchestrator(agent, opts);
 }
 
-export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
+export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; model?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
   // Resolve legacy agent names onto the canonical roles so prompt overrides,
   // model routing, and usage logging all use one consolidated identity.
   const canonical = canonicalAgent(agent);
   const provider = resolveProviderForAgent(canonical, opts.userId);
-  const model = resolveModelForAgent(canonical, provider);
+  const model = resolveModelForAgent(canonical, provider, opts.model);
   const base = buildProvider(provider, model);
   return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
 }
