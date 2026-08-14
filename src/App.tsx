@@ -172,6 +172,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
 function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; onCommandBarOpen: () => void }) {
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
   const username = getUsername();
   const [globalSearch, setGlobalSearch] = useState('');
   const [searchResults, setSearchResults] = useState<{ intents: any[]; summary: string } | null>(null);
@@ -181,6 +182,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
   const [answering, setAnswering] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [weeklyLimit, setWeeklyLimit] = useState<{ remaining: number; resetsAt: number | null } | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -198,6 +200,28 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
+
+  useEffect(() => {
+    const onAgentConsole = location.pathname === '/' || location.pathname.startsWith('/chat/') || location.pathname === '/agent' || location.pathname.startsWith('/agent/chat/');
+    if (!onAgentConsole) {
+      setWeeklyLimit(null);
+      return;
+    }
+    const loadWeeklyLimit = () => {
+      fetch('/api/ai/providers')
+        .then((response) => response.json())
+        .then((data) => {
+          const limit = data?.providers?.[0]?.account?.weeklyLimit;
+          setWeeklyLimit(limit && Number.isFinite(limit.usedPercent)
+            ? { remaining: Math.max(0, 100 - Math.round(limit.usedPercent)), resetsAt: limit.resetsAt ?? null }
+            : null);
+        })
+        .catch(() => setWeeklyLimit(null));
+    };
+    loadWeeklyLimit();
+    const timer = window.setInterval(loadWeeklyLimit, 60_000);
+    return () => window.clearInterval(timer);
+  }, [location.pathname]);
 
   const onSearchInput = (value: string) => {
     aiSearchRequestRef.current += 1;
@@ -342,6 +366,14 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       <div id="topbar-actions" className="flex items-center gap-2" />
       <div className="flex items-center gap-2 sm:gap-4">
         <RunningIndicator />
+        {weeklyLimit && (
+          <span
+            title={weeklyLimit.resetsAt ? `Weekly limit refreshes ${new Date(weeklyLimit.resetsAt * 1000).toLocaleString()}` : 'Codex weekly limit remaining'}
+            className="hidden sm:inline-flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+          >
+            Weekly {weeklyLimit.remaining}% left
+          </span>
+        )}
         <button
           onClick={onCommandBarOpen}
           title={commandPaletteTitle}
