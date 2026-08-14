@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
-import { showConfirm } from '@/src/lib/dialog';
+import { showConfirm, showToast } from '@/src/lib/dialog';
 import { FEATURE_OPTIONS } from '../lib/features';
 import { useUrlState } from '@/src/lib/useUrlState';
 
@@ -48,6 +48,28 @@ const limitText = (limit: RateLimitWindow | null) => limit
 const resetText = (limit: RateLimitWindow | null) => limit?.resetsAt
   ? new Date(limit.resetsAt * 1000).toLocaleString()
   : 'Unavailable';
+
+async function copyText(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch { /* local HTTP and browser permissions can reject the Clipboard API */ }
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  try {
+    input.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    input.remove();
+  }
+}
 
 type DeviceLogin = {
   loginId: string;
@@ -1207,7 +1229,7 @@ function ProvidersSection() {
                   <code className="rounded bg-[var(--bg-primary)] px-2 py-1 font-mono text-base tracking-widest text-[var(--text-primary)]">{login.userCode}</code>
                   <button
                     type="button"
-                    onClick={() => navigator.clipboard?.writeText(login.userCode)}
+                    onClick={() => void copyText(login.userCode).then((copied) => showToast(copied ? 'Code copied.' : 'Could not copy the code.', { tone: copied ? 'success' : 'error' }))}
                     className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
                   >
                     Copy
