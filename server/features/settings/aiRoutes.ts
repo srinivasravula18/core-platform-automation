@@ -10,6 +10,7 @@ import { db, persistDataInBackground, persistSettingsInBackground } from '../../
 import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent, CODEX } from '../../ai/orchestrator';
 import { DEFAULT_MODELS, listAvailableModels, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
 import { CodexRuntime } from '../../ai/codex/runtime';
+import { getAppServerClient } from '../../ai/codex/appServerClient';
 import { startDeviceLogin, readLogin, cancelDeviceLogin, logoutRuntime, describeLogin } from '../../ai/codex/login';
 import { requireAdmin } from '../auth/routes';
 import {
@@ -65,6 +66,14 @@ function redactKey(key: string): string {
   return `${key.slice(0, 4)}****${key.slice(-4)}`;
 }
 
+export function maskAccountIdentifier(value: string | null): string {
+  if (!value) return '';
+  const at = value.indexOf('@');
+  if (at < 0) return value.length < 3 ? '*'.repeat(value.length) : `${value[0]}***${value.at(-1)}`;
+  const name = value.slice(0, at);
+  return `${name.slice(0, Math.min(2, name.length))}${'*'.repeat(Math.max(3, name.length - 2))}${value.slice(at)}`;
+}
+
 /** Config-level callability. Whether Codex is actually AUTHENTICATED is the health check's job. */
 function providerIsCallable(provider: ProviderName = CODEX): boolean {
   const stored = db.settings?.providerSettings?.[provider];
@@ -81,9 +90,10 @@ export function registerSettingsRoutes(app: Express) {
     const hasApiKey = !!stored?.apiKey || hasEnvApiKey();
     // Models the local Codex runtime actually serves; the static registry is the fallback.
     const runtime = new CodexRuntime({ apiKey: hasApiKey && authMode === 'api_key' ? 'set' : undefined });
-    const [live, health] = await Promise.all([
+    const [live, health, account] = await Promise.all([
       runtime.listModels().catch(() => []),
       runtime.health().catch(() => ({ ok: false, authMethod: null, error: 'The Codex runtime is unreachable.' })),
+      runtime.accountInfo().catch(() => null),
     ]);
     const models = live.length ? live.map((m) => m.id) : listAvailableModels(CODEX);
     res.json({
@@ -105,6 +115,12 @@ export function registerSettingsRoutes(app: Express) {
         authenticated: health.ok,
         authMethod: health.authMethod || null,
         authError: health.ok ? '' : (health as any).error || '',
+        account: account?.authMethod === 'chatgpt' ? {
+          emailMasked: maskAccountIdentifier(account.email),
+          planType: account.planType,
+          sessionLimit: account.sessionLimit,
+          weeklyLimit: account.weeklyLimit,
+        } : null,
       }],
       configured: listConfiguredProviders(),
       defaultProvider: CODEX,
@@ -120,6 +136,18 @@ export function registerSettingsRoutes(app: Express) {
       res.json(describeLogin(await startDeviceLogin()));
     } catch (err: any) {
       res.status(502).json({ error: err?.message || 'Could not start the Codex sign-in.' });
+    }
+  });
+
+  app.post('/api/ai/runtime/login/token', requireAdmin, async (req, res) => {
+    const accessToken = String(req.body?.accessToken || '').trim();
+    const chatgptAccountId = String(req.body?.chatgptAccountId || '').trim();
+    if (!accessToken || !chatgptAccountId) return res.status(400).json({ error: 'Access token and ChatGPT account ID are required.' });
+    try {
+      await getAppServerClient().loginWithAccessToken(accessToken, chatgptAccountId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(401).json({ error: err?.message || 'Could not sign in with that access token.' });
     }
   });
 

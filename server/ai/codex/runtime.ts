@@ -10,7 +10,7 @@
  * application-owned. The runtime only executes turns.
  */
 
-import { getAppServerClient, type CodexModelInfo } from './appServerClient';
+import { getAppServerClient, type CodexAccountInfo, type CodexModelInfo } from './appServerClient';
 import { streamSdkTurn } from './sdkClient';
 import { estimateCost, type ProviderUsage } from '../providers/types';
 
@@ -473,6 +473,10 @@ export class CodexRuntime {
     } catch (err: any) {
       return { ok: false, model: this.config.defaultModel, error: describeCodexFailure(err?.message || String(err)), checkedAt };
     }
+  }
+
+  async accountInfo(): Promise<CodexAccountInfo> {
+    return getAppServerClient().accountInfo();
   }
 
   /** Models the local runtime offers; empty when it declines to enumerate. */

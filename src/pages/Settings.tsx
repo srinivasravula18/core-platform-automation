@@ -31,7 +31,23 @@ type ProviderInfo = {
   authenticated: boolean;
   authMethod: string | null;
   authError: string;
+  account: {
+    emailMasked: string;
+    planType: string | null;
+    sessionLimit: RateLimitWindow | null;
+    weeklyLimit: RateLimitWindow | null;
+  } | null;
 };
+
+type RateLimitWindow = { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null };
+
+const limitText = (limit: RateLimitWindow | null) => limit
+  ? `${Math.max(0, 100 - Math.round(limit.usedPercent))}% remaining`
+  : 'Unavailable';
+
+const resetText = (limit: RateLimitWindow | null) => limit?.resetsAt
+  ? new Date(limit.resetsAt * 1000).toLocaleString()
+  : 'Unavailable';
 
 type DeviceLogin = {
   loginId: string;
@@ -954,6 +970,8 @@ function ProvidersSection() {
   const [testResult, setTestResult] = useState<SaveStatus>({ type: 'idle', message: '' });
   const [login, setLogin] = useState<DeviceLogin | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [accessToken, setAccessToken] = useState('');
+  const [chatgptAccountId, setChatgptAccountId] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1028,6 +1046,28 @@ function ProvidersSection() {
     await fetch(`/api/ai/runtime/login/${loginId}/cancel`, { method: 'POST' }).catch(() => {});
     setLogin(null);
     setSigningIn(false);
+  };
+
+  const signInWithToken = async () => {
+    setSigningIn(true);
+    setStatus({ type: 'idle', message: '' });
+    try {
+      const res = await fetch('/api/ai/runtime/login/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: accessToken.trim(), chatgptAccountId: chatgptAccountId.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not sign in with that access token');
+      setAccessToken('');
+      setChatgptAccountId('');
+      setStatus({ type: 'success', message: 'Signed in to ChatGPT with an access token' });
+      await load();
+    } catch (error) {
+      setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Could not sign in with that access token' });
+    } finally {
+      setSigningIn(false);
+    }
   };
 
   const signOut = async () => {
@@ -1137,7 +1177,7 @@ function ProvidersSection() {
               </button>
               {runtime.authenticated ? (
                 <button type="button" onClick={signOut} className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-red-500/40 hover:text-red-500">
-                  Sign out
+                  Sign out / switch account
                 </button>
               ) : (
                 <button
@@ -1184,8 +1224,55 @@ function ProvidersSection() {
             </div>
           )}
 
+          {!runtime.authenticated && !login && (
+            <details className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--text-muted)]">Sign in with an access token instead</summary>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <input
+                  type="password"
+                  value={accessToken}
+                  onChange={(event) => setAccessToken(event.target.value)}
+                  placeholder="ChatGPT access token"
+                  autoComplete="off"
+                  className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm"
+                />
+                <input
+                  value={chatgptAccountId}
+                  onChange={(event) => setChatgptAccountId(event.target.value)}
+                  placeholder="ChatGPT account ID"
+                  autoComplete="off"
+                  className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={signInWithToken}
+                disabled={signingIn || !accessToken.trim() || !chatgptAccountId.trim()}
+                className="mt-2 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] disabled:opacity-50"
+              >
+                Connect token
+              </button>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">The token is sent directly to the local Codex runtime and is not saved in application settings.</p>
+            </details>
+          )}
+
           {testResult.type !== 'idle' && (
             <div className={`mt-3 text-xs ${testResult.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{testResult.message}</div>
+          )}
+
+          {runtime.account && (
+            <div className="mt-4 grid gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-sm sm:grid-cols-2">
+              <div>
+                <div className="text-xs text-[var(--text-muted)]">Connected account</div>
+                <div className="mt-0.5 font-medium">{runtime.account.emailMasked || 'ChatGPT account'}</div>
+                {runtime.account.planType && <div className="text-xs capitalize text-[var(--text-muted)]">{runtime.account.planType} plan</div>}
+              </div>
+              <div>
+                <div className="text-xs text-[var(--text-muted)]">Weekly limit</div>
+                <div className="mt-0.5 font-medium">{limitText(runtime.account.weeklyLimit)}</div>
+                <div className="text-xs text-[var(--text-muted)]">Refreshes {resetText(runtime.account.weeklyLimit)}</div>
+              </div>
+            </div>
           )}
 
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">

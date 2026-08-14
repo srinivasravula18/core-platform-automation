@@ -25,6 +25,19 @@ export interface CodexAuthStatus {
   requiresOpenaiAuth: boolean | null;
 }
 
+export interface CodexAccountInfo extends CodexAuthStatus {
+  email: string | null;
+  planType: string | null;
+  sessionLimit: CodexRateLimitWindow | null;
+  weeklyLimit: CodexRateLimitWindow | null;
+}
+
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
 export interface CodexModelInfo {
   id: string;
   displayName?: string;
@@ -264,6 +277,28 @@ export class CodexAppServerClient {
   async authStatus(): Promise<CodexAuthStatus> {
     const res = await this.call<any>('account/read', { refreshToken: false });
     return { authMethod: res?.account?.type ?? null, requiresOpenaiAuth: res?.requiresOpenaiAuth ?? null };
+  }
+
+  async accountInfo(): Promise<CodexAccountInfo> {
+    const account = await this.call<any>('account/read', { refreshToken: false });
+    const authMethod = account?.account?.type ?? null;
+    const limits = authMethod === 'chatgpt'
+      ? await this.call<any>('account/rateLimits/read').catch(() => null)
+      : null;
+    const snapshot = limits?.rateLimitsByLimitId?.codex || limits?.rateLimits || null;
+    const windows = [snapshot?.primary, snapshot?.secondary].filter(Boolean) as CodexRateLimitWindow[];
+    return {
+      authMethod,
+      requiresOpenaiAuth: account?.requiresOpenaiAuth ?? null,
+      email: authMethod === 'chatgpt' ? account?.account?.email ?? null : null,
+      planType: authMethod === 'chatgpt' ? account?.account?.planType ?? snapshot?.planType ?? null : null,
+      sessionLimit: windows.find((window) => (window.windowDurationMins || 0) < 7 * 24 * 60) || null,
+      weeklyLimit: windows.find((window) => (window.windowDurationMins || 0) >= 7 * 24 * 60) || null,
+    };
+  }
+
+  async loginWithAccessToken(accessToken: string, chatgptAccountId: string): Promise<void> {
+    await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken, chatgptAccountId });
   }
 
   /** Models the local Codex runtime offers. Empty when the runtime declines to enumerate. */
