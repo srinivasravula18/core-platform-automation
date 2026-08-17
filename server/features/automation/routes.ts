@@ -665,9 +665,12 @@ export function registerAutomationRoutes(app: Express) {
     const rowNumbers: number[] | undefined = Array.isArray(req.body?.rowNumbers)
       ? [...new Set<number>(req.body.rowNumbers.map(Number).filter((value: number) => Number.isInteger(value) && value > 0))]
       : undefined;
-    const from = Number(req.body?.from || 1);
-    const to = Number(req.body?.to || dataset.rowCount);
-    if (!rowNumbers?.length && (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from)) {
+    // "Run All" sends no from/to — select EVERY row (row numbers are Excel-aligned, starting at 2, so
+    // capping at rowCount would silently drop the last row). Only apply a range when the client sends one.
+    const hasRange = req.body?.from !== undefined || req.body?.to !== undefined;
+    const from = hasRange ? Number(req.body?.from ?? 1) : 1;
+    const to = hasRange ? Number(req.body?.to ?? dataset.rowCount) : undefined;
+    if (!rowNumbers?.length && hasRange && (!Number.isInteger(from) || !Number.isInteger(to as number) || from < 1 || (to as number) < from)) {
       return res.status(400).json({ error: 'Invalid row range.' });
     }
     const dataPolicy = ['fresh', 'ephemeral', 'pooled'].includes(req.body?.dataPolicy) ? req.body.dataPolicy : 'fresh';

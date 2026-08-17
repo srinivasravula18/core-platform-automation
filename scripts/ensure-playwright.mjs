@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 
 if (process.env.SKIP_PLAYWRIGHT_BROWSER_INSTALL === '1') {
@@ -17,11 +19,16 @@ if (fs.existsSync(executablePath)) {
 console.log(`[playwright] chromium missing at ${executablePath}`);
 console.log('[playwright] installing chromium browser binaries...');
 
-const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const result = spawnSync(npxCommand, ['playwright', 'install', 'chromium'], {
+const require = createRequire(import.meta.url);
+const playwrightCli = path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js');
+const result = spawnSync(process.execPath, [playwrightCli, 'install', 'chromium'], {
   stdio: 'inherit',
-  shell: false,
 });
+
+if (result.error) {
+  console.error(`[playwright] could not start the browser installer: ${result.error.message}`);
+  process.exit(1);
+}
 
 if (result.status !== 0) {
   process.exit(result.status ?? 1);
