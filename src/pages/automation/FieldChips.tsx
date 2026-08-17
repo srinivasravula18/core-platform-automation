@@ -58,9 +58,12 @@ export const VARIANT_CLS: Record<ValueKind, string> = {
 };
 
 // Inline chip editor for a single recorded field. Emits the serialized expression on every change.
-export function FieldChipEditor({ expression, columnNames, onSave, onFocusField, ariaLabel, placeholder }: {
+export function FieldChipEditor({ expression, columnNames, onSave, onFocusField, ariaLabel, placeholder, unbindKey }: {
   expression: string; columnNames: string[]; onSave: (expression: string) => void;
   onFocusField?: () => void; ariaLabel: string; placeholder?: string;
+  // When set, token pills become draggable and carry this key so dropping one on the columns
+  // palette unbinds the field (mirrors dragging a column pill in the other direction).
+  unbindKey?: string;
 }) {
   const chips = useMemo(() => expressionToChips(expression), [expression]);
   const [draft, setDraft] = useState('');
@@ -75,7 +78,10 @@ export function FieldChipEditor({ expression, columnNames, onSave, onFocusField,
   };
   return <div className="flex min-h-[2rem] flex-1 flex-wrap items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1">
     {chips.map((chip, index) => chip.kind === 'token'
-      ? <span key={chip.id} className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-medium ${VARIANT_CLS[tokenVariant(chip.token, columnNames)]}`}>
+      ? <span key={chip.id} draggable={!!unbindKey}
+          onDragStart={unbindKey ? (event) => { event.dataTransfer.setData('application/x-unbind', unbindKey); event.dataTransfer.effectAllowed = 'move'; } : undefined}
+          title={unbindKey ? 'Drag onto the columns to unbind' : undefined}
+          className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-medium ${unbindKey ? 'cursor-grab active:cursor-grabbing' : ''} ${VARIANT_CLS[tokenVariant(chip.token, columnNames)]}`}>
           {tokenLabel(chip.token)}
           <button type="button" aria-label={`Remove ${tokenLabel(chip.token)}`} onClick={() => removeAt(index)} className="rounded-full hover:text-red-500"><X className="h-3 w-3" /></button>
         </span>

@@ -735,6 +735,18 @@ export function registerAutomationRoutes(app: Express) {
     }
   });
 
+  // Stop a running batch: cancel every job not already in a terminal state (kills the live server run
+  // and leaves queued rows cancelled so the sequential runner skips them).
+  app.post('/api/automation/batches/:id/cancel', requireAuth, async (req, res) => {
+    const batch = await scopedGet((id) => AutomationExecutionBatches.get(id), req.params.id, req);
+    if (!batch) return res.status(404).json({ error: 'Execution batch not found.' });
+    const jobs = (await AutomationJobs.list()).filter((job: any) => job.batchId === batch.id
+      && !['done', 'failed', 'cancelled'].includes(job.status));
+    for (const job of jobs) await cancelJob(job.id);
+    const refreshed = await refreshExecutionBatch(batch.id);
+    res.json({ batch: refreshed, cancelled: jobs.length });
+  });
+
   // Reap orphans: re-fire teardown for rows left pending/failed by an earlier cleanup.
   app.post('/api/automation/batches/:id/reap', requireAuth, async (req, res) => {
     const batch = await scopedGet((id) => AutomationExecutionBatches.get(id), req.params.id, req);

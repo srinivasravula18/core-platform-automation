@@ -300,7 +300,16 @@ export async function runBatchOnServer(batchId: string): Promise<void> {
   for (const job of queued) {
     const cur = await AutomationJobs.get(job.id);
     if (!cur || cur.status !== 'queued') continue; // already cancelled (e.g. by stop-on-failure) — skip
-    await runJobOnServer(job.id);
+    try {
+      await runJobOnServer(job.id);
+    } catch (err: any) {
+      // A hard throw before/around the Playwright spawn (missing CLI/browser on the host, auth setup, an
+      // unhandled runtime error) would otherwise leave the row stuck at 'running' and stall the whole
+      // batch with no feedback — the "Run All silently does nothing" symptom. Surface it as a failed row.
+      const message = err?.message || String(err);
+      await setJobStatus(job.id, 'failed', { error: `Server run failed before completion: ${message}`, finishedAt: new Date().toISOString() }).catch(() => {});
+      await syncLinkedRun(job.id, 'failed', {}).catch(() => {});
+    }
     if (batch.stopOnFailure) {
       const finished = await AutomationJobs.get(job.id);
       if (finished?.status === 'failed') break; // the job.done handler cancels the remaining rows

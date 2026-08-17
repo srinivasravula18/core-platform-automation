@@ -3,6 +3,11 @@ import type { DragEvent, FormEvent } from 'react';
 import { ChevronDown, Database, Download, FileSpreadsheet, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
 import { Runnable, RunnablePicker, runnableKey } from './RunnablePicker';
 import { FieldChipEditor, PalettePill } from './FieldChips';
+import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
+
+// Persist the working selection + active batch so navigating away and back restores the page
+// (and reconnects to an in-flight batch) instead of resetting to the empty initial state.
+const PERSIST_KEY = 'tfa_automation_data_state';
 
 // A field's value comes from a sheet column or a typed fixed value — no generators.
 const INTENTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'reference', label: 'Reference' }];
@@ -115,12 +120,15 @@ function SearchableSelect({ items, value, onChange, placeholder, ariaLabel, disa
 }
 
 export default function DataBindings() {
+  // Read the persisted selection ONCE, synchronously, so the first render already carries it — this
+  // restores the page (and reconnects to an in-flight batch) after navigating away and back.
+  const persisted = useMemo(() => { try { return JSON.parse(readScopedStorage(PERSIST_KEY) || '{}'); } catch { return {}; } }, []);
   const [datasets, setDatasets] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
-  const [runnable, setRunnable] = useState<Runnable | null>(null);
-  const [recordingId, setRecordingId] = useState('');
-  const [datasetId, setDatasetId] = useState('');
+  const [runnable, setRunnable] = useState<Runnable | null>(persisted.runnable || null);
+  const [recordingId, setRecordingId] = useState(persisted.recordingId || '');
+  const [datasetId, setDatasetId] = useState(persisted.datasetId || '');
   const [agentId, setAgentId] = useState('');
   const [profileId, setProfileId] = useState('');
   const [steps, setSteps] = useState<any[]>([]);
@@ -144,6 +152,7 @@ export default function DataBindings() {
   const [batchData, setBatchData] = useState<any[]>([]);
   const [manual, setManual] = useState<{ name: string; columns: string[]; rows: Array<Record<string, string>> } | null>(null);
   const [saveProfile, setSaveProfile] = useState<{ name: string } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; body: string; confirmLabel: string; onConfirm: () => void } | null>(null);
   const [announce, setAnnounce] = useState('');
   const [dragOverStep, setDragOverStep] = useState('');
   const activeStep = useRef('');
@@ -177,6 +186,14 @@ export default function DataBindings() {
   };
 
   useEffect(() => { void load().catch((error) => setMessage(error.message)); }, []);
+  // Reconnect to the batch that was live when we left (its id was persisted); polling resumes below.
+  useEffect(() => {
+    if (persisted.batchId) void json(`/api/automation/batches/${persisted.batchId}`).then((body) => setBatch(body.batch)).catch(() => undefined);
+  }, [persisted.batchId]);
+  // Persist the working selection + active batch id on every change, so a later remount restores it.
+  useEffect(() => {
+    writeScopedStorage(PERSIST_KEY, JSON.stringify({ runnable, recordingId, datasetId, batchId: batch?.id || '' }));
+  }, [runnable, recordingId, datasetId, batch?.id]);
   useEffect(() => { void loadSteps().catch((error) => setMessage(error.message)); }, [recordingId]);
   useEffect(() => { setSelectedRows([]); setEditingRow(null); setOffset(0); }, [datasetId]);
   useEffect(() => { void loadRows().catch((error) => setMessage(error.message)); }, [datasetId, offset]);
@@ -292,6 +309,14 @@ export default function DataBindings() {
       if (payload.type === 'column') { const column = (dataset?.columns || []).find((c: any) => c.id === payload.columnId); if (column) void setColumnValue(step.id, column); }
     } catch { /* ignore malformed drag */ }
   };
+  // Dropping a bound field's grip back onto the columns palette unbinds it.
+  const isUnbindDrag = (event: DragEvent) => Array.from(event.dataTransfer.types).includes('application/x-unbind');
+  const dropUnbind = (event: DragEvent) => {
+    const stepId = event.dataTransfer.getData('application/x-unbind');
+    if (!stepId) return;
+    event.preventDefault();
+    void removeMapping(stepId);
+  };
 
   const importFile = async (file?: File | null) => {
     if (!file) return;
@@ -331,6 +356,16 @@ export default function DataBindings() {
       });
       setBatch(result.batch);
       setMessage(`Batch queued · ${result.batch.summary?.total || 0} rows.`);
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
+  };
+
+  const stopBatch = async () => {
+    if (!batch?.id) return;
+    setBusy(true);
+    try {
+      const body = await json(`/api/automation/batches/${batch.id}/cancel`, { method: 'POST' });
+      setBatch(body.batch);
+      setMessage(`Batch stopped · ${body.cancelled ?? 0} row${body.cancelled === 1 ? '' : 's'} cancelled.`);
     } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
   };
 
@@ -436,16 +471,22 @@ export default function DataBindings() {
     try { const body = await json(`/api/automation/batches/${batch.id}/reap`, { method: 'POST' }); setMessage(`Reaped ${body.reaped ?? 0} orphaned record${body.reaped === 1 ? '' : 's'}.`); }
     catch (error: any) { setMessage(error.message); }
   };
-  const deleteDataset = async () => {
+  const deleteDataset = () => {
     if (!datasetId) return;
     const ds = datasets.find((item) => item.id === datasetId);
-    if (!window.confirm(`Delete dataset “${ds?.name || datasetId}” and its rows? This can’t be undone.`)) return;
-    try {
-      await json(`/api/automation/datasets/${datasetId}`, { method: 'DELETE' });
-      setDatasetId('');
-      await load();
-      setMessage(`Deleted dataset${ds?.name ? ` “${ds.name}”` : ''}.`);
-    } catch (error: any) { setMessage(error.message); }
+    setConfirmDialog({
+      title: 'Delete dataset',
+      body: `Delete dataset “${ds?.name || datasetId}” and its rows? This can’t be undone.`,
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        try {
+          await json(`/api/automation/datasets/${datasetId}`, { method: 'DELETE' });
+          setDatasetId('');
+          await load();
+          setMessage(`Deleted dataset${ds?.name ? ` “${ds.name}”` : ''}.`);
+        } catch (error: any) { setMessage(error.message); }
+      },
+    });
   };
   const saveRow = async () => {
     if (!datasetId || !editingRow) return;
@@ -465,6 +506,8 @@ export default function DataBindings() {
     event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'column', columnId }));
 
   const shownTo = Math.min(offset + rows.length, total);
+  // A batch is live until every row reaches a terminal state — block new runs and show Stop meanwhile.
+  const batchRunning = !!batch && !['done', 'failed', 'cancelled'].includes(batch.status);
   const previewSelectionLabel = selectedRows.length === total && total > 0
     ? 'All Rows Selected'
     : selectedRows.length > 1
@@ -544,7 +587,7 @@ export default function DataBindings() {
                     {step.readOnly ? <span className="text-xs text-[var(--text-muted)]">Recorded action — not editable</span>
                       : dataset ? (
                         <FieldChipEditor expression={mapping?.expression || ''} columnNames={columnNames}
-                          ariaLabel={`Value for ${label}`} placeholder={over ? 'Release to add' : 'type a fixed value'}
+                          ariaLabel={`Value for ${label}`} placeholder={over ? 'Release to add' : 'type a fixed value'} unbindKey={mapping ? step.id : undefined}
                           onFocusField={() => { activeStep.current = step.id; }} onSave={(expression) => void saveExpression(step.id, expression)} />
                       ) : <>
                         <input key={`${step.id}-${step.currentOverride}`} aria-label={`Value for ${label}`} placeholder="fixed value" defaultValue={step.currentOverride ?? step.originalValue ?? ''}
@@ -588,8 +631,8 @@ export default function DataBindings() {
           </div>
         </div>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-          {dataset ? <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Columns · from your sheet</div>
+          {dataset ? <div onDragOver={(event) => { if (isUnbindDrag(event)) event.preventDefault(); }} onDrop={dropUnbind}>
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Columns · from your sheet <span className="normal-case text-[var(--text-muted)]">· drop a field here to unbind</span></div>
             <div className="flex flex-wrap gap-1.5">
               {(dataset.columns || []).map((column: any) => <PalettePill key={column.id} label={column.name} variant="column" draggable
                 onDragStart={(event) => dragColumn(event, column.id)}
@@ -621,12 +664,13 @@ export default function DataBindings() {
           </select>
           {dataPolicy === 'pooled' && <button onClick={() => void resetPool()} title="Mark every pooled row available again" className="rounded border border-[var(--border)] px-2 py-2 hover:border-[var(--accent)]">Reset Pool</button>}
           <label className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-2"><input type="checkbox" checked={stopOnFailure} onChange={(event) => setStopOnFailure(event.target.checked)} />Stop on First Failure</label>
-          <button disabled={busy} onClick={() => void run('all')} className="rounded bg-[var(--accent)] px-3 py-2 text-white"><Play className="mr-1 inline h-3 w-3" />Run All</button>
-          <button disabled={busy} onClick={() => void run('selected')} className="rounded border border-[var(--border)] px-3 py-2">Run Selected ({selectedRows.length})</button>
+          {batchRunning && <button disabled={busy} onClick={() => void stopBatch()} title="Cancel the running batch" className="rounded bg-red-600 px-3 py-2 text-white hover:bg-red-700 disabled:opacity-40">■ Stop</button>}
+          <button disabled={busy || batchRunning || !byStep.size} title={batchRunning ? 'A batch is already running — stop it first.' : !byStep.size ? 'Bind at least one field (drag a column onto a field) before running.' : ''} onClick={() => void run('all')} className="rounded bg-[var(--accent)] px-3 py-2 text-white enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"><Play className="mr-1 inline h-3 w-3" />Run All</button>
+          <button disabled={busy || batchRunning || !byStep.size} title={!byStep.size ? 'Bind at least one field before running.' : ''} onClick={() => void run('selected')} className="rounded border border-[var(--border)] px-3 py-2 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">Run Selected ({selectedRows.length})</button>
           <input aria-label="Range start" type="number" min={1} value={range.from} onChange={(event) => setRange({ ...range, from: Number(event.target.value) })} className="w-16 rounded border border-[var(--border)] bg-transparent p-2" />
           <span>–</span>
           <input aria-label="Range end" type="number" min={1} max={dataset.rowCount} value={range.to} onChange={(event) => setRange({ ...range, to: Number(event.target.value) })} className="w-16 rounded border border-[var(--border)] bg-transparent p-2" />
-          <button disabled={busy} onClick={() => void run('range')} className="rounded border border-[var(--border)] px-3 py-2">Run Range</button>
+          <button disabled={busy || batchRunning || !byStep.size} title={!byStep.size ? 'Bind at least one field before running.' : ''} onClick={() => void run('range')} className="rounded border border-[var(--border)] px-3 py-2 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">Run Range</button>
         </div>
       </div>
       {batch && <div className="flex flex-wrap items-center gap-3 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
@@ -713,6 +757,18 @@ export default function DataBindings() {
         <div className="mt-3 flex items-center justify-end gap-2">
           <button onClick={() => setSaveProfile(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
           <button disabled={busy || !saveProfile.name.trim()} onClick={() => void saveCurrentProfile()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save Profile</button>
+        </div>
+      </div>
+    </div>}
+
+    {confirmDialog && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label={confirmDialog.title}
+      onKeyDown={(event) => { if (event.key === 'Escape') setConfirmDialog(null); }}>
+      <div className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">
+        <div className="mb-1 text-sm font-semibold">{confirmDialog.title}</div>
+        <p className="mb-3 text-[13px] text-[var(--text-muted)]">{confirmDialog.body}</p>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button autoFocus onClick={() => setConfirmDialog(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
+          <button onClick={() => { const run = confirmDialog.onConfirm; setConfirmDialog(null); void run(); }} className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700">{confirmDialog.confirmLabel}</button>
         </div>
       </div>
     </div>}
