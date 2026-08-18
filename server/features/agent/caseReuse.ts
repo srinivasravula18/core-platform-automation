@@ -149,6 +149,40 @@ export function rankReuseCandidates<T extends ReuseCandidate>(query: ReuseQuery,
   return results.filter((r) => r.matched).sort((a, b) => b.relevance - a.relevance);
 }
 
+/**
+ * Strip machine-grounding catalogs from text before it is used as a MATCHING signal. Runs carry
+ * harvested selector/label catalogs (pipe-delimited dumps of ids, classes, placeholders, aria-labels,
+ * label=>#id maps) appended to the request to ground the coder. That is app-WIDE vocabulary, not a
+ * statement of what this request covers: it supplied both the shared keywords and the phrase anchor
+ * that made unrelated list-view cases surface as coverage for an app-creation requirement.
+ * Matching only — the grounding text itself is untouched and still reaches the model.
+ */
+export function stripGroundingCatalogs(text: string): string {
+  // A catalog line enumerates harvested values rather than stating behavior.
+  const isCatalogLine = (line: string): boolean => {
+    const body = line.replace(/^\s*[-*]?\s*[A-Za-z][A-Za-z0-9 _-]*:\s*/, '');
+    if (!body.trim()) return false;
+    if (/=>\s*#/.test(body)) return true;                                  // label=>#field-id maps
+    if (/\b(?:role|type|placeholder|aria-label)="/.test(body)) return true; // attribute dumps
+    return body.split('|').length >= 3;                                    // pipe-delimited enumeration
+  };
+  const lines = String(text || '').split(/\r?\n/);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCatalogLine(line)) continue;
+    // A heading introducing nothing but catalog lines goes with them.
+    if (/:\s*$/.test(line)) {
+      let end = i + 1;
+      while (end < lines.length && /^\s+\S/.test(lines[end])) end += 1;
+      const body = lines.slice(i + 1, end);
+      if (body.length && body.every(isCatalogLine)) continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /* ------------------------------------------------------------------------------------------------
  * Backward-compatible legacy exports (the pre-existing binary keyword scorer). Retained so the legacy
  * pipeline's findRelatedExistingCases keeps compiling; new code should use rankReuseCandidates.

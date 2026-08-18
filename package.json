@@ -72,6 +72,7 @@
     "test:agent-authoring-graph": "tsx scripts/test-agent-authoring-graph.ts",
     "test:agent-workflow-resume": "tsx scripts/test-agent-workflow-resume.ts",
     "test:output-sanitizer": "tsx scripts/test-output-sanitizer.ts",
+    "test:requirement-srs": "tsx scripts/test-requirement-srs.ts",
     "test:agent-script-batches": "tsx scripts/test-agent-script-batches.ts",
     "test:agent-setup-readiness": "tsx scripts/test-agent-setup-readiness.ts",
     "test:agent-requirement-persistence": "tsx scripts/test-agent-requirement-persistence.ts",

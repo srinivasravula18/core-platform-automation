@@ -21,6 +21,7 @@ import { deepParallelResearch, relevantSourcePaths } from './research/deepResear
 import { draftRequirement } from '../features/requirements/requirementService';
 import { expandByReferences } from './exploration/referenceGraph';
 import { urlHealthTool } from '../agent-core/registry/urlHealthTool';
+import { CODEBASE_PATH_REF, BARE_FILE_REF } from '../../core/shared/codebaseLocations';
 import { z } from 'zod';
 
 /* ---------- Conversational Runtime delegation (Phase 6) ---------- */
@@ -239,10 +240,8 @@ Infer the response shape from the user's intent:
 - Agent Console responses must never display codebase file paths, filenames, line numbers, or repo directories. Keep source locations internal only.`;
 
 export function stripCodebaseLocationsForAgentConsole(value: string): string {
-  const sourceRef =
-    /(?:^|[\s(;])(?:[A-Za-z]:[\\/]|\.{0,2}[\\/]?(?:apps|server|src|tests?|docs|seeds|packages|api|lib|components|hooks|pages|shared|client|services|e2e|unit|features|db|scripts)[\\/])[\w./\\@-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
-  const bareFileRef =
-    /(?:^|[\s(;])[\w.-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
+  const sourceRef = CODEBASE_PATH_REF;
+  const bareFileRef = BARE_FILE_REF;
   // Final Agent Console boundary — also drop any leaked reasoning-narration preamble.
   return stripReasoningPreamble(String(value || ''))
     .split(/\r?\n/)

@@ -6,7 +6,7 @@
  * back-compat checks.
  *   npx tsx scripts/test-case-reuse.ts
  */
-import { rankReuseCandidates, scoreCaseReuse, linkedExistingCases, type ReuseCandidate } from '../server/features/agent/caseReuse';
+import { rankReuseCandidates, scoreCaseReuse, linkedExistingCases, stripGroundingCatalogs, type ReuseCandidate } from '../server/features/agent/caseReuse';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -86,6 +86,42 @@ console.log('9. Legacy back-compat (scoreCaseReuse / linkedExistingCases)');
   ok(!unrelated.matched, 'legacy scorer rejects an unrelated case');
   const linked = linkedExistingCases([], [{ reused: true, existingCaseId: 'TC-1' }, { reused: false, id: 'TC-2' }, { reused: true, existingCaseId: 'TC-1' }]);
   ok(linked.length === 1 && linked[0].existingCaseId === 'TC-1', 'reused links deduped and preserved');
+}
+
+console.log('10. Grounding catalogs are stripped from the matching signal');
+{
+  // The shape that shipped in real runs: a requirement followed by the harvested selector catalog.
+  const request = [
+    'Requirement: Create a new app',
+    'Description: An administrator can create a new app under an existing parent app.',
+    'Business rules:',
+    '  - The New App form requires Label, API Name, Prefix, Version, and Parent App.',
+    '  - Prefix must be unique after spaces are removed and letter case is normalized.',
+    'Repo UI hooks for testing:',
+    '  - labels: API Name | Access | Default List View Page Size | Form Name',
+    '  - css ids: #create-app-parent | #admin-pref-page-size | #bulk-update-field',
+    '  - ui hooks: admin:button role="option" type="button" | admin:button type="submit"',
+    '  - field ids: API Name=>#create-app-api | App=>#create-object-app',
+    'Candidate Scenarios (2):',
+    '  - Create an app with all supported values',
+    '  - Reject a duplicate API Name',
+  ].join('\n');
+  const clean = stripGroundingCatalogs(request);
+
+  ok(!/#create-app-parent|admin-pref-page-size/.test(clean), 'harvested css ids are gone');
+  ok(!/Repo UI hooks for testing/.test(clean), 'the catalog heading goes with its lines');
+  ok(!/Default List View Page Size/.test(clean), 'the "list view" phrase from a placeholder is gone');
+  ok(/New App form requires Label/.test(clean), 'business rules are kept');
+  ok(/Reject a duplicate API Name/.test(clean), 'candidate scenarios are kept');
+
+  // Regression: the catalog supplied the "list view" anchor that made unrelated cases look reusable.
+  const listViewCase = 'keystone - verify crm list view loads account records and columns';
+  const kws = (t: string) => Array.from(new Set((t.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) || [])));
+  ok(scoreCaseReuse(request, listViewCase, kws(request)).matched, 'polluted request DID match an unrelated list-view case');
+  ok(!scoreCaseReuse(clean, listViewCase, kws(clean)).matched, 'cleaned request does NOT match it');
+
+  const appCase = 'admin - verify creating a new app requires label, api name and parent app';
+  ok(scoreCaseReuse(clean, appCase, kws(clean)).matched, 'genuinely related app-creation case still matches');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

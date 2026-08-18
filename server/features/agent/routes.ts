@@ -42,7 +42,7 @@ import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
   buildMissionVerificationSnippet, missionContextFromRun, finalizeMissionFromInspectedSurface,
   renderMissionContextForPrompt, collapseDoubledLabels, describeMission,
-  needsExplicitListViewModule, sameMissionEvidenceScope,
+  needsExplicitListViewModule, sameMissionEvidenceScope, inheritResolvedScope,
   type MissionContext, type RuntimeSurface,
 } from './mission/missionContext';
 // Evidence-Graph Phase 5: deterministic compiler path (flag-gated by AIQA_COMPILER; legacy path is default).
@@ -58,7 +58,7 @@ import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
-import { scoreCaseReuse } from './caseReuse';
+import { scoreCaseReuse, stripGroundingCatalogs } from './caseReuse';
 import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
 import { agentRunStatusForList, isPendingReviewTestRun } from '../../../core/shared/testRunStatus';
@@ -1917,22 +1917,18 @@ const CASE_MATCH_STOP = new Set([
 // The CURRENT request signal for reuse/requirement matching: the prompt with its embedded "Prior agent answer
 // (background only …)" block removed, so a new request ("list view") is not matched against the PREVIOUS
 // answer's vocabulary (app creation). The user request, resolved scope, and user-selected target are kept.
+// Harvested selector/label catalogs are stripped too — app-wide vocabulary, not what this request covers.
 function currentRequestText(run: any): string {
-  return String(run?.prompt || '')
+  const withoutPriorAnswer = String(run?.prompt || '')
     .replace(/Prior agent answer \(background only[\s\S]*?(?=\n\s*(?:User[-\s]selected target:|User follow-up\/request|Resolved scope from router:)|$)/i, '')
     .trim();
+  return stripGroundingCatalogs(withoutPriorAnswer);
 }
+// Keywords for THIS request only. The app-wide feature inventory is deliberately excluded: it is the
+// vocabulary of every feature in the app, so it matches cases from features the request never named.
 function caseMatchKeywords(run: any): string[] {
   const u = run.feature_understanding || {};
-  const inv = run.feature_inventory || {};
-  const inventoryTerms = [
-    ...(Array.isArray(inv.features) ? inv.features.flatMap((feature: any) => [
-      feature?.name,
-      ...(Array.isArray(feature?.subfeatures) ? feature.subfeatures.map((sub: any) => sub?.name) : []),
-    ]) : []),
-    ...(Array.isArray(inv.e2eFlows) ? inv.e2eFlows.map((flow: any) => flow?.name) : []),
-  ];
-  const text = [currentRequestText(run), run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : []), ...inventoryTerms]
+  const text = [currentRequestText(run), stripGroundingCatalogs(run.approvedUnderstanding), u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : [])]
     .filter(Boolean).join(' ').toLowerCase();
   const toks = (text.match(/[a-z][a-z0-9-]{2,}/g) || []).filter((t) => !CASE_MATCH_STOP.has(t));
   return Array.from(new Set(toks));
@@ -5729,8 +5725,11 @@ Rules:
     }
     approvedUnderstanding = stripScriptBlocksFromScope(approvedUnderstanding);
     priorGrounding = stripScriptBlocksFromScope(priorGrounding);
+    // Scope the user already resolved in this conversation, inherited exactly like the understanding above:
+    // a module/application they picked (or that was auto-resolved) must never be asked for twice.
+    const inheritedScope = inheritResolvedScope(priorSessionRun?.mission_context, { targetChanged, featureChanged });
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
-    const explicitModuleIdRaw = String(req.body.moduleId || req.body.module || '').trim();
+    const explicitModuleIdRaw = String(req.body.moduleId || req.body.module || inheritedScope.module?.id || '').trim();
     // Admin-only question: its examples (Apps/Objects/Roles/Users) are Admin modules. A RUNTIME surface
     // (keystone/shockwave) falls through to the app-resolution flow below, which asks with the REAL
     // app list + tabs instead of admin module names.
@@ -5851,7 +5850,7 @@ Rules:
       || platformTypeFromSurface(selectedApp?.name || '', surfaceBaseUrl);
     const navInUrl = moduleFromUrl(surfaceBaseUrl);
     const selectedModule = explicitModuleId
-      ? { id: explicitModuleId, name: String(req.body.moduleName || explicitModuleId).trim() }
+      ? { id: explicitModuleId, name: String(req.body.moduleName || inheritedScope.module?.name || explicitModuleId).trim() }
       : (navInUrl ? { id: navInUrl, name: navInUrl } : null);
     let mission: MissionContext;
 
@@ -5864,9 +5863,9 @@ Rules:
       // when NONE was selected do we fall back to advisory, prompt-based resolution (backward compat).
       const runtimeSurface = (String(req.body.runtimeSurface || '').toLowerCase() as RuntimeSurface)
         || runtimeSurfaceFromSurface(selectedApp?.name || '', surfaceBaseUrl);
-      const explicitAppId = String(req.body.applicationId || '').trim();
+      const explicitAppId = String(req.body.applicationId || inheritedScope.application?.id || '').trim();
       let application: { id: string; name: string } | null = explicitAppId
-        ? { id: explicitAppId, name: String(req.body.applicationName || explicitAppId).trim() }
+        ? { id: explicitAppId, name: String(req.body.applicationName || inheritedScope.application?.name || explicitAppId).trim() }
         : null;
 
       if (!application && surfaceBaseUrl && (credentials.username || (credentials as any).token)) {

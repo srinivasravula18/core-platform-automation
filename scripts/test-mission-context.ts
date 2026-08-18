@@ -7,6 +7,7 @@ import {
   platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl, describeMission, stripAppScopedParams,
   buildMissionVerificationSnippet, renderMissionContextForPrompt, collapseDoubledLabels,
   finalizeMissionFromInspectedSurface, needsExplicitListViewModule, sameMissionEvidenceScope,
+  inheritResolvedScope,
 } from '../server/features/agent/mission/missionContext';
 
 let passed = 0, failed = 0;
@@ -190,6 +191,27 @@ console.log('Phase 1 (Surface-Consistency Invariant): seal mission from inspecte
   ok(finalizeMissionFromInspectedSurface(bareRt, 'https://host/keystone/?appId=app9') === bareRt, 'no inspected nav → unchanged');
   ok(finalizeMissionFromInspectedSurface(bareAdmin, '') === bareAdmin, 'empty inspected url → no-op');
   ok(finalizeMissionFromInspectedSurface(bareAdmin, 'not a url') === bareAdmin, 'unparseable inspected url → no-op');
+}
+
+console.log('Resolved scope is inherited across a conversation, not re-asked');
+{
+  // The real shape a prior run persists (observed: an Admin run that settled on the Apps module).
+  const prior = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'apps', name: 'Apps' } });
+  const unchanged = { targetChanged: false, featureChanged: false };
+
+  const kept = inheritResolvedScope(prior, unchanged);
+  eq(kept.module, { id: 'apps', name: 'Apps' }, 'same target + feature inherits the settled module');
+  // The guard the gate actually consults — an inherited module means the ask never fires.
+  ok(!needsExplicitListViewModule('test the list view', kept.module?.id || ''), 'inherited module suppresses the module ask');
+  ok(needsExplicitListViewModule('test the list view', ''), '...which it would NOT without the inherited module');
+
+  eq(inheritResolvedScope(prior, { targetChanged: true, featureChanged: false }).module, null, 'target change drops the module');
+  eq(inheritResolvedScope(prior, { targetChanged: false, featureChanged: true }).module, null, 'feature change drops the module');
+  eq(inheritResolvedScope(null, unchanged).module, null, 'no prior run → nothing to inherit');
+
+  const runtime = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', application: { id: 'app9', name: 'CRM' } });
+  eq(inheritResolvedScope(runtime, unchanged).application, { id: 'app9', name: 'CRM' }, 'runtime application is inherited too');
+  eq(inheritResolvedScope(prior, unchanged).application, null, 'admin mission carries no application to inherit');
 }
 
 console.log('List-view routing and evidence reuse');

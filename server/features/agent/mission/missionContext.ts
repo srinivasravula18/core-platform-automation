@@ -197,6 +197,20 @@ export function moduleFromUrl(targetUrl: string): string | null {
 }
 
 /** A bare "list view" names a UI pattern, not the module whose records should be tested. */
+/**
+ * The module/application this conversation already resolved, for the next run in it. Scope the user
+ * settled once must not be asked for again — but only while it still describes the request: a target
+ * change makes the ids belong to another surface, and a feature change may live in another module.
+ */
+export function inheritResolvedScope(
+  priorMission: Pick<MissionContext, 'application' | 'module'> | null | undefined,
+  changed: { targetChanged: boolean; featureChanged: boolean },
+): { application: AppRef | null; module: ModuleRef | null } {
+  if (!priorMission || changed.targetChanged || changed.featureChanged) return { application: null, module: null };
+  const ref = (r: AppRef | ModuleRef | null | undefined) => (r?.id ? { id: String(r.id), name: String(r.name || r.id) } : null);
+  return { application: ref(priorMission.application), module: ref(priorMission.module) };
+}
+
 export function needsExplicitListViewModule(prompt: string, explicitModuleId = ''): boolean {
   if (String(explicitModuleId || '').trim()) return false;
   const text = String(prompt || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();

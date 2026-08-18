@@ -267,7 +267,7 @@ COVERAGE — derive requirements across these dimensions, in priority order:
 Do NOT generate requirements for performance, load, security penetration, visual pixel-perfection, or cross-browser rendering. These need different tooling and produce false confidence here. If the user asked for them, record them as declined.
 
 RULES
-- Ground every requirement in the scope. Cite the file or selector it derives from. A requirement with no source reference is a hallucination.
+- Ground every requirement in the scope. Cite the file or selector it derives from in the source-reference field — never in the requirement's own wording, which non-engineers read. A requirement with no source reference is a hallucination.
 - Never assume behaviour not evidenced in the scope. If error handling is unclear, mark confidence low and say what you would need to confirm it.
 - Mark any requirement already covered by an existing test so the human can skip it.
 - Deduplicate aggressively. Two requirements that would produce the same test are one requirement.

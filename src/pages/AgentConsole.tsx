@@ -273,7 +273,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[] }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[]; applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string }
   | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string; baseUrl?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
@@ -762,6 +762,9 @@ export default function AgentConsole() {
   // The app/navigation the user picked in the AppAskCard for the CURRENT request chain. Threaded
   // as explicit ids into /api/agent/start so no later gate re-asks; cleared on each new message.
   const targetChoiceRef = useRef<{ applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string } | null>(null);
+  // The same choice as plain turn fields. Turns persist, refs do not — so the pick survives a reload
+  // (and any remount) between the review card and run start instead of being asked for again.
+  const targetChoiceFields = () => ({ ...(targetChoiceRef.current || {}) });
   const activeAbortRef = useRef<AbortController | null>(null);
   const activeThinkingIdRef = useRef<string | null>(null);
   // Bridge to send() for reconcileGoal (send is defined later; a ref avoids the ordering/dep cycle).
@@ -1722,6 +1725,7 @@ export default function AgentConsole() {
       targetUrl,
       websiteId,
       websiteName,
+      ...targetChoiceFields(),
       revisionCount: 0,
       text: 'Look right? Review the summary above, then Proceed — or tell me what to change.',
     });
@@ -2372,6 +2376,7 @@ export default function AgentConsole() {
               targetUrl: nextPending.targetUrl,
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
+              ...targetChoiceFields(),
               revisionCount: nextPending.revisionCount,
               text: 'I updated what I understood. Review it and Proceed, or correct me again.',
             });
@@ -2490,7 +2495,7 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; metadataRefs?: string[] }) => {
+    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; metadataRefs?: string[]; applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string }) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
@@ -2525,6 +2530,11 @@ export default function AgentConsole() {
           priorGrounding: turn.understanding || '',
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
           metadataRefs: turn.metadataRefs,
+          // The scope already chosen for this chain — sent so no gate re-asks for it at run start.
+          applicationId: turn.applicationId,
+          applicationName: turn.applicationName,
+          moduleId: turn.moduleId,
+          moduleName: turn.moduleName,
         });
       } catch (err: any) {
         replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
@@ -3114,6 +3124,7 @@ export default function AgentConsole() {
                               websiteId: namedSite?.id,
                               websiteName: namedSite?.name,
                               metadataRefs,
+                              ...targetChoiceFields(),
                             });
                             setBusy(false);
                             setTimeout(() => inputRef.current?.focus(), 50);
