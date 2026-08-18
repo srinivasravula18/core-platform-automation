@@ -96,6 +96,7 @@
     "test:agent-download-cache": "tsx scripts/test-agent-download-cache.ts",
     "test:zip-reframe": "tsx scripts/test-zip-reframe.ts",
     "test:cron-text": "tsx scripts/test-cron-text.ts",
+    "test:vitals": "tsx scripts/test-vitals-routes.ts",
     "test:recycle-bin": "tsx scripts/test-recycle-bin.ts",
     "test:structured-truncation": "tsx scripts/test-structured-truncation.ts",
     "test:conversation-persistence": "tsx scripts/test-conversation-persistence.ts",

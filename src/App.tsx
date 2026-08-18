@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2 } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -37,6 +37,15 @@ import LocalAgent from '@/src/pages/automation/LocalAgent';
 import Schedules from '@/src/pages/automation/Schedules';
 import DataBindings from '@/src/pages/automation/DataBindings';
 import Projects from '@/src/pages/Projects';
+import VitalsOverview from '@/src/pages/vitals/Overview';
+import VitalsFleet from '@/src/pages/vitals/Fleet';
+import VitalsMetrics from '@/src/pages/vitals/Metrics';
+import VitalsAlerts from '@/src/pages/vitals/Alerts';
+import VitalsIssues from '@/src/pages/vitals/Issues';
+import VitalsTraces from '@/src/pages/vitals/Traces';
+import VitalsLoadLab from '@/src/pages/vitals/LoadLab';
+import VitalsPentest from '@/src/pages/vitals/Pentest';
+import VitalsDocs from '@/src/pages/vitals/Docs';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -85,6 +94,20 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     {
       label: 'Automation',
       items: automationItems,
+    },
+    {
+      label: 'Vitals',
+      items: [
+        { name: 'Overview', href: '/vitals/overview', icon: Activity },
+        { name: 'Fleet', href: '/vitals/fleet', icon: ServerCog },
+        { name: 'Metrics', href: '/vitals/metrics', icon: LineChart },
+        { name: 'Alerts', href: '/vitals/alerts', icon: BellRing },
+        { name: 'Issues', href: '/vitals/issues', icon: AlertOctagon },
+        { name: 'Traces', href: '/vitals/traces', icon: Waypoints },
+        { name: 'Load Lab', href: '/vitals/load-lab', icon: Gauge },
+        { name: 'Pentest', href: '/vitals/pentest', icon: Crosshair },
+        { name: 'Docs', href: '/vitals/docs', icon: BookMarked },
+      ],
     },
   ];
 
@@ -649,6 +672,18 @@ export default function App() {
           <Route path="/automation/schedules" element={<Schedules />} />
           <Route path="/automation/agent" element={<LocalAgent />} />
           <Route path="/automation/data" element={<DataBindings />} />
+
+          {/* Vitals — the observability console, reading from the endpoint configured under Connect. */}
+          <Route path="/vitals" element={<Navigate to="/vitals/overview" replace />} />
+          <Route path="/vitals/overview" element={<VitalsOverview />} />
+          <Route path="/vitals/fleet" element={<VitalsFleet />} />
+          <Route path="/vitals/metrics" element={<VitalsMetrics />} />
+          <Route path="/vitals/alerts" element={<VitalsAlerts />} />
+          <Route path="/vitals/issues" element={<VitalsIssues />} />
+          <Route path="/vitals/traces" element={<VitalsTraces />} />
+          <Route path="/vitals/load-lab" element={<VitalsLoadLab />} />
+          <Route path="/vitals/pentest" element={<VitalsPentest />} />
+          <Route path="/vitals/docs" element={<VitalsDocs />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/documentation" element={<Documentation />} />

@@ -34,6 +34,7 @@ export const FEATURES: FeatureDef[] = [
   // now gates the automation routes that still exist.
   { key: 'automation', label: 'Automation', hrefs: ['/automation/agent', '/automation/schedules', '/automation/data'] },
   { key: 'record-play', label: 'Record & Play', hrefs: ['/record-play'] },
+  { key: 'vitals', label: 'Vitals', hrefs: ['/vitals'] },
   { key: 'git-agent', label: 'Git Agent', hrefs: ['/git-agent'] },
   { key: 'documentation', label: 'Documentation', hrefs: ['/documentation'] },
 ];

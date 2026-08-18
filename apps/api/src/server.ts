@@ -25,6 +25,7 @@ import { registerSearchRoutes } from '../../../services/search';
 import { registerTagRoutes } from '../../../services/tags';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
+import { registerVitalsRoutes } from '../../../services/vitals';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
 import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs, resumeScheduleExecutions } from '../../../services/automation';
@@ -161,6 +162,7 @@ export async function createExpressApp() {
   registerRecycleBinRoutes(app);
   registerTagRoutes(app);
   registerApiIntelligenceRoutes(app);
+  registerVitalsRoutes(app);
   registerAutomationRoutes(app);
 
   app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
