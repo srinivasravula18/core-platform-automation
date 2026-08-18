@@ -1,45 +1,20 @@
 /**
- * Starter dashboards, seeded into the store rather than compiled into the UI.
+ * Default dashboard layouts, compiled in rather than written to the store.
  *
- * They use the same Grafana-shaped JSON model an operator authors by hand — a 24-column grid,
- * gridPos per panel, targets per panel, a default range and refresh — so a seeded dashboard is
- * editable, deletable, and indistinguishable from one somebody built.
+ * The connection already provides the data; a dashboard only says how to arrange it — which panels,
+ * which metrics, which reducer, what grid position. That is this console's opinion, not the
+ * monitored product's, so it belongs in the build and not in somebody else's database. Vitals writes
+ * nothing to a customer's store until a person saves an edit.
  *
- * The metric names below are the observability schema's own convention (the same names
- * overview.ts reads), not any one product's business data. Seeding still checks what the connected
- * store actually records and drops panels whose metrics were never written, so a product that
- * instruments a subset gets a dashboard about itself instead of a wall of empty charts.
+ * A stored dashboard with the same uid always wins: the first edit of a default writes a real row
+ * (copy-on-write), and from then on that row is what renders.
+ *
+ * The metric names below are the observability schema's own convention — the same names overview.ts
+ * reads. Panels whose metrics the store never recorded simply draw empty, which is honest about the
+ * window in view rather than about what happened to exist at seed time.
  */
 
-import { vitalsQuery } from './db';
-
-type PanelTarget = {
-  refId: string;
-  metric: string;
-  matchers?: { label: string; op?: 'eq' | 'neq' | 're'; value: string }[];
-  groupBy?: string[];
-  reducer?: string;
-  legend?: string;
-};
-
-type Panel = {
-  id: number;
-  type: 'timeseries' | 'stat' | 'bar' | 'table' | 'area';
-  title: string;
-  unit: 'ms' | 'bytes' | 'percent' | 'rps' | 'count' | 'short';
-  gridPos: { x: number; y: number; w: number; h: number };
-  targets: PanelTarget[];
-  stacked?: boolean;
-  description?: string;
-};
-
-type DashboardModel = {
-  schemaVersion: number;
-  time: { from: string; to: string };
-  refresh: string;
-  templating: { variables: { name: string; label: string; metric: string; labelKey: string }[] };
-  panels: Panel[];
-};
+import type { DashboardModel } from './api';
 
 export type BuiltinDashboard = { uid: string; title: string; tags: string[]; model: DashboardModel };
 
@@ -234,60 +209,30 @@ const LOAD_LAB_DASHBOARD: BuiltinDashboard = {
 
 export const BUILTIN_DASHBOARDS: BuiltinDashboard[] = [OVERVIEW_DASHBOARD, LOAD_LAB_DASHBOARD];
 
-/** Metric names the connected store has actually recorded, at any resolution. */
-const recordedMetrics = async (): Promise<Set<string>> => {
-  const rows = await vitalsQuery<{ metric: string }>(
-    `select distinct metric from obs.metric_sample_1h
-     union
-     select distinct metric from obs.metric_sample_1m`,
-  );
-  return new Set(rows.map((row) => row.metric));
-};
+/** The compiled-in default for a uid, or null when the uid is not one of ours. */
+export const builtinDashboard = (uid: string): BuiltinDashboard | null =>
+  BUILTIN_DASHBOARDS.find((entry) => entry.uid === uid) ?? null;
+
+export type ResolvedDashboard = BuiltinDashboard & { stored: boolean };
 
 /**
- * Drop targets for metrics this store never records, then panels left with none. Panels keep their
- * gridPos: a gap is honest about what is missing, and re-seeding after the product starts emitting
- * the metric restores the panel in place.
+ * The dashboard to render for a uid: the stored row when one exists, else the compiled-in default.
+ *
+ * A 404 is the expected answer for a default nobody has edited, so it resolves rather than throws —
+ * only a real failure (unreachable store, bad request) propagates.
  */
-export const fitToStore = (dashboard: BuiltinDashboard, available: Set<string>): BuiltinDashboard | null => {
-  const panels = dashboard.model.panels
-    .map((panel) => ({ ...panel, targets: panel.targets.filter((target) => available.has(target.metric)) }))
-    .filter((panel) => panel.targets.length > 0);
-  if (panels.length === 0) return null;
-  const variables = dashboard.model.templating.variables.filter((variable) => available.has(variable.metric));
-  return { ...dashboard, model: { ...dashboard.model, templating: { variables }, panels } };
-};
-
-export type SeedOutcome = { uid: string; seeded: boolean; panels: number; reason?: string };
-
-/**
- * Idempotent. An operator's edits win: the upsert only touches a row that is still a pristine
- * built-in (version 1, never saved by a person), so a customised copy is never clobbered.
- */
-export const seedBuiltinDashboards = async (): Promise<SeedOutcome[]> => {
-  const available = await recordedMetrics();
-  const outcomes: SeedOutcome[] = [];
-
-  for (const dashboard of BUILTIN_DASHBOARDS) {
-    const fitted = available.size === 0 ? dashboard : fitToStore(dashboard, available);
-    if (!fitted) {
-      outcomes.push({ uid: dashboard.uid, seeded: false, panels: 0, reason: 'the store records none of its metrics' });
-      continue;
-    }
-    await vitalsQuery(
-      `insert into obs.dashboard (uid, title, tags, model, version, is_builtin)
-       values ($1, $2, $3::text[], $4::jsonb, 1, true)
-       on conflict (uid) do update set
-         title = excluded.title,
-         tags = excluded.tags,
-         model = excluded.model,
-         updated_at = now()
-       where obs.dashboard.is_builtin = true
-         and obs.dashboard.version = 1
-         and obs.dashboard.updated_by is null`,
-      [fitted.uid, fitted.title, fitted.tags, JSON.stringify(fitted.model)],
-    );
-    outcomes.push({ uid: fitted.uid, seeded: true, panels: fitted.model.panels.length });
+export const resolveDashboard = async (
+  uid: string,
+  fetchStored: (uid: string) => Promise<{ dashboard: { uid: string; title: string; tags: string[]; model: DashboardModel } }>,
+): Promise<ResolvedDashboard | null> => {
+  try {
+    const { dashboard } = await fetchStored(uid);
+    return { uid: dashboard.uid, title: dashboard.title, tags: dashboard.tags ?? [], model: dashboard.model, stored: true };
+  } catch (error) {
+    const missing = (error as { status?: number }).status === 404;
+    const fallback = builtinDashboard(uid);
+    if (missing && fallback) return { ...fallback, stored: false };
+    if (missing) return null;
+    throw error;
   }
-  return outcomes;
 };

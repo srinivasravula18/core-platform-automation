@@ -1,17 +1,18 @@
 // End-to-end against a real observability store. Verifies the parts that only mean anything once
-// something is connected: reads land, starter dashboards seed without clobbering an operator's
-// edits, and alert evaluation ticks and takes its lock.
+// something is connected: reads land, reading and starting up leave the store untouched, and alert
+// evaluation ticks, notifies on a transition, and respects silences.
 //
 // Skips cleanly when no store is configured, so it is safe to run anywhere.
 import 'dotenv/config';
 import { config } from 'dotenv';
 import { evaluateRules, syncAlertEvaluator, stopAlertEvaluator, alertEvaluatorRunning } from '../server/features/vitals/alerts';
-import { seedBuiltinDashboards } from '../server/features/vitals/builtinDashboards';
 import { invalidateConnection, readConnection } from '../server/features/vitals/connection';
 import { closeVitalsPool, isConfigured, status, vitalsQuery } from '../server/features/vitals/db';
 import { listDashboards } from '../server/features/vitals/dashboards';
 import { getOverviewSnapshot } from '../server/features/vitals/overview';
 import { listKnownProfiles } from '../server/features/vitals/runs';
+import { startVitals, stopVitals } from '../server/features/vitals/startup';
+import { builtinDashboard } from '../src/lib/vitals/builtinDashboards';
 
 config({ path: '.env.local', override: true });
 invalidateConnection();
@@ -38,39 +39,30 @@ const main = async () => {
     used: snapshot.slo.targetPct,
   });
 
-  // ---- seeding ----
+  // ---- dashboards are compiled in, not written ----
+  // The strong claim this replaces seeding with: connecting a store and reading from it must leave
+  // that store byte-for-byte unchanged.
+  const [{ c: dashboardsBefore }] = await vitalsQuery<{ c: number }>(`select count(*)::int as c from obs.dashboard`);
 
-  const seeded = await seedBuiltinDashboards();
-  check('seeding reports an outcome per starter dashboard', seeded.length >= 2, seeded);
-  const { dashboards } = await listDashboards();
-  const seededUids = seeded.filter((entry) => entry.seeded).map((entry) => entry.uid);
-  for (const uid of seededUids) {
-    check(`"${uid}" exists in the store`, dashboards.some((row: Record<string, unknown>) => row.uid === uid));
-  }
+  await getOverviewSnapshot('now-1h', 'now');
+  await listKnownProfiles();
+  await listDashboards();
 
-  // Re-seeding must be idempotent: same rows, no version churn.
-  const versionsBefore = new Map(dashboards.map((row: Record<string, unknown>) => [row.uid, row.version]));
-  await seedBuiltinDashboards();
-  const after = await listDashboards();
-  const unchanged = after.dashboards.every((row: Record<string, unknown>) => versionsBefore.get(row.uid) === undefined || versionsBefore.get(row.uid) === row.version);
-  check('re-seeding does not bump any dashboard version', unchanged);
+  const [{ c: dashboardsAfter }] = await vitalsQuery<{ c: number }>(`select count(*)::int as c from obs.dashboard`);
+  check('reading never creates a dashboard row', dashboardsBefore === dashboardsAfter, { before: dashboardsBefore, after: dashboardsAfter });
 
-  // An operator's edit must survive a re-seed. Simulate one, re-seed, then restore.
-  const victim = seededUids[0];
-  if (victim) {
-    const [before] = await vitalsQuery<{ model: unknown; version: number; updated_by: string | null }>(
-      `select model, version, updated_by from obs.dashboard where uid = $1`,
-      [victim],
-    );
-    await vitalsQuery(`update obs.dashboard set version = version + 1, updated_by = 'test-operator' where uid = $1`, [victim]);
-    await seedBuiltinDashboards();
-    const [edited] = await vitalsQuery<{ updated_by: string | null; version: number }>(
-      `select updated_by, version from obs.dashboard where uid = $1`,
-      [victim],
-    );
-    check('an operator-edited built-in is never overwritten', edited?.updated_by === 'test-operator', edited);
-    await vitalsQuery(`update obs.dashboard set version = $2, updated_by = $3 where uid = $1`, [victim, before.version, before.updated_by]);
-  }
+  // Startup is the case that used to write: it seeded dashboards on every boot.
+  await startVitals();
+  const [{ c: dashboardsAfterStartup }] = await vitalsQuery<{ c: number }>(`select count(*)::int as c from obs.dashboard`);
+  check('starting up never creates a dashboard row', dashboardsBefore === dashboardsAfterStartup, {
+    before: dashboardsBefore,
+    after: dashboardsAfterStartup,
+  });
+
+  // The layouts Overview and Load Lab render must exist in the build, since nothing puts them in the store.
+  check('the console compiles in the layouts its pages ask for', ['platform-overview', 'load-lab-live'].every((uid) => builtinDashboard(uid) !== null));
+  const overviewLayout = builtinDashboard('platform-overview');
+  check('the compiled-in overview layout has panels', (overviewLayout?.model.panels.length ?? 0) > 0, { panels: overviewLayout?.model.panels.length });
 
   // ---- evaluation ----
 

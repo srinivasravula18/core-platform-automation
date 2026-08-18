@@ -121,7 +121,8 @@ export default function VitalsDocs() {
         <Card title="Connecting, alerting and the agent">
           <p className="text-sm leading-relaxed text-[var(--text-muted)]">
             The connection is data, not deployment: Connect stores it encrypted in this application's own settings and it takes effect immediately, with environment
-            variables kept only as a fallback. Alert evaluation is off by default, because the monitored product's console may already be evaluating the same rules —
+            variables kept only as a fallback. Connecting a store never writes to it — the default dashboard layouts are compiled into this console, and only become
+            stored documents the first time somebody edits one. Alert evaluation is off by default, because the monitored product's console may already be evaluating the same rules —
             turned on, whoever is evaluating holds a lock on the store, so two consoles can never notify twice for one transition. Ask AI reads through the same
             bounded queries the pages use, is pinned to the window on screen, and can only propose a run through preview and an explicit confirmation in a later turn.
           </p>

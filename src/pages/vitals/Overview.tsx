@@ -8,6 +8,7 @@ import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
 import { formatRelative, formatValue } from '@/src/lib/vitals/format';
 import { statusForValue } from '@/src/lib/vitals/theme';
 import DashboardView from '@/src/components/vitals/DashboardView';
+import { resolveDashboard } from '@/src/lib/vitals/builtinDashboards';
 import StatTile from '@/src/components/vitals/StatTile';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
 import { Banner, Card, EmptyNote, buttonClass } from '@/src/components/vitals/ui';
@@ -72,7 +73,9 @@ export default function VitalsOverview() {
 
   const overview = usePolled(() => vitals.overview(range.from, range.to), [range.from, range.to], refreshMs, live);
   const annotations = usePolled(() => vitals.annotations(range.from, range.to), [range.from, range.to], refreshMs, live);
-  const dashboard = usePolled(() => vitals.dashboard('platform-overview'), [], 0, false);
+  // Falls back to the compiled-in layout until somebody edits it, so charts render on a store
+  // this console has never written to.
+  const dashboard = usePolled(() => resolveDashboard('platform-overview', vitals.dashboard), [], 0, false);
 
   const current = overview.data?.current;
   const previous = overview.data?.previous;
@@ -292,7 +295,7 @@ export default function VitalsOverview() {
       </Modal>
 
       {dashboard.data ? (
-        <DashboardView model={dashboard.data.dashboard.model} range={range} refreshMs={refreshMs} live={live} annotations={annotations.data?.annotations ?? []} />
+        <DashboardView model={dashboard.data.model} range={range} refreshMs={refreshMs} live={live} annotations={annotations.data?.annotations ?? []} />
       ) : (
         <EmptyNote>{dashboard.error ? dashboard.error : 'Loading dashboard…'}</EmptyNote>
       )}

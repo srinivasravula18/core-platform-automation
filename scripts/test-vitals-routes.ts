@@ -5,7 +5,7 @@ import express from 'express';
 import { registerVitalsRoutes } from '../server/features/vitals/routes';
 import { invalidateConnection, redactConnection, resolveControlRef, VitalsCredentialMissingError, type VitalsConnection } from '../server/features/vitals/connection';
 import { selectContactPoint } from '../server/features/vitals/notifier';
-import { BUILTIN_DASHBOARDS, fitToStore } from '../server/features/vitals/builtinDashboards';
+import { BUILTIN_DASHBOARDS, builtinDashboard, resolveDashboard } from '../src/lib/vitals/builtinDashboards';
 
 // Nothing configured.
 delete process.env.VITALS_DATABASE_URL;
@@ -66,18 +66,37 @@ check('the deepest matching policy wins', selectContactPoint(policies, { severit
 check('an unmatched label set falls back to the root', selectContactPoint(policies, { severity: 'info' }) === 'cp-default');
 check('an empty tree routes nowhere', selectContactPoint([], { severity: 'critical' }) === null);
 
-const overview = BUILTIN_DASHBOARDS[0];
-const fittedNone = fitToStore(overview, new Set<string>());
-check('a dashboard whose metrics are absent is not seeded', fittedNone === null);
-const fittedSome = fitToStore(overview, new Set(['http.request.duration']));
-check('fitting keeps only panels the store can fill', (fittedSome?.model.panels.length ?? 0) > 0 && (fittedSome?.model.panels.length ?? 0) < overview.model.panels.length, {
-  kept: fittedSome?.model.panels.length,
-  total: overview.model.panels.length,
-});
-check(
-  'fitting never leaves a panel with no targets',
-  (fittedSome?.model.panels ?? []).every((panel) => panel.targets.length > 0),
-);
+// Compiled-in layouts: the pages ask for these uids by name, so the build must carry them.
+check('every default layout has a uid, a title and panels',
+  BUILTIN_DASHBOARDS.every((entry) => entry.uid && entry.title && entry.model.panels.length > 0));
+check('the layouts the pages ask for are compiled in',
+  ['platform-overview', 'load-lab-live'].every((uid) => builtinDashboard(uid) !== null));
+check('an unknown uid has no default', builtinDashboard('not-a-dashboard') === null);
+
+// The resolver is what replaces seeding: a stored row wins, a 404 falls back to the build, and a
+// real failure still propagates rather than silently rendering a default.
+const notFound = Object.assign(new Error('No such dashboard'), { status: 404 });
+
+await (async () => {
+  const stored = await resolveDashboard('platform-overview', async () => ({
+    dashboard: { uid: 'platform-overview', title: 'Edited', tags: [], model: { schemaVersion: 1, time: { from: 'now-1h', to: 'now' }, refresh: '10s', templating: { variables: [] }, panels: [] } },
+  }));
+  check('a stored dashboard wins over the default', stored?.title === 'Edited' && stored?.stored === true, stored);
+
+  const fallback = await resolveDashboard('platform-overview', async () => { throw notFound; });
+  check('a missing default falls back to the compiled-in layout', fallback?.stored === false && (fallback?.model.panels.length ?? 0) > 0, {
+    stored: fallback?.stored,
+    panels: fallback?.model.panels.length,
+  });
+
+  const unknown = await resolveDashboard('not-a-dashboard', async () => { throw notFound; });
+  check('a missing dashboard that has no default resolves to nothing', unknown === null);
+
+  const broken = Object.assign(new Error('the store is unreachable'), { status: 502 });
+  await resolveDashboard('platform-overview', async () => { throw broken; })
+    .then(() => check('a real failure is not mistaken for a missing dashboard', false, 'resolved instead of throwing'))
+    .catch((error) => check('a real failure is not mistaken for a missing dashboard', error === broken));
+})();
 
 // ---- routes ----
 

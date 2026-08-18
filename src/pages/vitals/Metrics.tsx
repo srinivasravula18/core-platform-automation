@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/src/lib/utils';
 import { vitals, type DashboardModel, type Panel } from '@/src/lib/vitals/api';
 import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
+import { BUILTIN_DASHBOARDS, resolveDashboard } from '@/src/lib/vitals/builtinDashboards';
 import type { Unit } from '@/src/lib/vitals/format';
 import DashboardView from '@/src/components/vitals/DashboardView';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
@@ -67,11 +68,37 @@ export default function VitalsMetrics() {
     live,
   );
 
-  const detail = usePolled(() => (openDashboard ? vitals.dashboard(openDashboard) : Promise.resolve(null)), [openDashboard], 0, false);
+  /**
+   * Stored dashboards, plus any compiled-in default nobody has edited yet — otherwise the defaults
+   * Overview and Load Lab render would be invisible here until someone happened to save one.
+   */
+  const dashboardList = useMemo(() => {
+    const stored = dashboards.data?.dashboards ?? [];
+    const storedUids = new Set(stored.map((entry) => entry.uid));
+    const defaults = BUILTIN_DASHBOARDS.filter((entry) => !storedUids.has(entry.uid)).map((entry) => ({
+      uid: entry.uid,
+      title: entry.title,
+      tags: entry.tags,
+      version: 0,
+      is_builtin: true,
+      updated_at: null as string | null,
+      updated_by: null as string | null,
+      stored: false,
+    }));
+    return [...defaults, ...stored.map((entry) => ({ ...entry, stored: true }))];
+  }, [dashboards.data]);
 
+  const detail = usePolled(() => (openDashboard ? resolveDashboard(openDashboard, vitals.dashboard) : Promise.resolve(null)), [openDashboard], 0, false);
+
+  // Copy-on-write: editing a compiled-in default is what creates its stored row. Until somebody
+  // does this, Vitals has written nothing to the connected store.
   const addToDashboard = async () => {
-    const existing = await vitals.dashboard(openDashboard ?? 'platform-overview');
-    const model: DashboardModel = existing.dashboard.model;
+    const target = await resolveDashboard(openDashboard ?? 'platform-overview', vitals.dashboard);
+    if (!target) {
+      setSaveMessage('That dashboard no longer exists.');
+      return;
+    }
+    const model: DashboardModel = target.model;
     const maxY = model.panels.reduce((max, panel) => Math.max(max, panel.gridPos.y + panel.gridPos.h), 0);
     const panel: Panel = {
       id: Math.max(0, ...model.panels.map((entry) => entry.id)) + 1,
@@ -83,19 +110,19 @@ export default function VitalsMetrics() {
       stacked,
     };
     await vitals.saveDashboard({
-      uid: existing.dashboard.uid,
-      title: existing.dashboard.title,
-      tags: existing.dashboard.tags ?? [],
+      uid: target.uid,
+      title: target.title,
+      tags: target.tags ?? [],
       model: { ...model, panels: [...model.panels, panel] },
     });
-    setSaveMessage(`Added to “${existing.dashboard.title}”.`);
+    setSaveMessage(`Added to “${target.title}”.`);
     dashboards.reload();
   };
 
   return (
     <VitalsShell
       title="Metrics"
-      subtitle="Explore any series the endpoint collects. Dashboards are stored documents — panels, layout and range are data, not code."
+      subtitle="Explore any series the store collects. Dashboards start as default layouts in this console and become stored documents the first time you edit one."
       actions={
         <div className="inline-flex overflow-hidden rounded-md border border-[var(--border)]">
           {(['explore', 'dashboards'] as const).map((option) => (
@@ -191,17 +218,17 @@ export default function VitalsMetrics() {
             <button type="button" className={buttonClass('secondary')} onClick={() => setOpenDashboard(null)}>
               ← Dashboards
             </button>
-            <h2 className="text-lg font-semibold text-[var(--text-primary)]">{detail.data.dashboard.title}</h2>
+            <h2 className="text-lg font-semibold text-[var(--text-primary)]">{detail.data.title}</h2>
           </div>
-          <DashboardView model={detail.data.dashboard.model} range={range} refreshMs={refreshMs} live={live} />
+          <DashboardView model={detail.data.model} range={range} refreshMs={refreshMs} live={live} />
         </>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {(dashboards.data?.dashboards ?? []).map((dashboard) => (
+          {dashboardList.map((dashboard) => (
             <Card key={dashboard.uid} title={dashboard.title} meta={dashboard.is_builtin ? <Chip>built-in</Chip> : undefined} className="min-h-0">
               <p className="font-mono text-xs text-[var(--text-muted)]">{dashboard.uid}</p>
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                v{dashboard.version}
+                {dashboard.stored ? `v${dashboard.version}` : 'default layout · not yet saved'}
                 {dashboard.updated_by ? ` · last edited by ${dashboard.updated_by}` : ''}
               </p>
               <button type="button" className={buttonClass('secondary', 'mt-3 w-full')} onClick={() => setOpenDashboard(dashboard.uid)}>
@@ -209,7 +236,7 @@ export default function VitalsMetrics() {
               </button>
             </Card>
           ))}
-          {(dashboards.data?.dashboards ?? []).length === 0 && <p className="text-sm text-[var(--text-muted)]">No dashboards are stored on this endpoint.</p>}
+          {dashboardList.length === 0 && <p className="text-sm text-[var(--text-muted)]">No dashboards are stored on this endpoint.</p>}
         </div>
       )}
     </VitalsShell>

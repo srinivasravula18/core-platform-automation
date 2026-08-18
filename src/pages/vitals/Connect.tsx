@@ -161,17 +161,6 @@ export default function VitalsConnect() {
       await load();
     });
 
-  const seed = () =>
-    run('seed', async () => {
-      const { seeded } = await vitals.seedDashboards();
-      const written = seeded.filter((entry) => entry.seeded);
-      setNotice(
-        written.length
-          ? `Seeded ${written.map((entry) => `${entry.uid} (${entry.panels} panels)`).join(', ')}.`
-          : seeded.map((entry) => `${entry.uid}: ${entry.reason}`).join(' · ') || 'Nothing to seed.',
-      );
-    });
-
   const connection = state?.connection;
 
   return (
@@ -235,9 +224,6 @@ export default function VitalsConnect() {
               </button>
               <button type="button" onClick={() => void saveStore()} disabled={busy !== ''} className={buttonClass('primary')}>
                 {busy === 'store' ? 'Saving…' : 'Save store'}
-              </button>
-              <button type="button" onClick={() => void seed()} disabled={busy !== ''} className={buttonClass('secondary')}>
-                {busy === 'seed' ? 'Seeding…' : 'Seed starter dashboards'}
               </button>
             </div>
           </div>

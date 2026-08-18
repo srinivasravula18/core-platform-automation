@@ -7,6 +7,7 @@ import { formatDateTime, formatDuration, formatMs, formatNumber } from '@/src/li
 import { STATUS } from '@/src/lib/vitals/theme';
 import DashboardView from '@/src/components/vitals/DashboardView';
 import RunLauncher from '@/src/components/vitals/RunLauncher';
+import { resolveDashboard } from '@/src/lib/vitals/builtinDashboards';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
 import {
   Banner,
@@ -157,7 +158,7 @@ export default function VitalsLoadLab() {
   const history = usePolled(() => vitals.runs(50), [], refreshMs || 30_000, live);
   // Polled alongside history so an active run and a control plane that drops out are both noticed.
   const catalogue = usePolled(() => vitals.profiles(), [], refreshMs || 30_000, live);
-  const dashboard = usePolled(() => vitals.dashboard('load-lab-live'), [], 0, false);
+  const dashboard = usePolled(() => resolveDashboard('load-lab-live', vitals.dashboard), [], 0, false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'summary' | 'log'>('summary');
 
@@ -323,7 +324,7 @@ export default function VitalsLoadLab() {
                   <div className="mt-4">
                     <h4 className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Resources during this run</h4>
                     <DashboardView
-                      model={dashboard.data.dashboard.model}
+                      model={dashboard.data.model}
                       range={{ from: openRun.started_at, to: openRun.finished_at ?? 'now' }}
                       refreshMs={0}
                       live={false}

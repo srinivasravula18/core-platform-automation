@@ -13,7 +13,6 @@ import { reqGrants, reqScope } from '../../shared/scope';
 import { canUseWebsite, listUsersForWebsite, listWebsites } from '../credentials/credentialsService';
 import { probeDatabase, status, VitalsNotConfiguredError } from './db';
 import { agentCapabilities, agentRequestSchema, askVitalsAgent } from './agent';
-import { seedBuiltinDashboards } from './builtinDashboards';
 import { clearConnection, readConnection, redactConnection, resolveControlRef, saveConnection } from './connection';
 import { controlStatus, probeControl, resetControlSession, VitalsControlError, VitalsControlNotConfiguredError } from './control';
 import { alertEvaluatorRunning, syncAlertEvaluator } from './alerts';
@@ -418,9 +417,6 @@ export function registerVitalsRoutes(app: Express): void {
   );
 
   app.delete('/api/vitals/dashboards/:uid', handle(async (req) => deleteDashboard(req.params.uid)));
-
-  /** Re-seed the starter dashboards. Safe to repeat: an edited built-in is never overwritten. */
-  app.post('/api/vitals/dashboards/seed', ...adminOnly(async () => ({ seeded: await seedBuiltinDashboards() })));
 
   // ---- load & security runs ----
 

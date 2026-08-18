@@ -605,8 +605,6 @@ export const vitals = {
   clearConnection: () => request<{ connection: ConnectionView }>('/connection', { method: 'DELETE' }),
   testConnection: (body: { databaseUrl?: string; control?: { baseUrl: string; username: string; password: string } }) =>
     request<{ store: VitalsStatus | null; control: ControlStatus | null }>('/connection/test', { method: 'POST', body: JSON.stringify(body) }),
-  seedDashboards: () =>
-    request<{ seeded: { uid: string; seeded: boolean; panels: number; reason?: string }[] }>('/dashboards/seed', { method: 'POST' }),
 
   // ---- agent ----
   agentCapabilities: () => request<AgentCapabilities>('/agent/capabilities'),
