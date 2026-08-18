@@ -66,6 +66,18 @@ export type VitalsStatus = {
   newestSampleAt: string | null;
 };
 
+/**
+ * The tables every page needs. A database can carry an empty `obs` schema — a half-run migration, or
+ * the wrong database entirely — and checking only for the schema reported "Connected." while every
+ * query failed with a raw "relation does not exist". Count the tables instead.
+ */
+const EXPECTED_OBS_TABLES = 8;
+
+const describeMissingStore = (database: string | null, found: number) =>
+  found === 0
+    ? `Connected to "${database}", but it holds no observability tables. Point Vitals at the database the monitored product writes telemetry to — the one its App Service migrates.`
+    : `Connected to "${database}", but its obs schema is incomplete (${found} of ${EXPECTED_OBS_TABLES} expected tables). Run the monitored product's migrations against it, or point Vitals at the database that has them.`;
+
 /** What the console shows instead of nine empty pages when the store cannot be read. */
 export async function status(): Promise<VitalsStatus> {
   if (!(await isConfigured())) {
@@ -80,15 +92,17 @@ export async function status(): Promise<VitalsStatus> {
     };
   }
   try {
-    const [info] = await vitalsQuery<{ database: string; schema_present: boolean }>(
+    const [info] = await vitalsQuery<{ database: string; tables_present: number }>(
       `select current_database() as database,
-              exists (select 1 from information_schema.schemata where schema_name = 'obs') as schema_present`,
+              (select count(*) from information_schema.tables
+                where table_schema = 'obs'
+                  and table_name in ('metric_sample_10s','metric_sample_1m','metric_sample_1h','issue','trace','dashboard','annotation','alert_rule'))::int as tables_present`,
     );
-    if (!info?.schema_present) {
+    if (!info || info.tables_present < EXPECTED_OBS_TABLES) {
       return {
         configured: true,
         reachable: true,
-        message: `Connected to "${info?.database}", but it has no obs schema. Point Vitals → Connect at the database the monitored product writes telemetry to.`,
+        message: describeMissingStore(info?.database ?? null, info?.tables_present ?? 0),
         database: info?.database ?? null,
         schemaPresent: false,
         oldestSampleAt: null,
@@ -127,16 +141,18 @@ export async function status(): Promise<VitalsStatus> {
 export async function probeDatabase(databaseUrl: string): Promise<VitalsStatus> {
   const probe = new Pool({ connectionString: databaseUrl, max: 1, idleTimeoutMillis: 5_000, connectionTimeoutMillis: 8_000 });
   try {
-    const { rows } = await probe.query<{ database: string; schema_present: boolean }>(
+    const { rows } = await probe.query<{ database: string; tables_present: number }>(
       `select current_database() as database,
-              exists (select 1 from information_schema.schemata where schema_name = 'obs') as schema_present`,
+              (select count(*) from information_schema.tables
+                where table_schema = 'obs'
+                  and table_name in ('metric_sample_10s','metric_sample_1m','metric_sample_1h','issue','trace','dashboard','annotation','alert_rule'))::int as tables_present`,
     );
     const info = rows[0];
-    if (!info?.schema_present) {
+    if (!info || info.tables_present < EXPECTED_OBS_TABLES) {
       return {
         configured: true,
         reachable: true,
-        message: `Reached "${info?.database}", but it has no obs schema.`,
+        message: describeMissingStore(info?.database ?? null, info?.tables_present ?? 0),
         database: info?.database ?? null,
         schemaPresent: false,
         oldestSampleAt: null,
