@@ -6,6 +6,7 @@ import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
 import { formatDateTime, formatDuration, formatMs, formatNumber } from '@/src/lib/vitals/format';
 import { STATUS } from '@/src/lib/vitals/theme';
 import DashboardView from '@/src/components/vitals/DashboardView';
+import RunLauncher from '@/src/components/vitals/RunLauncher';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
 import {
   Banner,
@@ -154,6 +155,8 @@ function RunLog({ runId }: { runId: string }) {
 export default function VitalsLoadLab() {
   const { refreshMs, live } = useVitalsView();
   const history = usePolled(() => vitals.runs(50), [], refreshMs || 30_000, live);
+  // Polled alongside history so an active run and a control plane that drops out are both noticed.
+  const catalogue = usePolled(() => vitals.profiles(), [], refreshMs || 30_000, live);
   const dashboard = usePolled(() => vitals.dashboard('load-lab-live'), [], 0, false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'summary' | 'log'>('summary');
@@ -177,10 +180,9 @@ export default function VitalsLoadLab() {
       title="Load Lab"
       subtitle="Every load and security run the monitored product has recorded, with its summary, verdict and the resources it consumed."
     >
-      <Banner tone="info">
-        Runs are started by the monitored product's own console, which owns the profile scripts and the target allowlist. Vitals reports what
-        each run left behind.
-      </Banner>
+      <div className="mb-4">
+        <RunLauncher catalogue={catalogue.data ?? null} onStarted={() => { history.reload(); catalogue.reload(); }} />
+      </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[

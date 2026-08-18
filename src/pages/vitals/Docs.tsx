@@ -72,13 +72,14 @@ export default function VitalsDocs() {
   const store = usePolled(() => vitals.status(), [], 0, false);
 
   return (
-    <VitalsShell title="Docs" subtitle="How Vitals reads its data, what each page answers, and what the load and pentest workspaces are allowed to do." showTimeControls={false}>
+    <VitalsShell title="Docs" subtitle="How Vitals reads its data, what each page answers, and what the load and pentest workspaces are allowed to do." showTimeControls={false}
+      showAgent={false}>
       <div className="mx-auto grid max-w-5xl gap-4 pb-8">
         <Card title="Where this data comes from">
           <p className="text-sm leading-relaxed text-[var(--text-muted)]">
             Vitals is a console, not a collector. It queries the monitored product's observability store directly, over its own connection pool, exactly as that
-            product's own console does — so there is no endpoint to reach and no session to keep alive. Nothing about the product is compiled in here: the metric
-            catalog, dashboards, environments and run history are all discovered from the store at runtime.
+            product's own console does — so there is no endpoint in the way of a read and no session to keep alive. Nothing about the product is compiled in here: the
+            metric catalog, dashboards, environments and run history are all discovered from the store at runtime, and which store that is comes from Connect.
             {store.data?.database && (
               <>
                 {' '}
@@ -108,12 +109,22 @@ export default function VitalsDocs() {
 
         <Card title="Load and pentest safety">
           <p className="text-sm leading-relaxed text-[var(--text-muted)]">
-            Vitals reports on runs; it does not start them. A run is a process on the machine that owns the profile scripts, so starting and aborting stay with the
-            monitored product's own console, which validates the profile id, parameters and target allowlist before spawning anything. What Vitals shows is the record
-            each run leaves behind — logs, summary, threshold verdict and the resource window — plus the engagements and findings built from them. Automated profiles
-            produce evidence, not a complete penetration test.
+            Vitals never owns a test runner. A run is a process on the machine that holds the profile scripts, so when a control plane is connected under Connect,
+            starting and aborting are forwarded to the monitored product's own console — it validates the profile id, parameters and target allowlist before spawning
+            anything, and a rejection comes back in its words. Without one, the Load Lab is history only. Either way what Vitals shows is the record each run leaves
+            behind — logs, summary, threshold verdict and the resource window — plus the engagements and findings built from them. Automated profiles produce evidence,
+            not a complete penetration test.
           </p>
           <Mermaid title="Run lifecycle" source={LOAD} />
+        </Card>
+
+        <Card title="Connecting, alerting and the agent">
+          <p className="text-sm leading-relaxed text-[var(--text-muted)]">
+            The connection is data, not deployment: Connect stores it encrypted in this application's own settings and it takes effect immediately, with environment
+            variables kept only as a fallback. Alert evaluation is off by default, because the monitored product's console may already be evaluating the same rules —
+            turned on, whoever is evaluating holds a lock on the store, so two consoles can never notify twice for one transition. Ask AI reads through the same
+            bounded queries the pages use, is pinned to the window on screen, and can only propose a run through preview and an explicit confirmation in a later turn.
+          </p>
         </Card>
 
         <Card title="What each page answers">
@@ -127,6 +138,7 @@ export default function VitalsDocs() {
               ['Traces', 'Slow transactions, sampled traces and their span waterfall.'],
               ['Load Lab', 'Run history with summaries, verdicts and the resources during each run.'],
               ['Pentest', 'Engagements, findings, threat-intelligence briefs and exportable reports.'],
+              ['Connect', 'Which store and console this instance watches, alert evaluation and the SLO target.'],
             ].map(([term, description]) => (
               <div key={term} className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
                 <dt className="text-sm font-semibold text-[var(--text-primary)]">{term}</dt>

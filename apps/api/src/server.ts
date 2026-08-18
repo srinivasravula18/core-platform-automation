@@ -25,7 +25,7 @@ import { registerSearchRoutes } from '../../../services/search';
 import { registerTagRoutes } from '../../../services/tags';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
-import { registerVitalsRoutes } from '../../../services/vitals';
+import { registerVitalsRoutes, startVitals } from '../../../services/vitals';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
 import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs, resumeScheduleExecutions } from '../../../services/automation';
@@ -208,5 +208,8 @@ export async function startExpressServer() {
         .then(() => resumeScheduleExecutions())
         .catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
     }
+    // Seeds starter dashboards and starts alert evaluation when a store is connected. Never blocks
+    // startup: an unreachable observability store is a Vitals problem, not a reason not to serve.
+    void startVitals().catch((err) => console.error('[vitals] startup failed:', err?.message || err));
   });
 }

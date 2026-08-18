@@ -1,5 +1,6 @@
 /** The Overview snapshot: one number per tile for this window and the one before it. */
 
+import { readConnection } from './connection';
 import { vitalsQuery, vitalsScalar } from './db';
 import { RESOLUTION_TABLE, resolveRange } from './timerange';
 
@@ -86,7 +87,7 @@ export const getOverviewSnapshot = async (from?: string, to?: string) => {
   ]);
 
   const alertStates = Object.fromEntries(alertRows.map((row) => [row.state, Number(row.count)])) as Record<string, number>;
-  const sloTargetPct = Math.min(99.999, Math.max(90, Number(process.env.VITALS_SLO_TARGET_PCT ?? 99.9)));
+  const sloTargetPct = (await readConnection()).sloTargetPct;
   const testedRps = capacityRun[0]?.throughput_rps ? Number(capacityRun[0].throughput_rps) : null;
 
   return {

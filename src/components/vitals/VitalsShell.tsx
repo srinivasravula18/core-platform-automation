@@ -5,7 +5,9 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { Database, Pause, Play } from 'lucide-react';
+import AgentPanel from './AgentPanel';
 import { cn } from '@/src/lib/utils';
 import { useVitalsView, type TimeRange } from '@/src/lib/vitals/hooks';
 import { vitals, type VitalsStatus } from '@/src/lib/vitals/api';
@@ -82,9 +84,12 @@ export function NotConnected({ message }: { message?: string }) {
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">Vitals cannot read the observability store</h2>
         <p className="text-sm text-[var(--text-muted)]">{message}</p>
         <p className="text-xs text-[var(--text-muted)]">
-          Set <code className="font-mono">VITALS_DATABASE_URL</code> to the database holding the <code className="font-mono">obs</code> schema
-          and restart the backend.
+          Point Vitals at the database holding the <code className="font-mono">obs</code> schema. No restart and no environment variable
+          needed — it takes effect as soon as it is saved.
         </p>
+        <Link to="/vitals/connect" className="text-sm font-medium text-[var(--accent)] hover:underline">
+          Open Connect →
+        </Link>
       </div>
     </Card>
   );
@@ -96,6 +101,7 @@ export default function VitalsShell({
   actions,
   showTimeControls = true,
   requiresConnection = true,
+  showAgent = true,
   children,
 }: {
   title: string;
@@ -103,6 +109,8 @@ export default function VitalsShell({
   actions?: ReactNode;
   showTimeControls?: boolean;
   requiresConnection?: boolean;
+  /** Off for pages with no window to reason about, such as Connect and Docs. */
+  showAgent?: boolean;
   children: ReactNode;
 }) {
   const { range, setRange } = useVitalsView();
@@ -127,6 +135,7 @@ export default function VitalsShell({
         actions={
           <>
             {showTimeControls && !blocked && <TimeControls range={range} onRangeChange={setRange} />}
+            {showAgent && !blocked && <AgentPanel range={range} />}
             {actions}
           </>
         }

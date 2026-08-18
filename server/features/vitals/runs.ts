@@ -1,10 +1,14 @@
 /**
- * Load and security run history, read from the store.
+ * Load and security run history, read from the store — plus starting and aborting a run when a
+ * control plane is connected.
  *
- * Starting and aborting runs is deliberately absent: a run is a process on the machine that owns
- * the profile scripts, so it stays with the monitored product's own console. Vitals reports.
+ * A run is a process on the machine that owns the profile scripts, so Vitals never spawns one. When
+ * the monitored product's console is configured (Vitals → Connect) this forwards the request to it
+ * and the product enforces its own profiles, parameter bounds, and target allowlist. Without one,
+ * the page is history only and says so, rather than offering a button that cannot work.
  */
 
+import { abortControlRun, isControlConfigured, listControlProfiles, startControlRun, type StartRunInput } from './control';
 import { vitalsQuery } from './db';
 
 export const listRuns = async (limit = 50, profileId?: string) => {
@@ -38,40 +42,107 @@ export const getRun = async (id: string) => {
   };
 };
 
-/**
- * Profiles are a registry inside the monitored product's console, not stored data — without it we
- * can still name every profile that has actually run, which is what the history view needs.
- */
-export const listKnownProfiles = async () => {
-  const rows = await vitalsQuery<{ profile_id: string; profile_label: string; category: string | null; runs: string }>(
-    `select profile_id, max(profile_label) as profile_label,
-            case when profile_id like 'security-%' then 'Security' else 'Load' end as category,
-            count(*)::text as runs
+/** Every profile that has actually run here, named from history alone. */
+const profilesFromHistory = async () => {
+  const rows = await vitalsQuery<{ profile_id: string; profile_label: string; runs: string }>(
+    `select profile_id, max(profile_label) as profile_label, count(*)::text as runs
        from obs.test_run group by profile_id order by 2`,
   );
-  return {
-    profiles: rows.map((row) => ({
-      id: row.profile_id,
-      label: row.profile_label,
-      category: row.category ?? 'Load',
-      summary: '',
-      proves: '',
-      runner: 'k6' as const,
-      danger: 'low' as const,
-      estimate: '',
-      thresholds: {},
-      params: [],
-      runCount: Number(row.runs),
-    })),
-    activeRunId: null,
-    activeRunIds: [],
-    maxConcurrentRuns: 0,
-    defaultTargetBaseUrl: '',
-    allowedTargetBaseUrls: [],
-    pentestTargetBaseUrls: [],
-    targets: [],
-    userPoolAvailable: false,
-    /** Tells the UI to present history only — this build cannot spawn runs. */
-    executionAvailable: false,
-  };
+  return rows.map((row) => ({
+    id: row.profile_id,
+    label: row.profile_label,
+    category: 'Load',
+    summary: '',
+    proves: '',
+    runner: 'unknown',
+    danger: 'low',
+    estimate: '',
+    thresholds: {},
+    params: [] as unknown[],
+    runCount: Number(row.runs),
+    /** History-only: nothing here describes how to start it. */
+    startable: false,
+  }));
 };
+
+/**
+ * The Load Lab's catalogue. With a control plane connected this is the product's live registry —
+ * real parameters, real targets, startable — merged with run counts from history. Without one it
+ * degrades to the names history remembers.
+ */
+export const listKnownProfiles = async () => {
+  const historical = await profilesFromHistory();
+  const runCounts = new Map(historical.map((profile) => [profile.id, profile.runCount]));
+
+  if (!(await isControlConfigured())) {
+    return {
+      profiles: historical,
+      activeRunId: null,
+      activeRunIds: [],
+      maxConcurrentRuns: 0,
+      defaultTargetBaseUrl: '',
+      allowedTargetBaseUrls: [],
+      pentestTargetBaseUrls: [],
+      targets: [],
+      userPoolAvailable: false,
+      /** Tells the UI to present history only — no control plane, so nothing can be started. */
+      executionAvailable: false,
+      executionMessage: 'Connect the monitored product’s console under Vitals → Connect to start runs from here.',
+    };
+  }
+
+  try {
+    const live = await listControlProfiles();
+    const liveIds = new Set(live.profiles.map((profile) => profile.id));
+    const profiles = [
+      ...live.profiles.map((profile) => ({
+        ...profile,
+        category: profile.category ?? 'Load',
+        params: profile.params ?? [],
+        thresholds: profile.thresholds ?? {},
+        runCount: runCounts.get(profile.id) ?? 0,
+        startable: true,
+      })),
+      // Retired profiles still own run history; keep them listed so old runs stay explicable.
+      ...historical.filter((profile) => !liveIds.has(profile.id)),
+    ];
+    return {
+      profiles,
+      activeRunId: live.activeRunId ?? null,
+      activeRunIds: live.activeRunIds ?? [],
+      maxConcurrentRuns: live.maxConcurrentRuns ?? 0,
+      defaultTargetBaseUrl: live.defaultTargetBaseUrl ?? '',
+      allowedTargetBaseUrls: live.allowedTargetBaseUrls ?? [],
+      pentestTargetBaseUrls: live.pentestTargetBaseUrls ?? [],
+      targets: live.targets ?? [],
+      userPoolAvailable: live.userPoolAvailable ?? false,
+      executionAvailable: true,
+      executionMessage: null,
+    };
+  } catch (error) {
+    // A console that is configured but unreachable is a broken connection, not an absent feature —
+    // say which so the operator fixes the right thing.
+    return {
+      profiles: historical,
+      activeRunId: null,
+      activeRunIds: [],
+      maxConcurrentRuns: 0,
+      defaultTargetBaseUrl: '',
+      allowedTargetBaseUrls: [],
+      pentestTargetBaseUrls: [],
+      targets: [],
+      userPoolAvailable: false,
+      executionAvailable: false,
+      executionMessage: `The connected console could not be reached: ${(error as Error).message}`,
+    };
+  }
+};
+
+/**
+ * Forward a start request. Every gate that matters — which profiles exist, which parameters are in
+ * bounds, which targets may be hit — belongs to the product's console and is enforced there; adding
+ * a second opinion here would only drift out of date.
+ */
+export const startRun = async (input: StartRunInput) => startControlRun(input);
+
+export const abortRun = async (runId: string) => abortControlRun(runId);

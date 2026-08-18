@@ -66,11 +66,85 @@ export type Profile = {
   category: string;
   summary: string;
   proves: string;
-  runner: 'k6' | 'node' | 'zap' | 'agent' | 'nuclei' | 'semgrep';
+  /** Whatever the connected product calls its runner — this console does not own the list. */
+  runner: string;
   danger: 'low' | 'medium' | 'high';
   estimate: string;
   thresholds: { p95Ms?: number; errorRatePct?: number };
   params: ProfileParam[];
+  runCount?: number;
+  /** True only when the control plane offers this profile; history-only entries cannot be started. */
+  startable?: boolean;
+};
+
+export type ProfilesResponse = {
+  profiles: Profile[];
+  activeRunId: string | null;
+  activeRunIds: string[];
+  maxConcurrentRuns: number;
+  defaultTargetBaseUrl: string;
+  allowedTargetBaseUrls: string[];
+  pentestTargetBaseUrls: string[];
+  targets: { url: string; label: string; source: string; pentestAllowed: boolean }[];
+  userPoolAvailable: boolean;
+  /** False when no control plane is connected — the page is history only. */
+  executionAvailable: boolean;
+  executionMessage: string | null;
+};
+
+export type CredentialOption = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  environment: string;
+  logins: { id: string; label: string; username: string; role: string }[];
+};
+
+export type ConnectionView = {
+  database: { configured: boolean; summary: string | null; source: 'stored' | 'environment' | 'none' };
+  control: {
+    configured: boolean;
+    /** 'credential' points at Settings → Credentials; 'inline' holds its own copy. */
+    mode: 'credential' | 'inline' | null;
+    websiteId: string | null;
+    loginId: string | null;
+    credentialName: string | null;
+    baseUrl: string | null;
+    username: string | null;
+    source: 'stored' | 'environment' | 'none';
+  };
+  alerting: { enabled: boolean; intervalSeconds: number; notify: boolean };
+  sloTargetPct: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
+export type ControlStatus = {
+  configured: boolean;
+  reachable: boolean;
+  message: string;
+  baseUrl: string | null;
+  profileCount: number | null;
+};
+
+export type ConnectionResponse = {
+  connection: ConnectionView;
+  control: ControlStatus;
+  store: VitalsStatus;
+  alertEvaluatorRunning: boolean;
+};
+
+export type AgentCapabilities = {
+  configured: boolean;
+  storeConnected: boolean;
+  executionAvailable: boolean;
+  message: string;
+};
+
+export type AgentAnswer = {
+  message: string;
+  toolsUsed: string[];
+  usage: { totalTokens: number; costUsd: number };
 };
 
 export type Annotation = {
@@ -471,20 +545,12 @@ export const vitals = {
       `/slow-loads?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
 
-  profiles: () =>
-    request<{
-      profiles: Profile[];
-      activeRunId: string | null;
-      activeRunIds: string[];
-      maxConcurrentRuns: number;
-      defaultTargetBaseUrl: string;
-      allowedTargetBaseUrls: string[];
-      pentestTargetBaseUrls: string[];
-      targets: { url: string; label: string; source: 'default' | 'configured' | 'sandbox'; pentestAllowed: boolean }[];
-      userPoolAvailable: boolean;
-      /** False in this build: runs are started by the monitored product's own console. */
-      executionAvailable: boolean;
-    }>('/tests/profiles'),
+  profiles: () => request<ProfilesResponse>('/tests/profiles'),
+  /** Forwarded to the connected product's console, which owns profiles, bounds and targets. */
+  startRun: (body: { profileId: string; params: Record<string, string | number | boolean>; targetBaseUrl?: string }) =>
+    request<{ id: string }>('/tests/runs', { method: 'POST', body: JSON.stringify(body) }),
+  abortRun: (id: string) => request<{ ok: boolean }>(`/tests/runs/${encodeURIComponent(id)}/abort`, { method: 'POST' }),
+  controlStatus: () => request<ControlStatus>('/tests/control'),
   runs: (limit = 50) => request<{ runs: RunRow[] }>(`/tests/runs?limit=${limit}`),
   run: (id: string) =>
     request<{ run: RunRow; logs: { seq: number; at: string; stream: string; line: string }[] }>(
@@ -519,7 +585,31 @@ export const vitals = {
   updateAlertRule: (id: string, body: Record<string, unknown>) =>
     request<{ ok: boolean }>(`/alerts/rules/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteAlertRule: (id: string) => request<{ ok: boolean }>(`/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  evaluateAlerts: () => request<{ evaluated: number; firing: number }>('/alerts/evaluate', { method: 'POST' }),
+  evaluateAlerts: () => request<{ evaluated: number; firing: number; notified: number }>('/alerts/evaluate', { method: 'POST' }),
+  alertEvaluator: () => request<{ enabled: boolean; intervalSeconds: number; notify: boolean; running: boolean }>('/alerts/evaluator'),
   contactPoints: () => request<{ contactPoints: ContactPoint[] }>('/alerts/contact-points'),
   silences: () => request<{ silences: Silence[] }>('/alerts/silences'),
+
+  // ---- connection (admin only) ----
+  connection: () => request<ConnectionResponse>('/connection'),
+  credentialOptions: () => request<{ credentials: CredentialOption[] }>('/connection/credentials'),
+  saveConnection: (body: {
+    databaseUrl?: string | null;
+    control?:
+      | { kind: 'credential'; websiteId: string; loginId?: string; baseUrlOverride?: string }
+      | { kind: 'inline'; baseUrl: string; username: string; password?: string }
+      | null;
+    alerting?: { enabled?: boolean; intervalSeconds?: number; notify?: boolean };
+    sloTargetPct?: number;
+  }) => request<{ connection: ConnectionView; store: VitalsStatus; control: ControlStatus }>('/connection', { method: 'PUT', body: JSON.stringify(body) }),
+  clearConnection: () => request<{ connection: ConnectionView }>('/connection', { method: 'DELETE' }),
+  testConnection: (body: { databaseUrl?: string; control?: { baseUrl: string; username: string; password: string } }) =>
+    request<{ store: VitalsStatus | null; control: ControlStatus | null }>('/connection/test', { method: 'POST', body: JSON.stringify(body) }),
+  seedDashboards: () =>
+    request<{ seeded: { uid: string; seeded: boolean; panels: number; reason?: string }[] }>('/dashboards/seed', { method: 'POST' }),
+
+  // ---- agent ----
+  agentCapabilities: () => request<AgentCapabilities>('/agent/capabilities'),
+  askAgent: (body: { message: string; from: string; to: string; conversation: { role: 'user' | 'assistant'; content: string }[] }) =>
+    request<AgentAnswer>('/agent/respond', { method: 'POST', body: JSON.stringify(body) }),
 };

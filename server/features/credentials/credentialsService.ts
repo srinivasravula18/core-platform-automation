@@ -88,6 +88,11 @@ function decrypt(payload: string): string {
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
 }
 
+// Shared with other features that must store a secret at rest (see server/features/vitals/connection.ts)
+// so there is exactly one place where the encryption key and payload format are decided.
+export const encryptSecret = encrypt;
+export const decryptSecret = decrypt;
+
 export interface Website {
   id: string;
   name: string;

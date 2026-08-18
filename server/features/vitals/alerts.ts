@@ -1,15 +1,18 @@
 /**
- * Alert rules, their per-label-set instances, and on-demand evaluation.
+ * Alert rules, their per-label-set instances, evaluation, and delivery.
  *
- * Evaluation here only writes instance state — it never sends notifications. The monitored product's
- * own console owns notification delivery on its schedule; a second sender against the same tables
- * would double-notify. For the same reason there is no timer here: evaluation runs when asked.
+ * The store is shared with the monitored product's own console, which may be evaluating the same
+ * rules. Two unco-ordinated senders would double-notify, so scheduled evaluation is opt-in (Vitals →
+ * Connect) and, once on, holds a Postgres advisory lock for the duration — whoever holds it is the
+ * only evaluator, whether that is this process, another Test Flow instance, or nobody.
  */
 
 import crypto from 'crypto';
 import { z } from 'zod';
-import { vitalsQuery } from './db';
+import { readConnection } from './connection';
+import { openVitalsSession, vitalsQuery } from './db';
 import { runMetricQuery } from './metricsQuery';
+import { notify, type NotificationPayload } from './notifier';
 
 const generateId = (prefix: string) => {
   const chars = 'abcdefghijklmnopqrstuvwxyz123456789';
@@ -173,7 +176,9 @@ type AlertRuleRow = {
   window_seconds: number;
   for_seconds: number;
   no_data_state: AlertState;
+  severity: string;
   labels: Record<string, string>;
+  annotations: Record<string, string>;
   enabled: boolean;
 };
 
@@ -242,12 +247,30 @@ const upsertInstance = async (
   );
 };
 
-/** One tick: each rule yields one instance per label set, walking normal → pending → alerting. */
-export const evaluateRules = async () => {
+type SilenceRow = { matchers: { label: string; value: string }[] };
+
+const isSilenced = (silences: SilenceRow[], labels: Record<string, string>) =>
+  silences.some((silence) => (silence.matchers ?? []).every((matcher) => labels[matcher.label] === matcher.value));
+
+export type EvaluationResult = { evaluated: number; firing: number; notified: number; skipped?: 'not_owner' };
+
+/**
+ * One tick: each rule yields one instance per label set, walking normal → pending → alerting.
+ * Notifications fire only on a transition into alerting or a recovery out of it — never on a state
+ * that merely persists — and only when this evaluator is the configured sender.
+ */
+export const evaluateRules = async (options: { notify?: boolean } = {}): Promise<EvaluationResult> => {
   const rules = await vitalsQuery<AlertRuleRow>(`select * from obs.alert_rule where enabled order by title`);
-  if (rules.length === 0) return { evaluated: 0, firing: 0 };
+  if (rules.length === 0) return { evaluated: 0, firing: 0, notified: 0 };
+
+  const sendNotifications = options.notify ?? false;
+  const silences = sendNotifications
+    ? await vitalsQuery<SilenceRow>(`select matchers from obs.silence where now() between starts_at and ends_at`)
+    : [];
 
   let firing = 0;
+  let notified = 0;
+
   for (const rule of rules) {
     const now = Date.now();
     let result;
@@ -278,22 +301,143 @@ export const evaluateRules = async () => {
     for (const series of result.series) {
       const value = lastNumeric(series.points);
       const labels = { ...rule.labels, ...series.labels, alertname: rule.title };
+      const hash = labelsHash(labels);
+      // Read unconditionally: a recovery is a transition too, and it is only visible against the
+      // previous state.
+      const previous = await readInstance(rule.id, hash);
+
       if (value === null) {
         await upsertInstance(rule.id, labels, rule.no_data_state ?? 'nodata', null);
         continue;
       }
-      const breaching = compare(rule.condition_op, value, Number(rule.threshold));
+
       let state: AlertState = 'normal';
       let pendingSince: Date | null = null;
-      if (breaching) {
-        const previous = await readInstance(rule.id, labelsHash(labels));
+      if (compare(rule.condition_op, value, Number(rule.threshold))) {
         const since = previous?.pending_since ? new Date(previous.pending_since) : new Date();
         pendingSince = since;
         state = Date.now() - since.getTime() >= rule.for_seconds * 1000 ? 'alerting' : 'pending';
       }
+
       await upsertInstance(rule.id, labels, state, value, pendingSince);
       if (state === 'alerting') firing += 1;
+
+      if (!sendNotifications) continue;
+      const transitioned = previous?.state !== state && (state === 'alerting' || (previous?.state === 'alerting' && state === 'normal'));
+      if (!transitioned || isSilenced(silences, labels)) continue;
+
+      const payload: NotificationPayload = {
+        ruleId: rule.id,
+        title: rule.title,
+        state,
+        severity: rule.severity ?? 'warning',
+        value,
+        threshold: Number(rule.threshold),
+        labels,
+        annotations: rule.annotations ?? {},
+        at: new Date().toISOString(),
+      };
+      try {
+        await notify(payload, hash);
+        notified += 1;
+      } catch (error) {
+        console.error(`[vitals] notification for "${rule.title}" failed:`, (error as Error).message);
+      }
     }
   }
-  return { evaluated: rules.length, firing };
+  return { evaluated: rules.length, firing, notified };
 };
+
+// ---- scheduled evaluation ----
+
+/**
+ * Advisory-lock key. Any process evaluating this store must use the same number; the value is
+ * arbitrary but fixed, derived once from the string "vitals.alerting" so it cannot collide by
+ * accident with an unrelated lock in the product's own code.
+ */
+const ALERT_LOCK_KEY = 0x7617a15;
+
+type EvaluatorHandle = { stop: () => Promise<void> };
+
+let running: EvaluatorHandle | null = null;
+
+/**
+ * Start (or restart) the scheduled evaluator to match the saved connection. Off unless alerting is
+ * enabled, and even then a tick only runs while this process holds the store-wide lock, so enabling
+ * it on two instances is safe: one evaluates, the other waits to take over.
+ */
+export async function syncAlertEvaluator(): Promise<{ running: boolean; intervalSeconds: number }> {
+  const connection = await readConnection();
+  const shouldRun = Boolean(connection.databaseUrl) && connection.alerting.enabled;
+
+  await stopAlertEvaluator();
+  if (!shouldRun) return { running: false, intervalSeconds: connection.alerting.intervalSeconds };
+
+  const intervalMs = connection.alerting.intervalSeconds * 1_000;
+  let lockSession: Awaited<ReturnType<typeof openVitalsSession>> | null = null;
+  let ticking = false;
+
+  const releaseLock = async () => {
+    const session = lockSession;
+    lockSession = null;
+    await session?.end().catch(() => {});
+  };
+
+  const holdsLock = async (): Promise<boolean> => {
+    if (lockSession) return true;
+    try {
+      const session = await openVitalsSession();
+      const { rows } = await session.query<{ ok: boolean }>('select pg_try_advisory_lock($1) as ok', [ALERT_LOCK_KEY]);
+      if (!rows[0]?.ok) {
+        await session.end().catch(() => {});
+        return false;
+      }
+      lockSession = session;
+      // A dropped connection must not look like a held lock on the next tick.
+      session.on('error', () => void releaseLock());
+      return true;
+    } catch (error) {
+      console.error('[vitals] could not take the alert-evaluation lock:', (error as Error).message);
+      return false;
+    }
+  };
+
+  const tick = async () => {
+    if (ticking) return; // a slow store must not overlap two evaluations
+    ticking = true;
+    try {
+      if (!(await holdsLock())) return;
+      await evaluateRules({ notify: connection.alerting.notify });
+    } catch (error) {
+      console.error('[vitals] alert evaluation failed:', (error as Error).message);
+      await releaseLock();
+    } finally {
+      ticking = false;
+    }
+  };
+
+  const timer = setInterval(() => void tick(), intervalMs);
+  timer.unref?.();
+  void tick();
+
+  running = {
+    stop: async () => {
+      clearInterval(timer);
+      await releaseLock();
+    },
+  };
+  console.log(
+    `[vitals] alert evaluator started — every ${connection.alerting.intervalSeconds}s, notifications ${connection.alerting.notify ? 'on' : 'off'}`,
+  );
+  return { running: true, intervalSeconds: connection.alerting.intervalSeconds };
+}
+
+export async function stopAlertEvaluator(): Promise<void> {
+  const current = running;
+  running = null;
+  await current?.stop();
+}
+
+export function alertEvaluatorRunning(): boolean {
+  return running !== null;
+}

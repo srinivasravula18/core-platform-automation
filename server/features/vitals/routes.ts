@@ -1,12 +1,24 @@
 /**
- * Vitals routes — direct reads of the monitored product's observability store.
+ * Vitals routes.
  *
- * There is no endpoint to connect to and no operator session to hold: this queries the `obs` schema
- * itself, the same way that product's own console does. Configure VITALS_DATABASE_URL and it works.
+ * Reads query the monitored product's `obs` schema directly — the same way that product's own
+ * console does — so there is no endpoint in the way and no operator session to hold. The few routes
+ * that act rather than read (starting a run, editing the connection) are marked below; those go
+ * through the control plane or this app's own settings, and are admin-only.
  */
 
-import type { Express, Request, Response } from 'express';
-import { status, VitalsNotConfiguredError } from './db';
+import type { Express, NextFunction, Request, Response } from 'express';
+import { requireAdmin } from '../auth/routes';
+import { reqGrants, reqScope } from '../../shared/scope';
+import { canUseWebsite, listUsersForWebsite, listWebsites } from '../credentials/credentialsService';
+import { probeDatabase, status, VitalsNotConfiguredError } from './db';
+import { agentCapabilities, agentRequestSchema, askVitalsAgent } from './agent';
+import { seedBuiltinDashboards } from './builtinDashboards';
+import { clearConnection, readConnection, redactConnection, resolveControlRef, saveConnection } from './connection';
+import { controlStatus, probeControl, resetControlSession, VitalsControlError, VitalsControlNotConfiguredError } from './control';
+import { alertEvaluatorRunning, syncAlertEvaluator } from './alerts';
+import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { listLabelValues, listMetricNames, querySchema, runMetricQuery } from './metricsQuery';
 import { getAnnotations, getOverviewSnapshot } from './overview';
 import { getIssue, issueListSchema, issueStatusSchema, listIssues, setIssueStatus } from './issues';
@@ -28,7 +40,7 @@ import {
   updateRule,
 } from './alerts';
 import { dashboardSaveSchema, deleteDashboard, getDashboard, listDashboards, saveDashboard } from './dashboards';
-import { getRun, listKnownProfiles, listRuns } from './runs';
+import { abortRun, getRun, listKnownProfiles, listRuns, startRun } from './runs';
 import {
   createEngagement,
   createFinding,
@@ -55,6 +67,20 @@ function failed(res: Response, error: unknown): void {
     res.status(503).json({ error: 'vitals_not_configured', message: error.message });
     return;
   }
+  if (error instanceof VitalsControlNotConfiguredError) {
+    res.status(503).json({ error: 'vitals_control_not_configured', message: error.message });
+    return;
+  }
+  if (error instanceof VitalsControlError) {
+    // Pass the console's own verdict through — "target not allowed" is its answer to give, not ours.
+    res.status(error.status).json({ error: 'vitals_control_failed', message: error.message });
+    return;
+  }
+  const thrownStatus = Number((error as { status?: number })?.status);
+  if (thrownStatus >= 400 && thrownStatus < 600) {
+    res.status(thrownStatus).json({ error: 'vitals_request_failed', message: (error as Error).message });
+    return;
+  }
   console.error('[vitals] query failed:', (error as Error)?.message || error);
   res
     .status(502)
@@ -63,6 +89,11 @@ function failed(res: Response, error: unknown): void {
 
 /** Actions are attributed to the signed-in Test Flow AI user, so the audit trail stays meaningful. */
 const actorOf = (req: Request): string | null => (req as { user?: { username?: string } }).user?.username ?? null;
+
+const userIdOf = (req: Request): string | undefined => reqScope(req).userId || undefined;
+
+/** Usage, cost and guardrail logs are keyed per user here, matching the AI settings surface. */
+const workspaceIdOf = (req: Request): string => reqScope(req).userId || 'default';
 
 const handle =
   (work: (req: Request, res: Response) => Promise<unknown>) =>
@@ -83,8 +114,151 @@ const notFound = (res: Response, message: string) => {
   res.status(404).json({ error: 'not_found', message });
 };
 
+const connectionSchema = z.object({
+  databaseUrl: z.string().max(2_000).nullable().optional(),
+  control: z
+    .union([
+      // Preferred: point at a login already stored under Settings → Credentials.
+      z.object({
+        kind: z.literal('credential'),
+        websiteId: z.string().min(1).max(120),
+        loginId: z.string().max(120).optional(),
+        baseUrlOverride: z.string().url().max(500).optional(),
+      }),
+      z.object({
+        kind: z.literal('inline'),
+        baseUrl: z.string().url().max(500),
+        username: z.string().min(1).max(200),
+        password: z.string().max(500).optional(),
+      }),
+    ])
+    .nullable()
+    .optional(),
+  alerting: z
+    .object({
+      enabled: z.boolean().optional(),
+      intervalSeconds: z.number().int().min(15).max(3_600).optional(),
+      notify: z.boolean().optional(),
+    })
+    .optional(),
+  sloTargetPct: z.number().min(90).max(99.999).optional(),
+});
+
+const probeSchema = z.object({
+  databaseUrl: z.string().max(2_000).optional(),
+  control: z
+    .union([
+      z.object({
+        kind: z.literal('credential'),
+        websiteId: z.string().min(1).max(120),
+        loginId: z.string().max(120).optional(),
+        baseUrlOverride: z.string().url().max(500).optional(),
+      }),
+      z.object({
+        kind: z.literal('inline'),
+        baseUrl: z.string().url().max(500),
+        username: z.string().min(1).max(200),
+        password: z.string().max(500),
+      }),
+    ])
+    .optional(),
+});
+
+const startRunSchema = z.object({
+  profileId: z.string().min(1).max(120),
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
+  targetBaseUrl: z.string().url().max(500).optional(),
+});
+
 export function registerVitalsRoutes(app: Express): void {
   app.get('/api/vitals/status', handle(async () => status()));
+
+  // ---- connection (admin-only: this is where the store credentials live) ----
+
+  const adminOnly = (handler: (req: Request, res: Response) => Promise<unknown> | unknown) => [
+    requireAdmin as (req: Request, res: Response, next: NextFunction) => void,
+    handle(handler as (req: Request, res: Response) => Promise<unknown>),
+  ];
+
+  app.get('/api/vitals/connection', ...adminOnly(async () => ({
+    connection: redactConnection(await readConnection()),
+    control: await controlStatus(),
+    store: await status(),
+    alertEvaluatorRunning: alertEvaluatorRunning(),
+  })));
+
+  app.put(
+    '/api/vitals/connection',
+    ...adminOnly(async (req, res) => {
+      const parsed = connectionSchema.safeParse(req.body);
+      if (!parsed.success) return badRequest(res, 'Invalid connection', parsed.error.issues);
+      const saved = await saveConnection(parsed.data, actorOf(req));
+      // The pool and the control session both key on what just changed; the evaluator's schedule
+      // may have too. Applying it here is what makes a save take effect without a restart.
+      resetControlSession();
+      await syncAlertEvaluator();
+      return { connection: redactConnection(saved), store: await status(), control: await controlStatus() };
+    }),
+  );
+
+  app.delete(
+    '/api/vitals/connection',
+    ...adminOnly(async (req) => {
+      const cleared = await clearConnection(actorOf(req));
+      resetControlSession();
+      await syncAlertEvaluator();
+      return { connection: redactConnection(cleared) };
+    }),
+  );
+
+  /**
+   * The logins the operator may point the control plane at. Scoped by the same Access-Group rule the
+   * Credentials page uses, so this never reveals a site the caller could not already see there.
+   */
+  app.get(
+    '/api/vitals/connection/credentials',
+    ...adminOnly(async (req) => {
+      const scope = reqScope(req);
+      const grants = reqGrants(req);
+      const websites = listWebsites().filter((site) => !scope.userId || canUseWebsite(site, scope.userId || '', grants));
+      return {
+        credentials: websites.map((site) => ({
+          id: site.id,
+          name: site.name,
+          baseUrl: site.baseUrl,
+          environment: site.environment,
+          // Labels and roles only — a password never leaves the credential store.
+          logins: listUsersForWebsite(site.id).map((login) => ({
+            id: login.id,
+            label: login.label,
+            username: login.username,
+            role: login.customRole || login.role,
+          })),
+        })),
+      };
+    }),
+  );
+
+  /** Try a candidate before committing to it — nothing is saved and the live pool is untouched. */
+  app.post(
+    '/api/vitals/connection/test',
+    ...adminOnly(async (req, res) => {
+      const parsed = probeSchema.safeParse(req.body);
+      if (!parsed.success) return badRequest(res, 'Provide a database URL or a control plane to test', parsed.error.issues);
+      // A credential reference is resolved here, unsaved, so the operator learns the login is wrong
+      // before committing to it. A missing credential is a message, not a 500.
+      let candidate: Awaited<ReturnType<typeof probeControl>> | null = null;
+      if (parsed.data.control) {
+        try {
+          candidate = await probeControl(resolveControlRef(parsed.data.control));
+        } catch (error) {
+          candidate = { configured: false, reachable: false, message: (error as Error).message, baseUrl: null, profileCount: null };
+        }
+      }
+      const store = parsed.data.databaseUrl ? await probeDatabase(parsed.data.databaseUrl) : null;
+      return { store, control: candidate };
+    }),
+  );
 
   // ---- metrics ----
 
@@ -187,7 +361,22 @@ export function registerVitalsRoutes(app: Express): void {
 
   app.delete('/api/vitals/alerts/rules/:id', handle(async (req) => deleteRule(req.params.id)));
 
-  app.post('/api/vitals/alerts/evaluate', handle(async () => evaluateRules()));
+  /** A manual tick. Notifications only go out if this install is the configured sender. */
+  app.post(
+    '/api/vitals/alerts/evaluate',
+    handle(async () => {
+      const { alerting } = await readConnection();
+      return evaluateRules({ notify: alerting.enabled && alerting.notify });
+    }),
+  );
+
+  app.get(
+    '/api/vitals/alerts/evaluator',
+    handle(async () => {
+      const { alerting } = await readConnection();
+      return { ...alerting, running: alertEvaluatorRunning() };
+    }),
+  );
 
   app.get('/api/vitals/alerts/contact-points', handle(async () => listContactPoints()));
 
@@ -230,13 +419,35 @@ export function registerVitalsRoutes(app: Express): void {
 
   app.delete('/api/vitals/dashboards/:uid', handle(async (req) => deleteDashboard(req.params.uid)));
 
-  // ---- load & security run history ----
+  /** Re-seed the starter dashboards. Safe to repeat: an edited built-in is never overwritten. */
+  app.post('/api/vitals/dashboards/seed', ...adminOnly(async () => ({ seeded: await seedBuiltinDashboards() })));
+
+  // ---- load & security runs ----
 
   app.get('/api/vitals/tests/profiles', handle(async () => listKnownProfiles()));
 
   app.get('/api/vitals/tests/runs', handle(async (req) => listRuns(Number(req.query.limit ?? 50), req.query.profileId as string | undefined)));
 
   app.get('/api/vitals/tests/runs/:id', handle(async (req, res) => (await getRun(req.params.id)) ?? notFound(res, 'No such run')));
+
+  /**
+   * Starting and aborting are forwarded to the monitored product's console, which owns the profile
+   * scripts, the parameter bounds and the target allowlist. Vitals decides who may ask; the product
+   * decides what may run.
+   */
+  app.post(
+    '/api/vitals/tests/runs',
+    handle(async (req, res) => {
+      const parsed = startRunSchema.safeParse(req.body);
+      if (!parsed.success) return badRequest(res, 'Invalid run request', parsed.error.issues);
+      res.status(202);
+      return startRun(parsed.data);
+    }),
+  );
+
+  app.post('/api/vitals/tests/runs/:id/abort', handle(async (req) => abortRun(req.params.id)));
+
+  app.get('/api/vitals/tests/control', handle(async () => controlStatus()));
 
   // ---- pentest engagements ----
 
@@ -318,6 +529,24 @@ export function registerVitalsRoutes(app: Express): void {
       const statusValue = String(req.body?.status ?? '');
       if (!['open', 'monitoring', 'closed'].includes(statusValue)) return badRequest(res, 'Invalid status');
       return updateThreatIntelligence(req.params.id, statusValue);
+    }),
+  );
+
+  // ---- agent ----
+
+  app.get('/api/vitals/agent/capabilities', handle(async (req) => agentCapabilities(userIdOf(req))));
+
+  app.post(
+    '/api/vitals/agent/respond',
+    handle(async (req, res) => {
+      const parsed = agentRequestSchema.safeParse(req.body);
+      if (!parsed.success) return badRequest(res, 'Invalid agent request', parsed.error.issues);
+      return askVitalsAgent(parsed.data, {
+        userId: userIdOf(req),
+        workspaceId: workspaceIdOf(req),
+        // One id per request: it is what proves a run was previewed in an earlier turn.
+        turnId: randomUUID(),
+      });
     }),
   );
 }

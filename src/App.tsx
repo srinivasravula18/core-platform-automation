@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked, PlugZap } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -46,6 +46,7 @@ import VitalsTraces from '@/src/pages/vitals/Traces';
 import VitalsLoadLab from '@/src/pages/vitals/LoadLab';
 import VitalsPentest from '@/src/pages/vitals/Pentest';
 import VitalsDocs from '@/src/pages/vitals/Docs';
+import VitalsConnect from '@/src/pages/vitals/Connect';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -107,6 +108,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
         { name: 'Load Lab', href: '/vitals/load-lab', icon: Gauge },
         { name: 'Pentest', href: '/vitals/pentest', icon: Crosshair },
         { name: 'Docs', href: '/vitals/docs', icon: BookMarked },
+        { name: 'Connect', href: '/vitals/connect', icon: PlugZap },
       ],
     },
   ];
@@ -684,6 +686,7 @@ export default function App() {
           <Route path="/vitals/load-lab" element={<VitalsLoadLab />} />
           <Route path="/vitals/pentest" element={<VitalsPentest />} />
           <Route path="/vitals/docs" element={<VitalsDocs />} />
+          <Route path="/vitals/connect" element={<VitalsConnect />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/documentation" element={<Documentation />} />
