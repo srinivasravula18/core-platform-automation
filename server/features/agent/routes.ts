@@ -1274,6 +1274,8 @@ async function persistAgentCaseArtifacts(run: any) {
       type: testCase.type || 'Automated',
       priority: testCase.priority || 'Medium',
       folderId: run.folderId || null,
+      // Carry the run's resolved target onto the case, or "Generate script" later has no URL to drive.
+      targetUrl: String(run.mission_context?.targetUrl || run.app_url || '').trim(),
       createdBy: 'QA Assistant',
       proposedBy: 'QA Assistant',
       approvalState: 'pending_review',
