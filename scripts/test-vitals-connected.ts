@@ -93,10 +93,17 @@ const main = async () => {
   await new Promise<void>((resolve) => sink.listen(0, '127.0.0.1', resolve));
   const sinkUrl = `http://127.0.0.1:${(sink.address() as { port: number }).port}/hook`;
 
-  // The metric has to be one the store actually records, or the rule reports nodata instead.
-  const [busiest] = await vitalsQuery<{ metric: string }>(
-    `select metric from obs.metric_sample_1m group by metric order by count(*) desc limit 1`,
+  // Seed our own sample instead of borrowing whatever the store happens to hold: a live-traffic metric may
+  // have nothing inside the rule window on an idle box, and then this proves nothing.
+  // Deliberately seeded ONLY into the 1m rollup while the 3600s window makes pickResolution prefer 10s —
+  // that is the defect this pins: the evaluator must read the rollup that HAS the metric, not the finest one.
+  const seededMetric = `vitals.selftest.${suffix}`;
+  await vitalsQuery(
+    `insert into obs.metric_sample_1m (bucket_at, metric, labels_hash, labels, sample_count, sum_value, last_value)
+     values (date_trunc('minute', now()), $1, 'selftest', '{}'::jsonb, 1, 1, 1)`,
+    [seededMetric],
   );
+  const busiest = { metric: seededMetric };
 
   try {
     if (!busiest?.metric) {
@@ -158,6 +165,7 @@ const main = async () => {
     await vitalsQuery(`delete from obs.notification_policy where id = $1`, [`test-pol-${suffix}`]).catch(() => {});
     await vitalsQuery(`delete from obs.contact_point where id = $1`, [contactPointId]).catch(() => {});
     await vitalsQuery(`delete from obs.silence where id = $1`, [`test-sil-${suffix}`]).catch(() => {});
+    await vitalsQuery(`delete from obs.metric_sample_1m where metric = $1`, [seededMetric]).catch(() => {});
     await new Promise<void>((resolve) => sink.close(() => resolve()));
   }
 

@@ -97,7 +97,9 @@ function parseStructured(text: string): unknown {
 }
 
 function toUsage(result: AgentRunResult): AgentUsage {
-  const u = (result as AgentRunResult & { usage?: Partial<AgentUsage> }).usage ?? {};
+  // AgentRunResult exposes totalUsage; reading `.usage` through an `as` cast silently booked every
+  // coordinator-dispatched agent as zero tokens.
+  const u: Partial<AgentUsage> = result?.totalUsage ?? {};
   return {
     inputTokens: u.inputTokens ?? 0,
     cachedInputTokens: u.cachedInputTokens ?? 0,

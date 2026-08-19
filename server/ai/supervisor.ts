@@ -129,6 +129,7 @@ Operating rules:
 - Decompose the request and call the tools needed, in order. A later step may depend on an id produced by an earlier one — read the tool results and pass real ids forward.
 - Questions about persisted workspace artifacts or results MUST call query_workspace before answering. The repository describes application behavior; it cannot prove which artifacts or values actually exist in the database.
 - When the user refers to existing work ("those cases", "the last run", "the login suite"), FIRST call query_workspace to resolve concrete ids, then act on them. Never invent ids.
+- The CURRENT user request is the goal. Conversation-context and ledger entries are records of ALREADY-COMPLETED work, not the present task — act on them only when the current request explicitly refers to them.
 - A request to test, verify, validate, or exercise an application feature is actionable. You MUST call prepare_test_scope; never replace that action with a paragraph about unavailable source code or browser access. The downstream discovery workflow determines what evidence is available and presents the behaviors and scenarios to test.
 - Use create_cases only when the user asks to write or generate persisted case artifacts without running the reviewed application-test workflow.
 - TARGET MUST BE ALIVE. To find out whether a target is serving, call check_url — one HTTP request. NEVER open or inspect a browser page just to check whether a server is up. If a tool result says the target is not responding, returned 404/502/503/504, refused the connection, or could not be resolved, STOP. Say plainly that the server is not responding (name the address and what it returned) and ask the user to start it or pick another target. NEVER continue to prepare_test_scope, create_cases, or any authoring step against a target that is not answering — cases written against an error page describe the error page, not the product.
@@ -339,10 +340,10 @@ function providerSupportsDecomposition(_opts?: { workspaceId?: string; userId?: 
  */
 async function answerByDecomposition(
   question: string,
-  opts: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; signal?: AbortSignal; onProgress?: (label: string) => void },
+  opts: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; signal?: AbortSignal; onProgress?: (label: string) => void; model?: string; effort?: string },
   appsBlock: string,
 ): Promise<string> {
-  const coord = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+  const coord = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
   opts.onProgress?.('Planning the sub-areas to explore in parallel…');
 
   // 1. DECOMPOSE — the model proposes the distinct sub-areas (no hardcoded list).
@@ -367,7 +368,7 @@ async function answerByDecomposition(
     const batch = areas.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(async (area) => {
       try {
-        const worker = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+        const worker = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
         const loop = await worker.runToolLoop({
           task: `Investigate ONLY this sub-area of the application, grounded ONLY in its REAL source code: "${area.name}" — ${area.focus}.\nThe overall question is: ${question}\nReport this sub-area at EDGE level: its sub-features, input validations, boundary/limit values & caps (EXACT numbers), empty/loading/error states, permission/role gates, special tokens/flags, and failure branches. Be exhaustive for THIS sub-area only.`,
           system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
@@ -409,6 +410,9 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   conversationId?: string;
   seedMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   memoryBlock?: string;
+  /** Runtime pick from the caller (Agent Console topbar); without it every turn fell back to Settings. */
+  model?: string;
+  effort?: string;
 } = {}): Promise<string> {
   const scope = resolveCodeSearchScope({ projectId: opts.projectId, appId: opts.appId });
   const scopeArg = { projectId: opts.projectId, appId: opts.appId };
@@ -439,7 +443,7 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   // edge-level answers instead of mid-level summaries. Falls through to parallel research / single
   // pass if the provider can't do tool-calling or the loop returns nothing.
   if (!broadCoverage) try {
-    const toolOrch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+    const toolOrch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
     const exploreCtx: ToolContext = {
       workspaceId: opts.workspaceId || 'default',
       userId: opts.userId,
@@ -511,7 +515,7 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     });
     if (notes) {
       opts.onProgress?.('Synthesizing the answer…');
-      const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+      const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
       const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real codebase files; Markdown/documentation files are excluded).
 Speak to the user as a product/QA expert. Do not invent behaviour beyond the findings. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
 This source-code step has no live browser evidence. Never claim a current page/login state or ask the user to sign in to a visible browser; downstream verification is headless and uses stored Settings credentials.
@@ -577,7 +581,7 @@ ${notes}\n`;
   const excerpts = excerptParts.filter(Boolean).join('\n\n---\n\n');
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
-  const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+  const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
   const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real codebase files provided below (your source of truth). Markdown/documentation files are excluded. Be specific and concrete. If the provided codebase files do not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
 Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
 This source-code step has no live browser evidence. Never claim a current page/login state or ask the user to sign in to a visible browser; downstream verification is headless and uses stored Settings credentials.
@@ -647,7 +651,8 @@ export async function runSupervisor(input: {
   const appsBlock = (input.apps || []).length
     ? `\n\nAPPS UNDER TEST (selected by the user — use these as the targets; do NOT ask which app): ${(input.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
-  const task = `${appsBlock}${historyBlock}${pageBlock}\n\nCurrent user request: ${input.userMessage}`.trim();
+  // The current request LEADS. Trailing it behind the ledger made completed work read as the live goal.
+  const task = `Current user request (AUTHORITATIVE — act on THIS): ${input.userMessage}${appsBlock}${historyBlock}${pageBlock}`.trim();
 
   const orch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: ctx.workspaceId, userId: ctx.userId, model, effort: input.effort });
   const result = await orch.runToolLoop({

@@ -82,39 +82,24 @@ const answer = (text: string) => ({ role: 'assistant', kind: 'text', text });
   check('empty snapshot falls back to the log', reconcileConversationTurns([], logged).length === 2);
 }
 
-// ── 7. "Not connected" must name the real blocker when a provider is switched ON ────────
+// ── 7. "Not connected" must name the real blocker ─────────────────────────────────────
+// Single runtime (Codex). The old multi-provider / ALLOW_LOCAL_CLI_PROVIDERS matrix this section used
+// no longer exists; PROVIDERS is [codex] and account mode needs no key.
 {
   const original = db.settings.providerSettings;
-  const cliWasAllowed = process.env.ALLOW_LOCAL_CLI_PROVIDERS;
 
-  process.env.ALLOW_LOCAL_CLI_PROVIDERS = 'false';
-  db.settings.providerSettings = {
-    gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-    openai: { apiKey: '', model: '', authMode: 'account', enabled: true },
-    anthropic: { apiKey: '', model: '', authMode: 'account', enabled: false },
-  };
-  const cliReason = providerBlockerReason();
-  check('enabled CLI-mode provider is not reported as disconnected', /subscription\/CLI/.test(cliReason), cliReason);
-  check('the blocked provider is named', /openai/.test(cliReason), cliReason);
+  db.settings.providerSettings = { codex: { apiKey: '', model: '', authMode: 'account', enabled: false } };
+  const offReason = providerBlockerReason();
+  check('a switched-off runtime says so', /switched off/i.test(offReason), offReason);
+  check('the off message points at where to turn it on', /Settings/.test(offReason), offReason);
 
-  db.settings.providerSettings = {
-    gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true },
-    openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-    anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-  };
-  const keyReason = providerBlockerReason();
-  check('enabled key-mode provider without a key says so', /no API key/.test(keyReason), keyReason);
+  db.settings.providerSettings = { codex: { apiKey: '', model: '', authMode: 'account', enabled: true } };
+  check('an enabled account-mode runtime reports no blocker', providerBlockerReason() === '');
 
-  db.settings.providerSettings = {
-    gemini: { apiKey: 'k', model: '', authMode: 'api_key', enabled: true },
-    openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-    anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-  };
-  check('a usable provider reports no blocker', providerBlockerReason() === '');
+  db.settings.providerSettings = { codex: { apiKey: 'k', model: '', authMode: 'api_key', enabled: true } };
+  check('an enabled key-mode runtime reports no blocker', providerBlockerReason() === '');
 
   db.settings.providerSettings = original;
-  if (cliWasAllowed === undefined) delete process.env.ALLOW_LOCAL_CLI_PROVIDERS;
-  else process.env.ALLOW_LOCAL_CLI_PROVIDERS = cliWasAllowed;
 }
 
 if (failures) {

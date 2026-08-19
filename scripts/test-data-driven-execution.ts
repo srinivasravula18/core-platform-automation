@@ -65,7 +65,8 @@ test('row', async ({ page }) => {
   }
   await syncLinkedRun(stored.id, 'done', { passed: 1, failed: 0, durationMs: 1500 });
   const completedRun = db.runs.find((run: any) => run.id === linkedRun.id);
-  if (!String(completedRun?.status || '').startsWith('Completed') || completedRun?.passed !== 1) throw new Error('linked Test Run result was not synchronized');
+  // A finished automation run lands in review, not a terminal "Completed" — see jobService.syncLinkedRun.
+  if (!/^Passed — Pending Review/.test(String(completedRun?.status || '')) || completedRun?.passed !== 1) throw new Error('linked Test Run result was not synchronized');
 
   console.log('PASS: deterministic row materialization, durable batch aggregation, and linked Test Run results.');
 }

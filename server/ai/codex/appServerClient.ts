@@ -25,9 +25,31 @@ export interface CodexAuthStatus {
   requiresOpenaiAuth: boolean | null;
 }
 
+/** A bucket reports its windows as primary/secondary; classify them by duration, not by position. */
+const splitWindows = (bucket: any) => {
+  const windows = [bucket?.primary, bucket?.secondary].filter(Boolean) as CodexRateLimitWindow[];
+  return {
+    session: windows.find((w) => (w.windowDurationMins || 0) < 7 * 24 * 60) || null,
+    weekly: windows.find((w) => (w.windowDurationMins || 0) >= 7 * 24 * 60) || null,
+  };
+};
+
+/** Limit ids/names are account data, never ours to assume — compare them shape-insensitively. */
+const normalizeLimitKey = (value?: string | null) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
 export interface CodexAccountInfo extends CodexAuthStatus {
   email: string | null;
   planType: string | null;
+  /** Which metered bucket these windows describe (null = the account-wide one). */
+  limitName: string | null;
+  /** Every bucket the account reports, so a caller can show the others like `codex /status` does. */
+  limits: CodexLimitBucket[];
+  sessionLimit: CodexRateLimitWindow | null;
+  weeklyLimit: CodexRateLimitWindow | null;
+}
+
+export interface CodexLimitBucket {
+  name: string | null;
   sessionLimit: CodexRateLimitWindow | null;
   weeklyLimit: CodexRateLimitWindow | null;
 }
@@ -279,21 +301,35 @@ export class CodexAppServerClient {
     return { authMethod: res?.account?.type ?? null, requiresOpenaiAuth: res?.requiresOpenaiAuth ?? null };
   }
 
-  async accountInfo(): Promise<CodexAccountInfo> {
+  async accountInfo(model?: string): Promise<CodexAccountInfo> {
     const account = await this.call<any>('account/read', { refreshToken: false });
     const authMethod = account?.account?.type ?? null;
     const limits = authMethod === 'chatgpt'
       ? await this.call<any>('account/rateLimits/read').catch(() => null)
       : null;
-    const snapshot = limits?.rateLimitsByLimitId?.codex || limits?.rateLimits || null;
-    const windows = [snapshot?.primary, snapshot?.secondary].filter(Boolean) as CodexRateLimitWindow[];
+    // An account carries one bucket per metered model plus a general one, keyed by ids we must not assume.
+    // Match the bucket by the limitName the account itself reports against the model actually in use;
+    // fall back to the unnamed (general) bucket. Reading a fixed key showed the wrong allowance entirely.
+    // Top-level rateLimits mirrors the account-wide bucket, so it is a fallback for servers that
+    // predate rateLimitsByLimitId — including it alongside would list that bucket twice.
+    const byId = Object.values(limits?.rateLimitsByLimitId || {}).filter(Boolean) as any[];
+    const buckets = byId.length ? byId : [limits?.rateLimits].filter(Boolean);
+    const wanted = normalizeLimitKey(model);
+    const snapshot = (wanted && buckets.find((b) => b?.limitName && normalizeLimitKey(b.limitName) === wanted))
+      || buckets.find((b) => !b?.limitName)
+      || limits?.rateLimits
+      || null;
+    const session = (b: any) => splitWindows(b).session;
+    const weekly = (b: any) => splitWindows(b).weekly;
     return {
       authMethod,
       requiresOpenaiAuth: account?.requiresOpenaiAuth ?? null,
       email: authMethod === 'chatgpt' ? account?.account?.email ?? null : null,
       planType: authMethod === 'chatgpt' ? account?.account?.planType ?? snapshot?.planType ?? null : null,
-      sessionLimit: windows.find((window) => (window.windowDurationMins || 0) < 7 * 24 * 60) || null,
-      weeklyLimit: windows.find((window) => (window.windowDurationMins || 0) >= 7 * 24 * 60) || null,
+      limitName: snapshot?.limitName ?? null,
+      limits: buckets.map((b) => ({ name: b?.limitName ?? null, sessionLimit: session(b), weeklyLimit: weekly(b) })),
+      sessionLimit: session(snapshot),
+      weeklyLimit: weekly(snapshot),
     };
   }
 

@@ -10,7 +10,7 @@
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderAuthMode, ProviderName, ProviderResponse, ProviderImage } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName, ProviderResponse, ProviderImage, ProviderUsage } from './providers/types';
 import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
 import { CodexProvider } from './providers/codex';
@@ -328,6 +328,8 @@ export class AgentOrchestrator {
       // progressively instead of dumping a wall of text. (True low-latency token
       // streaming still requires an API-key/SDK provider.)
       const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, signal: opts.signal });
+      // This branch returns early, so it needs its own accounting — streamed turns were billing as zero.
+      await this.bookUsage(result.usage, result.model, pipeline.requestId);
       const full = result.text || '';
       const tokens = full.match(/\S+\s*/g) || (full ? [full] : []);
       let buf = '';
@@ -339,9 +341,32 @@ export class AgentOrchestrator {
       if (buf) yield buf;
       return;
     }
-    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, signal: opts.signal })) {
-      if (delta) yield delta;
+    let streamed: { usage?: ProviderUsage; model?: string } | null = null;
+    try {
+      for await (const delta of this.provider.generateTextStream({     system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, signal: opts.signal , onUsage: (usage, model) => { streamed = { usage, model }; } })) {
+        if (delta) yield delta;
+      }
+    } finally {
+      // In a finally so an aborted or failed stream still books what the provider already spent.
+      if (streamed) await this.bookUsage(streamed.usage, streamed.model, pipeline.requestId);
     }
+  }
+
+  /** One place to write a usage_log row for an egress that does not pass through generateText/Object. */
+  private async bookUsage(usage: ProviderUsage | undefined, model: string | undefined, requestId: string) {
+    await recordUsage({
+      workspaceId: this.workspaceId,
+      userId: this.userId,
+      agent: this.agent,
+      provider: this.provider.name,
+      model: model || (this.provider as any).defaultModel || '',
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      cacheReadTokens: usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
+      costUsd: usage?.costUsd ?? 0,
+      requestId,
+    }).catch(() => { /* accounting must never break a turn */ });
   }
 
   /**

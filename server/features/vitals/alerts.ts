@@ -11,7 +11,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { readConnection } from './connection';
 import { openVitalsSession, vitalsQuery } from './db';
-import { runMetricQuery } from './metricsQuery';
+import { runMetricQuery, resolutionWithData } from './metricsQuery';
 import { notify, type NotificationPayload } from './notifier';
 
 const generateId = (prefix: string) => {
@@ -273,11 +273,15 @@ export const evaluateRules = async (options: { notify?: boolean } = {}): Promise
 
   for (const rule of rules) {
     const now = Date.now();
+    const fromMs = now - rule.window_seconds * 1000;
     let result;
     try {
+      // Read the rollup that HAS this metric, not the one the point budget prefers.
+      const resolution = await resolutionWithData(rule.metric, fromMs, now);
       result = await runMetricQuery({
-        from: String(now - rule.window_seconds * 1000),
+        from: String(fromMs),
         to: String(now),
+        ...(resolution ? { resolution } : {}),
         targets: [
           {
             refId: 'A',

@@ -62,7 +62,7 @@ import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
 import { MessageMeta, type ExecutionMeta } from '@/src/components/MessageMeta';
 import { getUsername } from '@/src/components/AuthGate';
-import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
+import { readScopedStorage, writeScopedStorage, RUNTIME_MODEL_KEY, RUNTIME_MODEL_EVENT } from '@/src/lib/storage';
 import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/lib/userFacingAgentActivity';
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
@@ -229,15 +229,20 @@ function requestedFeatureScope(text: string): string {
 function isProceedResponse(text: string): boolean {
   const t = text.trim();
   if (!t || t.includes('?')) return false;
-  return /^(proceed|go ahead|go|yes|yep|yeah|ok|okay|sure|do it|start|run|looks good|lgtm|confirm|approved?)\b/i.test(t);
+  // Whole-message anchor: "run" confirms the pending card, "run the export tests" is a NEW request.
+  // A first-word match hijacked any follow-up that merely opened with an affirmative verb.
+  return /^(proceed|go ahead|go|yes|yep|yeah|ok|okay|sure|do it|start|run|looks good|lgtm|confirm|approved?)[\s.!]*$/i.test(t);
 }
 
+// Whole-message anchors, as in isProceedResponse: "create" approves the pending draft, "create test cases
+// for the export screen" is a NEW request. The approve branch never reads the message, so a first-word
+// match silently discarded the user's actual task.
 function isRequirementDraftApprove(text: string): boolean {
-  return /^(?:yes|ok|okay|approve|approved|save|create|confirm|looks good|proceed|go ahead)\b/i.test(text.trim());
+  return /^(?:yes|ok|okay|approve|approved|save|create|confirm|looks good|proceed|go ahead)[\s.!]*$/i.test(text.trim());
 }
 
 function isRequirementDraftCancel(text: string): boolean {
-  return /^(?:cancel|discard|stop|never mind|nevermind)\b/i.test(text.trim());
+  return /^(?:cancel|discard|stop|never mind|nevermind)[\s.!]*$/i.test(text.trim());
 }
 
 function authoredScriptFromTurn(turn: { text?: string; authoredScript?: string }): string {
@@ -378,7 +383,7 @@ function nextId(): string {
 
 const CONV_KEY_BASE = 'tfa_active_conversation';
 // The runtime's model/effort are workspace-wide settings; these remember the user's own pick for them.
-const MODEL_PREF_KEY = 'tfa_runtime_model';
+const MODEL_PREF_KEY = RUNTIME_MODEL_KEY;
 const EFFORT_PREF_KEY = 'tfa_runtime_effort';
 const DEFAULT_EFFORT_LEVELS = ['low', 'medium', 'high'];
 function runtimeModelIds(runtime: any): string[] {
@@ -697,6 +702,8 @@ export default function AgentConsole() {
   const handleModelChange = useCallback((model: string) => {
     setSelectedModel(model);
     writeScopedStorage(MODEL_PREF_KEY, model || null);
+    // Usage is metered per model, so the topbar pill must re-read the allowance for the new pick.
+    window.dispatchEvent(new CustomEvent(RUNTIME_MODEL_EVENT, { detail: model }));
     const runtime = providers.find((provider: any) => provider.callable);
     const efforts = runtimeEfforts(runtime, model);
     if (!efforts.includes(selectedEffort)) {
@@ -1165,6 +1172,9 @@ export default function AgentConsole() {
     setBusy(false);
     loadReqRef.current++; // invalidate any in-flight conversation load
     convTitleRef.current = '';
+    convTargetRef.current = null; // the sticky target belongs to the conversation we are leaving
+    setPendingDeep(null);
+    setPendingRequirementDraft(null);
     setConversationId(makeConversationId());
     setTurns([]);
     loadedRef.current = true;
@@ -1183,6 +1193,9 @@ export default function AgentConsole() {
       activeAbortRef.current = null;
       activeThinkingIdRef.current = null;
       setBusy(false);
+      convTargetRef.current = null; // never carry one conversation's target into another
+      setPendingDeep(null);
+      setPendingRequirementDraft(null);
       setConversationId(id);
       loadConversation(id);
       setHistoryOpen(false);
@@ -1437,43 +1450,14 @@ export default function AgentConsole() {
     inputRef.current?.focus();
   }, [replaceTurn, stopListening]);
 
-  const richestAssistantContext = useCallback((): string => {
-    const recent = turnsRef.current
-      .filter((t) => t.role === 'assistant')
-      .map((t) => {
-        switch (t.kind) {
-          case 'text': return t.text || '';
-          case 'folderask': return t.understanding || t.text || '';
-          case 'clarify': return t.summary || '';
-          case 'plan': return t.plan?.summary || '';
-          case 'cases': return Array.isArray(t.cases)
-            ? `Generated test cases:\n${t.cases.map((c: any, i: number) => `${i + 1}. ${c?.title || c?.name || `case ${i + 1}`}`).join('\n')}`
-            : '';
-          case 'codereview': return typeof t.analysis === 'string' ? t.analysis : (t.analysis?.summary || '');
-          case 'reqdiscovery': return typeof t.result === 'string' ? t.result : (t.result?.summary || '');
-          case 'reqdraft': return t.result?.requirement?.description || t.result?.requirement?.title || '';
-          default: return '';
-        }
-      })
-      .filter((content) => content && !isNoiseAnswer(content))
-      .slice(-6);
-    if (!recent.length) return '';
-    return recent.reduce((best, content) => (content.length > best.length ? content : best), '').trim();
-  }, []);
-
+  // The run prompt is the user's CURRENT sentence, nothing else. Labels/boilerplate here used to dominate
+  // the server's subjectChanged() term set, so the attention gate never saw a feature change and every
+  // follow-up inherited the previous task. Prior turns still reach the server as structured history.
   const buildDeepContextPrompt = useCallback((rawRequest: string, resolvedScope: string): string => {
     const request = (rawRequest || '').trim();
     const scope = (resolvedScope || '').trim();
-    const prior = richestAssistantContext();
-    const parts = [
-      request ? `User follow-up/request (AUTHORITATIVE — this is what to act on now): ${request}` : '',
-      scope && scope !== request ? `Resolved scope from router: ${scope}` : '',
-      // Prior answer is BACKGROUND context, never authoritative — the current request + its target override it
-      // (attention layer: memory informs, it does not re-pin the target/app/surface).
-      prior ? `Prior agent answer (background only — do not let it change the current target/app/surface):\n${prior}` : '',
-    ].filter(Boolean);
-    return (parts.join('\n\n') || scope || request).trim();
-  }, [richestAssistantContext]);
+    return [request, scope && scope !== request ? scope : ''].filter(Boolean).join('\n\n').trim() || request;
+  }, []);
 
   // The prior turns of THIS chat, as a compact role/content transcript, so every
   // request carries conversation memory (ChatGPT/Claude-style continuity).
@@ -1646,6 +1630,9 @@ export default function AgentConsole() {
         conversationId,
         projectId: selectedProjectId || undefined,
         appId: selectedAppId || undefined,
+        // The topbar pick must drive this turn too, not just the chat one.
+        model: selectedModel || undefined,
+        effort: selectedEffort || undefined,
       }),
     });
     const started = await res.json().catch(() => ({}));
@@ -2283,6 +2270,11 @@ export default function AgentConsole() {
       // is ON. With the mode OFF, only an explicit approve/discard acts on the draft; any other message
       // (e.g. "generate test cases") falls through to normal routing instead of being turned into another
       // requirement. (Reworking a draft with the mode off is still available via the card's own buttons.)
+      // A new request that is neither approve nor cancel retires the pending draft, mirroring pendingDeep.
+      // Without this it kept intercepting later messages for the rest of the conversation.
+      if (pendingRequirementDraft && !reqMode && !isRequirementDraftApprove(text) && !isRequirementDraftCancel(text)) {
+        setPendingRequirementDraft(null);
+      }
       if (pendingRequirementDraft && (reqMode || isRequirementDraftApprove(text) || isRequirementDraftCancel(text))) {
         try {
           if (isRequirementDraftCancel(text)) {
@@ -2395,7 +2387,9 @@ export default function AgentConsole() {
           return;
         }
         // Affirmative reply → start the deep run with the reviewed understanding.
-        const approvedUnderstanding = activePending.understanding || lastAssistantAnswer(buildHistory());
+        // ONLY the understanding the user actually reviewed. Falling back to the longest previous answer
+        // shipped the last task's output as this run's approved grounding.
+        const approvedUnderstanding = activePending.understanding || '';
         setPendingDeep(null);
         try {
           updateThinkingLabel(thinkingId, 'Starting reviewed test run...');

@@ -908,11 +908,17 @@ function artifactSubject(run: any): string {
   const module = String(run.mission_context?.module?.name || run.mission_context?.tab?.name || '').trim();
   const subject = [app, module].filter(Boolean).join(' · ');
   if (subject) return subject;
+  // What the user ASKED FOR beats where it was hosted. The host branch used to win here, so an ad-hoc
+  // target named every artifact after its host ("127.0.0.1" -> "127") and every later run collided on it.
+  const intent = suggestIntentFolderName(String(run.prompt || ''), app);
+  if (intent) return intent;
+  const asked = String(run.prompt || '').replace(/\s+/g, ' ').trim();
+  if (asked) return asked.slice(0, 60);
   try {
     const host = new URL(run.app_url || '').hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ').trim();
     if (host) return host.replace(/\b\w/g, (c) => c.toUpperCase());
   } catch { /* no usable URL */ }
-  return String(run.prompt || 'Test').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Test';
+  return 'Test';
 }
 
 // Human display name for reports/scripts/requirement titles — the clean subject, no "Agent"/scope noise.
@@ -929,15 +935,17 @@ function formatRunStamp(run: any): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
 }
+// Plan/suite/report/defect rows are created with per-RUN ids, so their titles must be per-run as well —
+// a constant title makes the second run collide with the active-title unique index and lose everything.
 function agentSuiteName(run: any): string {
-  return artifactSubject(run);
+  return `${artifactSubject(run)} · ${formatRunStamp(run)}`;
 }
 function agentRunName(run: any): string {
   const env = String(run?.environment || run?.target_environment || '').trim();
   return `${artifactSubject(run)} · ${formatRunStamp(run)}${env ? ` · ${env}` : ''}`;
 }
 function agentPlanName(run: any): string {
-  return artifactSubject(run);
+  return `${artifactSubject(run)} · ${formatRunStamp(run)}`;
 }
 
 // Have the AGENT author a clear, human-readable suite title from the actual generated cases + the
@@ -1071,7 +1079,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   // visible in their own repositories but do not create an empty report.
   if (Array.isArray(run.execution_result?.tests) && run.execution_result.tests.length > 0) await Reports.upsert({
     id: agentReportId(run),
-    name: `${baseName} — Report`,
+    name: `${baseName} · ${formatRunStamp(run)} — Report`,
     runId: runRecordId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
@@ -1098,7 +1106,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   if (String(run.status || '').toLowerCase() === 'failed') {
     await Defects.upsert({
       id: `DEF-${run.id.substring(0, 8).toUpperCase()}`,
-      title: `${baseName} — Run failed`,
+      title: `${baseName} · ${formatRunStamp(run)} — Run failed`,
       description: (run.messages || []).slice(-3).map((m: any) => typeof m.output === 'string' ? m.output : JSON.stringify(m.output || '')).filter(Boolean).join('\n\n'),
       severity: 'High',
       status: 'Open',
@@ -1156,11 +1164,15 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   }
 }
 
+// Fault-isolated per artifact: one rejected title (e.g. the active-title unique index) used to abort the
+// whole terminal persist, so a run lost its cases, report AND state instead of just the colliding row.
 async function persistAgentQualityArtifacts(run: any) {
-  await persistAgentCaseArtifacts(run);
-  await persistAgentRequirementArtifact(run).catch((err) => console.warn(`[agent] run ${run.id}: requirement persist failed: ${err?.message || err}`));
-  await persistAgentRunAndReportArtifacts(run);
-  await saveAgentRunState(run, 'agent quality artifacts');
+  const step = async (label: string, fn: () => Promise<unknown>) =>
+    fn().catch((err) => console.warn(`[agent] run ${run.id}: ${label} persist failed: ${err?.message || err}`));
+  await step('cases', () => persistAgentCaseArtifacts(run));
+  await step('requirement', () => persistAgentRequirementArtifact(run));
+  await step('run/report', () => persistAgentRunAndReportArtifacts(run));
+  await step('run state', () => saveAgentRunState(run, 'agent quality artifacts'));
 }
 
 /** UI-selector index for a requirement — harvested from the run's VERIFIED selectors in the compiled
@@ -2388,7 +2400,7 @@ async function persistAgentRunArtifacts(run: any) {
 
   if (Array.isArray(run.execution_result?.tests) && run.execution_result.tests.length > 0) await Reports.upsert({
     id: existingReportId,
-    name: `${baseName} — Report`,
+    name: `${baseName} · ${formatRunStamp(run)} — Report`,
     runId: existingRunId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
@@ -2492,7 +2504,7 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
     `  * ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
   ).join('\n');
 
-  const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+  const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
   const result = await caseWriter.generateObject<any>({
     prompt: `Write focused test cases for this specific feature: "${feature.name}".
 ${feature.description ? `Feature description: ${feature.description}` : ''}
@@ -2688,7 +2700,7 @@ async function generateCasesForRun(
     }));
     generated = [...opts.existingCases, ...gapCases];
   } else {
-    const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+    const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
     const objectCoverageBlock = buildObjectCoverageBlock(run, prompt || '', approvedUnderstanding || '');
     const caseResult = await caseWriter.generateObject<any>({
       prompt: `User prompt: ${prompt || 'not provided'}.
@@ -2755,7 +2767,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
     if (requestedCaseCount === 0) {
       console.warn(`[agent] run ${run.id}: auto mode produced ${generated.length}/${caseCountFloor} cases — padding up to the complexity floor.`);
     }
-    const padWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+    const padWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
     const norm = (t: any) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const seen = new Set(generated.map((c: any) => norm(c.title || c.name)));
     const maxBatches = Math.min(20, Math.ceil((caseCountFloor - generated.length) / 5) + 5);
@@ -3085,7 +3097,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     ...(codeMap.roleNames || []).map((r: any) => r.name),
     ...(codeMap.fieldIds || []).map((f: any) => f.label),
   ].filter(Boolean).slice(0, 120) : [];
-  const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+  const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
   const rawCaseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const caseList = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(rawCaseList, run), run);
   const scriptGrounding = assessScriptGrounding(run, caseList, Boolean(codeMap));
@@ -3709,7 +3721,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // for another and have it pass silently). Re-verify after every rewrite and loop until zero
     // culprits remain or no further progress is made. Any selector that STILL isn't in the
     // codebase after the gate is reported honestly (it will be caught again by execution-repair).
-    const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+    const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
     // DOM-first culprit test: when we have a real live capture of this page, it is the SOLE
     // authority  -  a selector absent from the live DOM is a culprit even if the repo mentions it
     // somewhere (that is exactly the "Global Search" false-pass: real string, wrong page). Fall
@@ -4582,7 +4594,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
           const groundingContext = freshContext || run.inspection_context;
 
           try {
-            const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+            const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', model: run.requestedModel, effort: run.requestedEffort });
             const res = await coder.generateObject<{ code: string }>({
               prompt: `A generated Playwright test FAILED when executed against the live app. Fix it.\n\nFailure error:\n${String(t.error || 'unknown failure').slice(0, 1500)}\n\nThe browser session is ALREADY AUTHENTICATED via an injected storage state, so there is usually NO login form at run time. Do NOT depend on logging in: if login steps exist, keep them but ensure EVERY login fill/click/waitForURL is guarded with .catch(() => {}) and a short timeout so it is a harmless no-op when no login form is present. NEVER use waitForLoadState('networkidle').\n\nWhat a fresh inspection of the LIVE page for THIS test's goal actually observed (use these REAL selectors/labels  -  do not invent; if a control you need is here, use its exact label/role/text):\n${JSON.stringify(compactInspectionContext(groundingContext))}\n\nCurrent failing test code:\n${String(scripts[idx].code || '').slice(0, 6000)}\n\nReturn the corrected full test file as {"code":"..."}. Keep the same test title. Prefer role/label/text selectors grounded in the observed page. Add resilient waits. Do not change what the test verifies. CRITICAL: if the failure is that the PRIMARY action did not happen (e.g. the export produced no download, or the setting toggle/save did not persist), fix the SELECTOR or interaction so the action ACTUALLY executes and its outcome assertion PASSES  -  you must NOT remove, soften, or wrap that primary action/assertion in .catch(() => {}) just to make the test green. Faking a pass is forbidden; the real action must occur.`,
               schema: z.object({ code: z.string() }),
@@ -5013,6 +5025,10 @@ Rules:
 
   async function computeUnderstanding(body: any, scope: { userId?: string; projectId?: string | null; appId?: string | null }): Promise<any> {
     const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history, conversationId } = body || {};
+    // The console sends the model/effort the user picked in the topbar; without threading them here the
+    // understanding silently ran on the saved Settings model instead.
+    const requestedModel = String(body?.model || '').trim();
+    const requestedEffort = String(body?.effort || '').trim();
     const rawPrompt = String(prompt || '').trim();
     const rawOriginalRequest = String(originalRequest || '').trim();
     const rawContextPrompt = String(contextPrompt || '').trim();
@@ -5028,7 +5044,7 @@ Rules:
         conversationId: typeof conversationId === 'string' && conversationId ? conversationId : undefined,
         fallbackHistory: history,
         currentMessage: intentPrompt,
-        model: resolveModelForAgent('chatAssistant', resolveProviderForAgent('chatAssistant')),
+        model: resolveModelForAgent('chatAssistant', resolveProviderForAgent('chatAssistant'), requestedModel),
         path: 'agent.understand-request',
       });
       historyBlock = assembled.promptBlock.trim() ? `${assembled.promptBlock.trim()}\n\n` : '';
@@ -5098,6 +5114,8 @@ Rules:
           projectId: scope.projectId,
           appId: scope.appId,
           apps,
+          model: requestedModel,
+          effort: requestedEffort,
         });
         const understanding = stripCodebaseLocationsForAgentConsole(String(grounded || '').trim());
         if (understanding) {
@@ -5120,7 +5138,7 @@ Rules:
     }
 
     try {
-      const ai = await getOrchestrator('chatAssistant', { workspaceId: scope.userId || 'default' });
+      const ai = await getOrchestrator('chatAssistant', { workspaceId: scope.userId || 'default', model: requestedModel, effort: requestedEffort });
       const result = await ai.generateObject<any>({
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
@@ -5585,8 +5603,9 @@ Rules:
           content: String(turn?.content ?? turn?.text ?? turn?.summary ?? '').trim(),
         })).filter((turn: any) => turn.content);
       }
+      // Background only. The handoff ledger lists what EARLIER runs produced; promoting it to the run's
+      // approved understanding made every follow-up inherit the previous task's subject.
       conversationMemory = await loadConversationHandoff(conversationId).catch(() => '');
-      approvedUnderstanding ||= conversationMemory;
     }
     // 0 (or absent) means "auto"  -  let the depth of the source understanding decide
     // the count. A positive number is an explicit user request and is honored as-is.
@@ -5933,7 +5952,9 @@ Rules:
     targetUrl = mission.targetUrl;
     targetCoreAppId = mission.application?.id || '';
     targetAppLabel = mission.application?.name || '';
-    const priorEvidenceRun = priorSessionRun && sameMissionEvidenceScope(
+    // Same surface is necessary but not sufficient: a new FEATURE on the same page must re-ground, or the
+    // run authors against the previous task's DOM evidence and target catalog.
+    const priorEvidenceRun = priorSessionRun && !featureChanged && !targetChanged && sameMissionEvidenceScope(
       priorSessionRun.mission_context || missionContextFromRun(priorSessionRun),
       mission,
     ) ? priorSessionRun : null;
@@ -6100,6 +6121,9 @@ Rules:
       requestedProvider,
       requestedModel,
       requestedEffort,
+      // Persist the model the run will actually use: agent_runs.model is fed from this and was left blank,
+      // so no run recorded which model produced it.
+      model: resolveModelForAgent('caseWriter', runProvider, requestedModel),
     };
     newRun.messages.push({
       agent: 'System',

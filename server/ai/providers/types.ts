@@ -59,6 +59,8 @@ export interface GenerateTextOptions {
   effort?: string;
   model?: string;
   signal?: AbortSignal;
+  /** Streaming yields text only, so usage has to come back out of band or the turn bills as zero. */
+  onUsage?: (usage: ProviderUsage, model?: string) => void;
 }
 
 export interface ProviderUsage {

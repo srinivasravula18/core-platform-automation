@@ -91,6 +91,9 @@ async function main() {
       if (d) deltas.push(d);
     }
     ok(deltas.length > 0, 'the stream produced deltas');
+    // >1 is the real contract: one delta means the whole answer landed at once and the user watched a blank
+    // pane. The SDK transport reports agent text only at item.completed, so live turns must not use it.
+    ok(deltas.length > 1, `the stream is incremental, not one blob (${deltas.length} deltas)`);
     ok(/5/.test(deltas.join('')), 'the concatenated deltas contain the full answer');
     const observed: string[] = [];
     const collected = await runtime.run({

@@ -34,15 +34,18 @@ for (const expr of ['{{Email}}', 'Mr. {{Last Name}}', '{{unique.email|upper}}', 
 /* chipsToExpression re-wraps tokens in {{…}} */
 assert.equal(chipsToExpression([{ id: 't', kind: 'token', token: 'unique.email' }, { id: 'x', kind: 'text', value: '!' }]), '{{unique.email}}!');
 
-/* tokenVariant: generator vs column vs free variable */
+/* tokenVariant: column wins, then unique (fresh every run) > generated (faker) > other */
 const cols = ['Email', 'Full Name'];
-assert.equal(tokenVariant('unique.email', cols), 'generator');
-assert.equal(tokenVariant('uuid', cols), 'generator');
-assert.equal(tokenVariant('faker.firstName', cols), 'generator');
+assert.equal(tokenVariant('unique.email', cols), 'unique');
+assert.equal(tokenVariant('uuid', cols), 'unique');
+assert.equal(tokenVariant('timestamp', cols), 'unique');
+assert.equal(tokenVariant('faker.email', cols), 'unique'); // fresh every run, not just realistic
+assert.equal(tokenVariant('faker.firstName', cols), 'generated');
 assert.equal(tokenVariant('Email', cols), 'column');
 assert.equal(tokenVariant('email', cols), 'column'); // case-insensitive column match
-assert.equal(tokenVariant('Something Else', cols), 'variable');
-assert.equal(tokenVariant('unique.email | upper', cols), 'generator'); // transform pipe ignored for classification
+assert.equal(tokenVariant('Full Name', cols), 'column'); // a real column outranks any generator name
+assert.equal(tokenVariant('Something Else', cols), 'other');
+assert.equal(tokenVariant('unique.email | upper', cols), 'unique'); // transform pipe ignored for classification
 
 /* tokenLabel: dotted parts + transforms render with " · ", never braces */
 assert.equal(tokenLabel('unique.email'), 'unique · email');

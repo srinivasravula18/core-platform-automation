@@ -110,6 +110,8 @@ export class CodexProvider implements AIProvider {
       mcpServers: this.mcpServers,
     })) {
       if (event.type === 'text.delta' && event.delta) yield event.delta;
+      // The runtime reports the turn's usage as its own event; dropping it made every streamed turn free.
+      if (event.type === 'usage') opts.onUsage?.(event.usage, opts.model || this.defaultModel);
       if (event.type === 'failed') throw classifyError(this.name, undefined, event.message);
     }
   }

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate 
 import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked, PlugZap } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
+import { readScopedStorage, RUNTIME_MODEL_KEY, RUNTIME_MODEL_EVENT } from '@/src/lib/storage';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
 import { CommandPaletteHint, commandPaletteTitle } from '@/src/components/ShortcutHint';
@@ -207,7 +208,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
   const [answering, setAnswering] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [weeklyLimit, setWeeklyLimit] = useState<{ remaining: number; resetsAt: number | null } | null>(null);
+  const [weeklyLimit, setWeeklyLimit] = useState<{ remaining: number; resetsAt: number | null; detail: string } | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -233,19 +234,34 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       return;
     }
     const loadWeeklyLimit = () => {
-      fetch('/api/ai/providers')
+      // Ask for the allowance of the model the topbar is actually set to, not the saved default.
+      const picked = readScopedStorage(RUNTIME_MODEL_KEY) || '';
+      fetch(`/api/ai/providers${picked ? `?model=${encodeURIComponent(picked)}` : ''}`)
         .then((response) => response.json())
         .then((data) => {
-          const limit = data?.providers?.[0]?.account?.weeklyLimit;
+          // Usage is metered per model; the pill tracks the model in use, the tooltip keeps every other
+          // bucket visible so an exhausted account-wide limit is never hidden behind a healthy one.
+          const account = data?.providers?.[0]?.account;
+          const limit = account?.weeklyLimit;
+          const left = (w: any) => `${Math.max(0, 100 - Math.round(w.usedPercent))}% left`;
+          const when = (w: any) => (w.resetsAt ? `, resets ${new Date(w.resetsAt * 1000).toLocaleString()}` : '');
+          const detail = (account?.limits || [])
+            .filter((b: any) => b?.weeklyLimit && Number.isFinite(b.weeklyLimit.usedPercent))
+            .map((b: any) => `${b.name || 'Account-wide'}: ${left(b.weeklyLimit)}${when(b.weeklyLimit)}`)
+            .join('\n');
           setWeeklyLimit(limit && Number.isFinite(limit.usedPercent)
-            ? { remaining: Math.max(0, 100 - Math.round(limit.usedPercent)), resetsAt: limit.resetsAt ?? null }
+            ? { remaining: Math.max(0, 100 - Math.round(limit.usedPercent)), resetsAt: limit.resetsAt ?? null, detail }
             : null);
         })
         .catch(() => setWeeklyLimit(null));
     };
     loadWeeklyLimit();
     const timer = window.setInterval(loadWeeklyLimit, 60_000);
-    return () => window.clearInterval(timer);
+    window.addEventListener(RUNTIME_MODEL_EVENT, loadWeeklyLimit);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(RUNTIME_MODEL_EVENT, loadWeeklyLimit);
+    };
   }, [location.pathname]);
 
   const onSearchInput = (value: string) => {
@@ -408,7 +424,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
         <RunningIndicator />
         {weeklyLimit && (
           <span
-            title={weeklyLimit.resetsAt ? `Weekly limit refreshes ${new Date(weeklyLimit.resetsAt * 1000).toLocaleString()}` : 'Codex weekly limit remaining'}
+            title={weeklyLimit.detail || (weeklyLimit.resetsAt ? `Weekly limit refreshes ${new Date(weeklyLimit.resetsAt * 1000).toLocaleString()}` : 'Codex weekly limit remaining')}
             className="hidden sm:inline-flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)]"
           >
             Weekly {weeklyLimit.remaining}% left

@@ -74,6 +74,27 @@ const seriesKey = (labels: Record<string, string>, groupBy: string[]) => groupBy
 
 type Row = { bucket_at: Date; value: string | number | null; group_labels: Record<string, string> | null };
 
+/**
+ * Finest rollup that actually holds rows for this metric in the window. pickResolution chooses purely on
+ * point budget, so a short alert window selects the 10s table even when the metric is only rolled up at 1m —
+ * the query then returns zero series and the rule reports nodata forever instead of firing.
+ */
+export const resolutionWithData = async (
+  metric: string,
+  fromMs: number,
+  toMs: number,
+): Promise<Resolution | undefined> => {
+  for (const resolution of ['10s', '1m', '1h'] as const) {
+    const rows = await vitalsQuery<{ one: number }>(
+      `select 1 as one from obs.${RESOLUTION_TABLE[resolution]}
+        where metric = $1 and bucket_at >= $2 and bucket_at <= $3 limit 1`,
+      [metric, new Date(fromMs), new Date(toMs)],
+    );
+    if (rows.length) return resolution;
+  }
+  return undefined;
+};
+
 export const runMetricQuery = async (
   query: MetricQuery,
 ): Promise<{ series: MetricSeries[]; resolution: Resolution; fromMs: number; toMs: number; stepMs: number }> => {

@@ -57,7 +57,9 @@ async function main() {
   console.log('late record.done replaces a partial stop fallback');
   const fallbackRace = await rec.createRecording({ name: 'Fallback race', appUrl: 'http://localhost:5002', browser: 'chromium' }, SCOPE);
   const partialScript = "import { test } from '@playwright/test';\ntest('flow', async ({ page }) => { await page.goto('http://localhost:5002'); });";
-  const fullScript = partialScript.replace(' });', " await page.getByRole('button', { name: 'Continue' }).click(); });");
+  // Multi-line, like a real recorded file: a one-liner parses to a bare nav, which the empty-recording
+  // gate legitimately refuses to link a script for.
+  const fullScript = "import { test } from '@playwright/test';\ntest('flow', async ({ page }) => {\n  await page.goto('http://localhost:5002');\n  await page.getByRole('button', { name: 'Continue' }).click();\n});";
   await rec.finalizeRecording(fallbackRace.id, { script: partialScript });
   await rec.finalizeRecording(fallbackRace.id, { script: fullScript, metadata: { generatedOn: 'tester-laptop' } });
   const completedRace = await rec.getRecording(fallbackRace.id);
@@ -134,7 +136,8 @@ async function main() {
   ok(progressingRun?.triggerMeta?.automationExecution?.percent === 50 && progressingRun?.progress.includes('1/2'), 'linked Test Run receives incremental progress');
   await jobs.cancelJob(cancelledJob.id);
   ok((await jobs.getJob(cancelledJob.id)).status === 'cancelled', 'stopped job remains cancelled');
-  ok((await Runs.get(linkedRun.id))?.status === 'Cancelled', 'linked Test Run closes as Cancelled');
+  // Stop is the user's action, so the run reads 'Stopped' — the same word manual runs use.
+  ok((await Runs.get(linkedRun.id))?.status === 'Stopped', 'linked Test Run closes as Stopped');
   await gateway.deliverAgentFrame('agent-x', { type: 'job.done', agentId: 'agent-x', seq: 3, payload: { jobId: cancelledJob.id, exitCode: 130 } });
   ok((await jobs.getJob(cancelledJob.id)).status === 'cancelled', 'late process exit cannot overwrite cancellation');
 

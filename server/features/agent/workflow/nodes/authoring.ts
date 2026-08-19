@@ -17,6 +17,7 @@ import {
   resolveProviderForAgent, resolveModelForAgent, resolveEffortForAgent, buildProvider,
 } from '../../../../ai/orchestrator';
 import { canonicalAgent, systemPromptFor } from '../../../../ai/systemPrompts';
+import { recordUsage } from '../../../../ai/costTracker';
 import type { ProviderName } from '../../../../ai/providers/types';
 import { testCasesSchema } from '../../../../shared/schemas';
 import { PLAN_ACTIONS, PLAN_ASSERTS, CONTEXT_ASSERTS, parseTestPlanStrict, type TestPlan } from '../../compiler/testPlan';
@@ -186,6 +187,10 @@ interface ModelCallSpec<TWire> {
   system: string;
   prompt: string;
   signal?: AbortSignal;
+  /** Identity + scope for usage accounting; the graph is the only egress that must carry them explicitly. */
+  agent?: string;
+  workspaceId?: string;
+  userId?: string;
 }
 
 /** Exactly ONE model round-trip through the Codex runtime's native structured output. */
@@ -203,6 +208,19 @@ async function callModelOnce<TWire>(spec: ModelCallSpec<TWire>): Promise<ModelAt
       ...base, modelName: r.model,
       inputTokens: r.usage?.inputTokens, outputTokens: r.usage?.outputTokens, latencyMs: r.latencyMs,
     };
+    // Graph nodes call the provider directly, so nothing here crosses AgentOrchestrator — the only place
+    // that writes usage_log. Book it at this seam or the entire deep run bills as zero.
+    void recordUsage({
+      workspaceId: spec.workspaceId || 'default',
+      userId: spec.userId,
+      agent: spec.agent || spec.node,
+      provider: spec.route.provider,
+      model: r.model || spec.route.model,
+      inputTokens: r.usage?.inputTokens || 0,
+      outputTokens: r.usage?.outputTokens || 0,
+      costUsd: r.usage?.costUsd || 0,
+      requestId: `graph-${spec.node}-${started}`,
+    }).catch(() => { /* accounting must never break a run */ });
     return { raw: r.object, refusal: null, invalidDetail: null, transportError: null, usage };
   } catch (error) {
     const detail = schemaInvalidDetailFromThrow(error);
@@ -235,6 +253,9 @@ export interface StrictGenerationSpec<TWire, TOut> {
   validate: (wire: unknown) => { value: TOut | null; issues: string[] };
   signal?: AbortSignal;
   overrides?: ModelOverrides;
+  /** Scope for usage accounting — forwarded to the provider seam. */
+  workspaceId?: string;
+  userId?: string;
 }
 
 /** Exported for sibling nodes (investigation/analyst) — the ONE sanctioned strict-generation seam. */
@@ -252,7 +273,7 @@ export async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSp
       ? { value: null, issues: [attempt.invalidDetail || 'model returned no parseable output'] }
       : spec.validate(attempt.raw);
 
-  const first = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, system: spec.system, prompt: spec.prompt, signal: spec.signal });
+  const first = await callModelOnce<TWire>({ node: spec.node, agent: spec.agent, workspaceId: spec.workspaceId, userId: spec.userId, route, schema: spec.schema, system: spec.system, prompt: spec.prompt, signal: spec.signal });
   usage.push(first.usage);
   if (first.transportError) return { value: null, usage, errors: [first.transportError] };
   if (first.refusal !== null) return { value: null, usage, errors: [refusalError(spec.node, first.refusal)] };
@@ -260,7 +281,7 @@ export async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSp
   if (firstEval.value !== null) return { value: firstEval.value, usage, errors: [] };
 
   // Exactly ONE repair call — schema-invalid only; refusals and transport failures never reach here twice.
-  const second = await callModelOnce<TWire>({ node: spec.node, route, schema: spec.schema, system: spec.system, prompt: buildRepairPrompt(spec.prompt, firstEval.issues, first.raw), signal: spec.signal });
+  const second = await callModelOnce<TWire>({ node: spec.node, agent: spec.agent, workspaceId: spec.workspaceId, userId: spec.userId, route, schema: spec.schema, system: spec.system, prompt: buildRepairPrompt(spec.prompt, firstEval.issues, first.raw), signal: spec.signal });
   usage.push(second.usage);
   if (second.transportError) return { value: null, usage, errors: [second.transportError] };
   if (second.refusal !== null) return { value: null, usage, errors: [refusalError(spec.node, second.refusal)] };

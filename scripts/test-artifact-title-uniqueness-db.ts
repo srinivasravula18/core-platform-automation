@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import '../server/shared/env';
 import { getPool } from '../server/db/pool';
 
+// `runs` is deliberately absent: run names are labels, not identities, so schema.sql drops that index.
 const artifacts = [
-  ['plans', 'name'], ['suites', 'name'], ['cases', 'title'], ['runs', 'name'],
+  ['plans', 'name'], ['suites', 'name'], ['cases', 'title'],
   ['defects', 'title'], ['reports', 'name'], ['scripts', 'name'], ['requirements', 'title'],
 ] as const;
 

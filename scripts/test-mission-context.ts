@@ -86,29 +86,30 @@ console.log('Immutability + immutable navigation');
 
 console.log('Helpers');
 {
-  eq(platformTypeFromSurface('Admin App', 'https://host/admin-ui/'), 'ADMIN', 'platformType admin');
-  eq(platformTypeFromSurface('Keystone', 'https://host/keystone/'), 'RUNTIME', 'platformType keystone→RUNTIME');
-  eq(runtimeSurfaceFromSurface('Keystone', 'https://host/keystone/'), 'keystone', 'runtimeSurface keystone');
-  eq(runtimeSurfaceFromSurface('Shockwave', 'https://host/shockwave/'), 'shockwave', 'runtimeSurface shockwave');
+  // App-agnostic contract: an app-scoped URL (one carrying an appId) is RUNTIME, everything else is the
+  // platform root; the runtime surface id is the URL host. No product name may appear in these assertions.
+  eq(platformTypeFromSurface('Any Surface', 'https://host/base/'), 'ADMIN', 'platformType: no appId → ADMIN');
+  eq(platformTypeFromSurface('Any Surface', 'https://host/base/?appId=a1'), 'RUNTIME', 'platformType: appId → RUNTIME');
+  eq(runtimeSurfaceFromSurface('Any Surface', 'https://host/base/'), 'host', 'runtimeSurface is the URL host');
+  eq(runtimeSurfaceFromSurface('Any Surface', 'https://h:5003/base/'), 'h:5003', 'runtimeSurface keeps the port');
   eq(moduleFromUrl('https://host/admin-ui/?nav=users&appId=x'), 'users', 'moduleFromUrl');
   ok(!stripAppScopedParams('https://host/admin-ui/?appId=x&nav=y&object=z').match(/appId|nav|object/), 'stripAppScopedParams');
 }
 
 console.log('Backward-compatible mapper from run');
 {
-  const adminRun = { app_url: 'https://host/admin-ui/?nav=objects&appId=leaked', application_context: { app: { name: 'Admin App' } } };
+  const adminRun = { app_url: 'https://host/base/?nav=objects', application_context: { app: { name: 'Platform Root' } } };
   const amc = missionContextFromRun(adminRun);
-  eq(amc.platformType, 'ADMIN', 'mapper: admin surface → ADMIN');
-  eq(amc.application, null, 'mapper: admin has null application even if URL leaked an appId');
-  ok(!amc.targetUrl.includes('leaked'), 'mapper: admin targetUrl strips the leaked appId');
+  eq(amc.platformType, 'ADMIN', 'mapper: unscoped surface → ADMIN');
+  eq(amc.application, null, 'mapper: platform root carries no application');
   eq(amc.module?.id, 'objects', 'mapper: module from url');
 
-  const runtimeRun = { app_url: 'https://host/keystone/?nav=accounts&appId=app9', target_core_app_id: 'app9', target_app_label: 'CRM', appName: 'Keystone' };
+  const runtimeRun = { app_url: 'https://host/base/?nav=accounts&appId=app9', target_core_app_id: 'app9', target_app_label: 'CRM', appName: 'Any Surface' };
   const rmc = missionContextFromRun(runtimeRun);
-  eq(rmc.platformType, 'RUNTIME', 'mapper: keystone → RUNTIME');
-  eq(rmc.runtimeSurface, 'keystone', 'mapper: runtimeSurface keystone');
+  eq(rmc.platformType, 'RUNTIME', 'mapper: app-scoped url → RUNTIME');
+  eq(rmc.runtimeSurface, 'host', 'mapper: runtimeSurface is the URL host');
   eq(rmc.application, { id: 'app9', name: 'CRM' }, 'mapper: runtime application from target_core_app_id');
-  ok(describeMission(rmc).startsWith('Runtime (keystone) → CRM'), 'describeMission runtime');
+  ok(describeMission(rmc).startsWith('Runtime (host) → CRM'), 'describeMission runtime');
 }
 
 console.log('Phase 3: mission verification snippet');
@@ -139,7 +140,9 @@ console.log('Phase 4: script generator (mission prompt + locator guard)');
   const pAdmin = renderMissionContextForPrompt(admin);
   ok(pAdmin.includes('Platform: ADMIN') && pAdmin.includes('Application: NONE'), 'admin prompt: platform + no application');
   ok(pAdmin.includes('never infer application/tab/module/page from the prompt') || pAdmin.includes('NEVER infer application/tab/module/page from the prompt'), 'admin prompt: navigation authority rule');
-  ok(pAdmin.includes('App1app1'), 'admin prompt forbids concatenation example');
+  // No assertion on a concatenation EXAMPLE here: an SUT app name must never be embedded in a shipped
+  // prompt. The invariant itself is covered behaviourally by collapseDoubledLabels (below + mission-regression).
+  ok(/never concatenate|do not concatenate/i.test(pAdmin), 'admin prompt: label/api-name concatenation rule');
 
   const rt = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', runtimeSurface: 'keystone', application: { id: 'app9', name: 'CRM' }, module: { id: 'accounts', name: 'Account' } });
   const pRt = renderMissionContextForPrompt(rt);

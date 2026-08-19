@@ -15,6 +15,8 @@
  * `buildGoalContext(run)`), so they cannot drift apart.
  */
 
+import { extractGoalTerms } from '../../features/agent/workflow/goalTerms';
+
 /**
  * The consolidated grounding shared by every worker in a deep run. Assembled
  * once from the run record so the case writer, coder, and analyst all read the
@@ -72,9 +74,14 @@ export function isNoiseTurn(content: string): boolean {
  * NOTE: behavior is intentionally identical to the prior local copy in
  * server/features/agent/routes.ts — this module is now the single source.
  */
-export function deriveUnderstandingFromChat(chatHistory: any): string {
+export function deriveUnderstandingFromChat(chatHistory: any, currentPrompt?: string): string {
+  const terms = extractGoalTerms(String(currentPrompt || ''));
+  const onTopic = (content: string) => !terms.length || terms.some((t) => content.toLowerCase().includes(t));
   const turns = (Array.isArray(chatHistory) ? chatHistory : [])
     .filter((m: any) => m && m.role === 'assistant' && typeof m.content === 'string' && !isNoiseTurn(m.content))
+    // Only prior answers that share a subject term with the CURRENT request may ground it; otherwise the
+    // previous task's answer becomes this task's understanding. No terms (a bare "run it again") keeps all.
+    .filter((m: any) => onTopic(m.content))
     .slice(-12);
   if (!turns.length) return '';
   return turns.map((turn: any) => turn.content.trim()).join('\n\n');
@@ -90,9 +97,10 @@ export function deriveUnderstandingFromChat(chatHistory: any): string {
  * on the same text.
  */
 export function resolveUnderstanding(run: any): string {
+  // conversationMemory (the run/case/defect ledger of EARLIER turns) is deliberately not in this chain:
+  // it can never describe the current request, and it silently outranked it on every follow-up.
   return (run?.approvedUnderstanding || '').trim()
-    || String(run?.conversationMemory || run?.conversation_memory || '').trim()
-    || deriveUnderstandingFromChat(run?.chat_history)
+    || deriveUnderstandingFromChat(run?.chat_history, run?.prompt)
     || [...(Array.isArray(run?.messages) ? run.messages : [])]
       .reverse()
       .map((message: any) => String(message?.output || '').trim())

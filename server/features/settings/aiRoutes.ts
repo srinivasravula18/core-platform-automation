@@ -83,17 +83,16 @@ function providerIsCallable(provider: ProviderName = CODEX): boolean {
 export function registerSettingsRoutes(app: Express) {
   /* ---------- provider list ---------- */
 
-  app.get('/api/ai/providers', async (_req, res) => {
+  app.get('/api/ai/providers', async (req, res) => {
     ensureProviderSettings();
     const stored = db.settings.providerSettings[CODEX];
     const authMode = (stored?.authMode || 'account') as ProviderAuthMode;
     const hasApiKey = !!stored?.apiKey || hasEnvApiKey();
     // Models the local Codex runtime actually serves; the static registry is the fallback.
     const runtime = new CodexRuntime({ apiKey: hasApiKey && authMode === 'api_key' ? 'set' : undefined });
-    const [live, health, account] = await Promise.all([
+    const [live, health] = await Promise.all([
       runtime.listModels().catch(() => []),
       runtime.health().catch(() => ({ ok: false, authMethod: null, error: 'The Codex runtime is unreachable.' })),
-      runtime.accountInfo().catch(() => null),
     ]);
     const modelOptions = live.length
       ? live
@@ -101,6 +100,12 @@ export function registerSettingsRoutes(app: Express) {
     const models = modelOptions.map((m) => m.id);
     const defaultModel = models[0] || DEFAULT_MODELS[CODEX].default;
     const selectedModel = models.includes(stored?.model || '') ? stored!.model : defaultModel;
+    // Usage is metered per model, so read the allowance for the model the caller is actually on — the
+    // Agent Console topbar pick overrides the saved default it would otherwise report.
+    const limitModel = String(req.query.model || '') || selectedModel;
+    const account = await runtime.accountInfo(
+      modelOptions.find((m) => m.id === limitModel)?.displayName || limitModel,
+    ).catch(() => null);
     const selectedEfforts = modelOptions.find((m) => m.id === selectedModel)?.supportedReasoningEfforts || [];
     const selectedEffort = selectedEfforts.includes(stored?.effort || '')
       ? stored!.effort
@@ -129,6 +134,8 @@ export function registerSettingsRoutes(app: Express) {
         account: account?.authMethod === 'chatgpt' ? {
           emailMasked: maskAccountIdentifier(account.email),
           planType: account.planType,
+          limitName: account.limitName,
+          limits: account.limits,
           sessionLimit: account.sessionLimit,
           weeklyLimit: account.weeklyLimit,
         } : null,
