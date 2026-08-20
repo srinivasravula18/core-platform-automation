@@ -1156,15 +1156,15 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext({ query: topic, ...options }) : '';
   const conversation = provided;
-  // Hold the stream head until the first paragraph boundary so a leaked reasoning
-  // preamble ("The user is asking...") is stripped before any bytes reach the client.
+  // Wait only long enough to identify a leaked reasoning preamble; ordinary answers must not
+  // wait for an entire paragraph before the Console can paint them.
   let hold = '';
   let flushed = false;
   try {
     for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation, signal: options.signal })) {
       if (flushed) { yield delta; continue; }
       hold += delta;
-      if (!hold.includes('\n\n') && hold.length < 800) continue;
+      if (!hold.includes('\n\n') && hold.length < 24) continue;
       const cleaned = stripReasoningPreamble(hold);
       if (!cleaned) continue; // everything so far was preamble — keep holding for real content
       flushed = true;

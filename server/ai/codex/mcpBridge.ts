@@ -41,6 +41,8 @@ export interface BridgeInvocation {
   ms: number;
 }
 
+export type BridgeInvocationStart = Pick<BridgeInvocation, 'id' | 'name' | 'arguments'>;
+
 export interface BridgeSession {
   /** Unguessable path segment — this is the per-session secret. */
   id: string;
@@ -53,6 +55,8 @@ export interface BridgeSession {
   maxToolCalls: number;
   /** Fired as each call settles, so the caller can trace/persist without polling. */
   onInvocation?: (invocation: BridgeInvocation) => void;
+  /** Fired immediately before a granted tool begins executing. */
+  onInvocationStart?: (invocation: BridgeInvocationStart) => void;
 }
 
 const sessions = new Map<string, BridgeSession>();
@@ -98,6 +102,7 @@ function buildMcpServer(session: BridgeSession): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = (request.params.arguments || {}) as Record<string, unknown>;
+    const invocationId = randomUUID();
     const started = Date.now();
     const settle = (invocation: BridgeInvocation) => {
       session.invocations.push(invocation);
@@ -119,12 +124,13 @@ function buildMcpServer(session: BridgeSession): Server {
       return { content: [{ type: 'text' as const, text: `ERROR: ${error}` }], isError: true };
     }
     try {
+      try { session.onInvocationStart?.({ id: invocationId, name, arguments: args }); } catch { /* observers never break a tool call */ }
       const result = await tool.execute(args, session.ctx);
-      settle({ id: randomUUID(), name, arguments: args, result, ms: Date.now() - started });
+      settle({ id: invocationId, name, arguments: args, result, ms: Date.now() - started });
       return { content: [{ type: 'text' as const, text: safeJson(result) }] };
     } catch (err: any) {
       const error = err?.message || String(err);
-      settle({ id: randomUUID(), name, arguments: args, error, ms: Date.now() - started });
+      settle({ id: invocationId, name, arguments: args, error, ms: Date.now() - started });
       // Tool errors stay VISIBLE to Codex so it can self-correct rather than silently stalling.
       return { content: [{ type: 'text' as const, text: `ERROR: ${error}` }], isError: true };
     }
@@ -196,6 +202,8 @@ export interface OpenSessionOptions {
   maxToolCalls?: number;
   /** Fired as each call settles — used for tracing and artifact memory. */
   onInvocation?: (invocation: BridgeInvocation) => void;
+  /** Fired immediately before a granted tool begins executing. */
+  onInvocationStart?: (invocation: BridgeInvocationStart) => void;
 }
 
 export interface OpenSessionResult {
@@ -224,6 +232,7 @@ export async function openBridgeSession(opts: OpenSessionOptions): Promise<OpenS
     invocations: [],
     maxToolCalls: opts.maxToolCalls ?? 12,
     onInvocation: opts.onInvocation,
+    onInvocationStart: opts.onInvocationStart,
   };
   sessions.set(session.id, session);
   return {

@@ -411,6 +411,13 @@ export class AgentOrchestrator {
       tools: opts.tools,
       ctx,
       maxToolCalls: opts.maxSteps ?? 12,
+      onInvocationStart: (invocation) => {
+        opts.onToolStart?.({
+          id: invocation.id,
+          name: invocation.name,
+          arguments: invocation.arguments,
+        });
+      },
       onInvocation: (invocation) => {
         const inv: ToolInvocation = {
           id: invocation.id, name: invocation.name, arguments: invocation.arguments,

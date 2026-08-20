@@ -1,12 +1,47 @@
 import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
 import { runSupervisor } from '../../ai/supervisor';
-import { reqScope } from '../../shared/scope';
+import { ownerMismatch, reqScope } from '../../shared/scope';
 import { normalizeInput, preLLMPolicyCheck } from '../../ai/guardrails';
+import { redactSecrets } from '../../ai/memory/artifactMemory';
 import { ChatConversations } from '../../db/repository';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { quickUrlHealthAnswer, urlHealthTool } from '../../agent-core/registry/urlHealthTool';
 import { shouldPrepareTestScope, shouldUseConversationalFastPath } from '../../agent-runtime/goals/router';
+import {
+  beginTurnActivity,
+  cancelTurnActivity,
+  completeTurnActivity,
+  failTurnActivity,
+  listTurnActivity,
+  recordTurnActivity,
+  summarizeActivityValue,
+} from './turnActivity';
+
+function conversationWorkspace(workspaceId: unknown, scope?: { projectId?: string; appId?: string | null }) {
+  return scope
+    ? `${scope.projectId || 'none'}::${scope.appId || 'all'}`
+    : (typeof workspaceId === 'string' ? workspaceId : 'default');
+}
+
+async function persistMessage(
+  conversationId: unknown,
+  workspaceId: unknown,
+  userMessage: string,
+  message: { role: 'user' | 'assistant'; kind?: string; text: string; activityRequestId?: string },
+  scope?: { userId?: string; projectId?: string; appId?: string | null },
+) {
+  if (typeof conversationId !== 'string' || !conversationId) return;
+  await ChatConversations.appendMessages({
+    id: conversationId,
+    workspaceId: conversationWorkspace(workspaceId, scope),
+    title: userMessage.slice(0, 120),
+    messages: [message],
+    ownerId: scope?.userId,
+    projectId: scope?.projectId,
+    appId: scope?.appId || undefined,
+  });
+}
 
 async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string, scope?: { userId?: string; projectId?: string; appId?: string | null }) {
   if (typeof conversationId !== 'string' || !conversationId) return;
@@ -217,9 +252,8 @@ export function registerControllerRoutes(app: Express) {
         await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
         return res.json({ reply: quick.reply, accepted: true, fast: true, source: quick.source, actions: quick.actions || [], trace: [] });
       }
-      const priorTurns = Array.isArray(history) && history.some((turn: any) => turn?.role === 'assistant');
-      const useFastPath = shouldUseConversationalFastPath(userMessage, { hasPriorTurns: priorTurns });
-      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${useFastPath ? 'fast (no tools)' : 'grounded'} (priorTurns=${priorTurns})`);
+      const useFastPath = shouldUseConversationalFastPath(userMessage);
+      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${useFastPath ? 'fast (no tools)' : 'grounded'}`);
       if (useFastPath) {
         const reply = await explainIntent(userMessage, {
           workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
@@ -264,49 +298,82 @@ export function registerControllerRoutes(app: Express) {
   // so the chat can show LIVE activity ("Searching the codebase for …", "Reading …"),
   // then a final line with the answer. Mirrors the /explain/stream pattern.
   app.post('/api/controller/supervise/stream', async (req, res) => {
-    const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps, model, effort } = req.body || {};
+    const { userMessage, workspaceId, userId, conversationId, requestId: requestedRequestId, history, pageContext, apps, model, effort } = req.body || {};
     const scope = reqScope(req);
     const effectiveUserId = scope.userId || userId;
     if (!userMessage || typeof userMessage !== 'string') {
       return res.status(400).json({ error: 'userMessage is required' });
     }
+    if (typeof conversationId !== 'string' || !conversationId.trim()) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    if (requestedRequestId !== undefined
+      && (typeof requestedRequestId !== 'string' || requestedRequestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(requestedRequestId))) {
+      return res.status(400).json({ error: 'requestId is invalid' });
+    }
+    let activity: Awaited<ReturnType<typeof beginTurnActivity>>;
+    try {
+      await persistMessage(conversationId, workspaceId, userMessage, { role: 'user', text: userMessage, activityRequestId: requestedRequestId }, scope);
+      activity = await beginTurnActivity({
+        conversationId,
+        requestId: requestedRequestId,
+        ownerId: scope.userId,
+        workspaceId: conversationWorkspace(workspaceId, scope),
+        projectId: scope.projectId,
+      });
+    } catch (error: any) {
+      const conflict = /already active/i.test(String(error?.message || ''));
+      return res.status(conflict ? 409 : 500).json({ error: error?.message || 'Failed to start request' });
+    }
+    const { requestId } = activity;
+    res.setHeader('X-Agent-Request-Id', requestId);
     prepareStreamingResponse(res);
-    const abort = new AbortController();
-    const abortOnClose = () => { if (!res.writableEnded) abort.abort(); };
-    res.on('close', abortOnClose);
-    const send = (obj: any) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n${STREAM_PROXY_PAD}`); } catch { /* client gone */ } };
-    const heartbeat = startStreamHeartbeat(res, send);
+    let connected = true;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const detachObserver = () => {
+      connected = false;
+      if (heartbeat) clearInterval(heartbeat);
+    };
+    res.on('close', detachObserver);
+    const send = (obj: any) => {
+      if (!connected || res.writableEnded || res.destroyed) return;
+      try { res.write(`data: ${JSON.stringify({ requestId, ...obj })}\n\n${STREAM_PROXY_PAD}`); } catch { connected = false; }
+    };
+    heartbeat = startStreamHeartbeat(res, send);
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
       flushStream(res);
       // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
       const quick = await deterministicReply(userMessage, history, conversationId, scope, apps);
       if (quick) {
-        await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
+        await persistMessage(conversationId, workspaceId, userMessage, { role: 'assistant', kind: 'text', text: quick.reply, activityRequestId: requestId }, scope);
+        await completeTurnActivity(requestId, { label: 'Request completed', accepted: true, source: quick.source });
         await sendFinalReply(res, send, quick.reply, { accepted: true, fast: true, source: quick.source, actions: quick.actions || [] });
-        return res.end();
+        if (connected) return res.end();
+        return;
       }
-      // A follow-up must not silently lose the tools the first turn had — see the two-turn forensic.
-      const hasPriorTurns = Array.isArray(history) && history.some((turn: any) => turn?.role === 'assistant');
-      const fastPath = shouldUseConversationalFastPath(userMessage, { hasPriorTurns });
-      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${fastPath ? 'fast (no tools)' : 'grounded'} (priorTurns=${hasPriorTurns})`);
+      const fastPath = shouldUseConversationalFastPath(userMessage);
+      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${fastPath ? 'fast (no tools)' : 'grounded'}`);
       if (fastPath) {
         let reply = '';
         for await (const delta of streamExplain(userMessage, {
           workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
-          conversationId, history, apps, model, effort, signal: abort.signal,
+          conversationId, history, apps, model, effort, signal: activity.signal,
         })) {
           reply += delta;
           send({ type: 'answer_delta', delta });
           flushStream(res);
         }
         reply = reply.trim() || 'No answer available.';
-        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
+        await persistMessage(conversationId, workspaceId, userMessage, { role: 'assistant', kind: 'text', text: reply, activityRequestId: requestId }, scope);
+        await completeTurnActivity(requestId, { label: 'Request completed', accepted: true, source: 'codex-sdk' });
         send({ type: 'final', reply, accepted: true, fast: true, source: 'codex-sdk' });
-        return res.end();
+        if (connected) return res.end();
+        return;
       }
       // Grounded/action path: emit tool progress and native answer deltas as they arrive.
       let streamedReply = '';
+      let respondingRecorded = false;
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -319,23 +386,50 @@ export function registerControllerRoutes(app: Express) {
         apps,
         model,
         effort,
+        onToolStart: (tool) => {
+          const safeArguments = redactSecrets(tool.arguments);
+          void recordTurnActivity(requestId, 'tool_started', {
+            label: `Running ${tool.name}`,
+            tool: { name: tool.name, arguments: safeArguments },
+          });
+          send({ type: 'tool_start', tool: { name: tool.name, arguments: safeArguments } });
+          flushStream(res);
+        },
         onStep: (s) => {
+          for (const call of s.toolCalls) {
+            void recordTurnActivity(requestId, 'tool_completed', {
+              label: call.error ? `${call.name} failed` : `Completed ${call.name}`,
+              tool: {
+                name: call.name,
+                arguments: call.arguments,
+                resultSummary: call.error ? undefined : summarizeActivityValue(call.result),
+                error: call.error ? summarizeActivityValue(call.error) : undefined,
+                ms: call.ms,
+              },
+            });
+          }
           send({
             type: 'step',
             index: s.index,
             text: s.text,
-            toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments, error: c.error })),
+            toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: redactSecrets(c.arguments), error: c.error ? summarizeActivityValue(c.error) : undefined })),
           });
           flushStream(res);
         },
         onTextDelta: (delta) => {
           streamedReply += delta;
+          if (!respondingRecorded) {
+            respondingRecorded = true;
+            void recordTurnActivity(requestId, 'responding', { label: 'Writing response' });
+          }
           send({ type: 'answer_delta', delta });
           flushStream(res);
         },
-        signal: abort.signal,
+        signal: activity.signal,
       });
-      await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
+      if (activity.signal.aborted) return;
+      await persistMessage(conversationId, workspaceId, userMessage, { role: 'assistant', kind: 'text', text: result.finalText, activityRequestId: requestId }, scope);
+      await completeTurnActivity(requestId, { label: 'Request completed', accepted: result.accepted });
       const final = {
         accepted: result.accepted,
         usage: result.usage,
@@ -344,12 +438,38 @@ export function registerControllerRoutes(app: Express) {
       if (streamedReply) send({ type: 'final', reply: result.finalText, ...final });
       else await sendFinalReply(res, send, result.finalText, final);
     } catch (err: any) {
-      if (!abort.signal.aborted) send({ type: 'error', error: err?.message || 'supervisor failed' });
+      if (!activity.signal.aborted) {
+        await failTurnActivity(requestId, err);
+        send({ type: 'error', error: err?.message || 'supervisor failed' });
+      }
     } finally {
-      clearInterval(heartbeat);
-      res.off('close', abortOnClose);
-      res.end();
+      if (heartbeat) clearInterval(heartbeat);
+      res.off('close', detachObserver);
+      if (connected && !res.writableEnded) res.end();
     }
+  });
+
+  app.get('/api/controller/activity/for-conversation/:conversationId', async (req, res, next) => {
+    try {
+      const conversationId = String(req.params.conversationId || '');
+      const conversation = await ChatConversations.get(conversationId).catch(() => null);
+      if (!conversation || ownerMismatch(conversation, reqScope(req))) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+      res.json(await listTurnActivity(conversationId, Number(req.query.since) || 0));
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/controller/activity/:conversationId/:requestId', async (req, res, next) => {
+    try {
+      const conversationId = String(req.params.conversationId || '');
+      const conversation = await ChatConversations.get(conversationId).catch(() => null);
+      if (!conversation || ownerMismatch(conversation, reqScope(req))) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+      const cancelled = await cancelTurnActivity(conversationId, String(req.params.requestId || ''));
+      res.json({ ok: cancelled });
+    } catch (error) { next(error); }
   });
 
   app.get('/api/controller/plans', async (req, res, next) => {

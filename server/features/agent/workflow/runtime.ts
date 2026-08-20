@@ -105,6 +105,10 @@ const SEED_FIELDS = [
   'generatedSuiteId', 'suiteTitle',
   // Conversation/scope linkage: losing these orphaned graph runs from their chat (plan P11).
   'conversationId', 'projectId', 'appId', 'ownerId', 'websiteId',
+  // The chat's approved scope and the runtime choices made for this run. Dropping these left the
+  // authoring node with GOAL + DOM only, so it authored generic cases that ignored the agreed scope.
+  'approvedUnderstanding', 'priorGrounding', 'conversationMemory',
+  'requestedModel', 'requestedEffort', 'caseCountPrompt',
 ] as const;
 
 const MAX_PROJECTED_MESSAGES = 20;

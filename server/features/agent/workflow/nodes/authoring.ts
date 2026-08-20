@@ -27,6 +27,9 @@ import type { EvidenceGraph } from '../../graph/evidenceGraph';
 import { classifyError, WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { MissionRef, UsageRecord } from '../state';
 
+/** Prompt budget for the chat's agreed scope. Anything beyond this never reaches the case writer. */
+const UNDERSTANDING_PROMPT_CHARS = 6000;
+
 /** One authored case in the established shared-schema shape — downstream review/plan nodes consume this. */
 export type AuthoredTestCase = z.infer<typeof testCasesSchema>['test_cases'][number];
 type CasesWire = z.infer<typeof testCasesSchema>;
@@ -344,8 +347,13 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   // The chat's code-grounded analysis — the writer's SOURCE OF BEHAVIORS. Bounded so the prompt stays sane;
   // the catalog stays the locator authority (every step still names a real catalog control).
   const understanding = String(input.understanding || '').trim();
+  // A scope longer than the budget loses its TAIL — the last agreed areas simply never reach the writer,
+  // which reads as "it ignored my goal". Say so rather than trimming in silence.
+  if (understanding.length > UNDERSTANDING_PROMPT_CHARS) {
+    console.warn(`[authoring] scope truncated: ${understanding.length} chars -> ${UNDERSTANDING_PROMPT_CHARS}; the final ${understanding.length - UNDERSTANDING_PROMPT_CHARS} chars of the agreed scope are NOT in the prompt`);
+  }
   const understandingBlock = understanding
-    ? `\nVERIFIED FEATURE ANALYSIS (code-grounded — author cases that COVER these real behaviors, rules, derivations, validations, and edges; each step must still target a control from the catalog below):\n${understanding.slice(0, 6000)}\n`
+    ? `\nVERIFIED FEATURE ANALYSIS (code-grounded — author cases that COVER these real behaviors, rules, derivations, validations, and edges; each step must still target a control from the catalog below):\n${understanding.slice(0, UNDERSTANDING_PROMPT_CHARS)}\n`
     : '';
   // RC-0: backend object/field metadata — authoritative required/readonly truth, distinct from the DOM catalog.
   const metadataBlock = String(input.metadataHint || '').trim()

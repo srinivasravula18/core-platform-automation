@@ -78,6 +78,7 @@ import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscover
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
 import type { AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
+import { AgentActivity } from '@/src/components/AgentActivity';
 
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
 // GEN_VERB_RE, siteActionable, isQuestionForSupervisor, isCoreListViewText, isProceedLike,
@@ -270,7 +271,7 @@ function initialThinkingLabel(_text: string, opts: { selectedApps: number; requi
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean; createdAt?: string; execution?: ExecutionMeta }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
@@ -280,7 +281,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[]; applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string }
   | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string; baseUrl?: string }>; runArgs: Record<string, any> }
-  | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
+  | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[]; partialText?: string; activityRequestId?: string };
 
 // Narrowed turn shape for the folder-ask review card component below.
 type FolderAskTurn = Extract<Turn, { kind: 'folderask' }>;
@@ -792,6 +793,7 @@ export default function AgentConsole() {
   const targetChoiceFields = () => ({ ...(targetChoiceRef.current || {}) });
   const activeAbortRef = useRef<AbortController | null>(null);
   const activeThinkingIdRef = useRef<string | null>(null);
+  const activeActivityRef = useRef<{ conversationId: string; requestId: string; thinkingId: string } | null>(null);
   // Bridge to send() for reconcileGoal (send is defined later; a ref avoids the ordering/dep cycle).
   const sendRef = useRef<((raw?: string, editTurnIdArg?: string | null) => Promise<void>) | null>(null);
 
@@ -985,6 +987,9 @@ export default function AgentConsole() {
     const token = ++loadReqRef.current;
     loadedRef.current = false;
     try {
+      const activityRequest = fetch(`/api/controller/activity/for-conversation/${encodeURIComponent(id)}`, { cache: 'no-store' })
+        .then((response) => response.ok ? response.json() : null)
+        .catch(() => null);
       const r = await fetch(`/api/chat/conversations/${id}`);
       const d = await r.json();
       if (token !== loadReqRef.current) return; // a newer load won — discard this result
@@ -1002,14 +1007,29 @@ export default function AgentConsole() {
       const clean = (Array.isArray(d.turns) ? d.turns : []).filter(
         (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
       );
+      const activity = await activityRequest;
+      if (token !== loadReqRef.current) return;
+      const latest = activity?.latest;
+      const latestRequestId = String(latest?.requestId || '');
+      const latestStatus = String(latest?.status || '');
+      const hasRecordedResponse = clean.some((turn: any) => turn.role === 'assistant' && turn.activityRequestId === latestRequestId);
+      const restored: Turn[] = latestRequestId && !hasRecordedResponse && ['running', 'failed', 'cancelled', 'interrupted'].includes(latestStatus)
+        ? [...clean, {
+            id: `activity-${latestRequestId}`,
+            role: 'assistant',
+            kind: 'thinking',
+            label: latestStatus === 'running' ? 'Resuming background work...' : latestStatus === 'cancelled' ? 'Stopped' : latestStatus === 'interrupted' ? 'Interrupted' : 'Could not complete',
+            activityRequestId: latestRequestId,
+          }]
+        : clean;
       convTitleRef.current = String(d.title || '');
-      setTurns(clean);
+      setTurns(restored);
       // Re-attach any run the snapshot lost (navigated away mid-start) — see reconcileConversationRuns.
       void reconcileConversationRuns(id, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
-      void reconcileUnderstanding(id, token, clean);
+      void reconcileUnderstanding(id, token, restored);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(id, token, clean);
+      void reconcileGoal(id, token, restored);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
@@ -1189,6 +1209,7 @@ export default function AgentConsole() {
     activeAbortRef.current?.abort();
     activeAbortRef.current = null;
     activeThinkingIdRef.current = null;
+    activeActivityRef.current = null;
     setBusy(false);
     loadReqRef.current++; // invalidate any in-flight conversation load
     convTitleRef.current = '';
@@ -1212,6 +1233,7 @@ export default function AgentConsole() {
       activeAbortRef.current?.abort();
       activeAbortRef.current = null;
       activeThinkingIdRef.current = null;
+      activeActivityRef.current = null;
       setBusy(false);
       convTargetRef.current = null; // never carry one conversation's target into another
       setPendingDeep(null);
@@ -1450,6 +1472,11 @@ export default function AgentConsole() {
   }, [formatDebugPayload]);
 
   const stopActiveRequest = useCallback(() => {
+    const activity = activeActivityRef.current;
+    if (activity) {
+      void fetch(`/api/controller/activity/${encodeURIComponent(activity.conversationId)}/${encodeURIComponent(activity.requestId)}`, { method: 'DELETE' });
+      activeActivityRef.current = null;
+    }
     activeAbortRef.current?.abort();
     activeAbortRef.current = null;
     const thinkingId = activeThinkingIdRef.current;
@@ -1464,6 +1491,7 @@ export default function AgentConsole() {
         kind: 'text',
         text: 'Stopped. You can retry this request.',
         stopped: true,
+        activityRequestId: activity?.requestId,
       });
     }
     setBusy(false);
@@ -1473,6 +1501,25 @@ export default function AgentConsole() {
   // The run prompt is the user's CURRENT sentence, nothing else. Labels/boilerplate here used to dominate
   // the server's subjectChanged() term set, so the attention gate never saw a feature change and every
   // follow-up inherited the previous task. Prior turns still reach the server as structured history.
+  /**
+   * The scope produced for the CURRENT request: assistant answers since the last user message.
+   * Bounded there on purpose — the old fallback took the longest of the last SIX assistant turns,
+   * which is how a previous task's answer became a new run's approved grounding. Without any
+   * fallback the agent's own coverage plan was written, shown, then dropped, and the case writer
+   * authored from the bare prompt.
+   */
+  const scopeFromCurrentExchange = useCallback((): string => {
+    const turns = turnsRef.current;
+    let best = '';
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const turn = turns[i] as any;
+      if (turn.role === 'user') break; // stop at this request — never reach into an earlier task
+      const text = String(turn.text || turn.understanding || turn.summary || '').trim();
+      if (turn.role === 'assistant' && text && !isNoiseAnswer(text) && text.length > best.length) best = text;
+    }
+    return best;
+  }, []);
+
   const buildDeepContextPrompt = useCallback((rawRequest: string, resolvedScope: string): string => {
     const request = (rawRequest || '').trim();
     const scope = (resolvedScope || '').trim();
@@ -1626,6 +1673,7 @@ export default function AgentConsole() {
   }, [commitTurn, buildHistory, updateThinkingLabel, selectedModel, selectedEffort, conversationId]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
+    thinkingId?: string;
     prompt: string;
     originalRequest?: string;
     contextPrompt?: string;
@@ -1657,6 +1705,15 @@ export default function AgentConsole() {
     });
     const started = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(started?.error || 'Failed to understand request');
+    if (started?.activity_request_id && args.thinkingId) {
+      const requestId = String(started.activity_request_id);
+      activeActivityRef.current = { conversationId, requestId, thinkingId: args.thinkingId };
+      setTurns((prev) => prev.map((turn) => (
+        turn.id === args.thinkingId && turn.role === 'assistant' && turn.kind === 'thinking'
+          ? { ...turn, activityRequestId: requestId }
+          : turn
+      )));
+    }
     if (!started?.job_id) return started; // older backend replied synchronously — use it as-is
     return await new Promise((resolve, reject) => {
       const es = new EventSource(withEventSourceAuth(`/api/agent/understand-request/${started.job_id}/events`));
@@ -1708,10 +1765,11 @@ export default function AgentConsole() {
     // Do not make the user wait for a second, pre-run research pass that duplicates that work.
     if (!/\b(?:generate|create|write|draft|author)\b[\s\S]{0,80}\btest\s*cases?\b/i.test(originalRequest || prompt)) {
       try {
-        const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
+        const generated = await requestDeepUnderstanding({ thinkingId, prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
         understanding = generated.understanding || fallbackUnderstanding;
         understandingSource = generated.source || understandingSource;
-      } catch {
+      } catch (error: any) {
+        if (/aborted/i.test(String(error?.message || error || ''))) return;
         /* use deterministic fallback */
       }
     }
@@ -2085,12 +2143,20 @@ export default function AgentConsole() {
   // search_codebase, create_* …) and STREAM its live steps into the thinking turn, so the
   // user sees what the agent is actually doing in real time instead of a static label.
   const runViaSupervisor = useCallback(async (text: string, thinkingId: string) => {
+    const activityRequestId = globalThis.crypto.randomUUID();
+    activeActivityRef.current = { conversationId, requestId: activityRequestId, thinkingId };
+    setTurns((prev) => prev.map((turn) => (
+      turn.id === thinkingId && turn.role === 'assistant' && turn.kind === 'thinking'
+        ? { ...turn, activityRequestId }
+        : turn
+    )));
     const setThinkingLabel = (label: string) =>
       setTurns((prev) => prev.map((t) => (t.id === thinkingId && t.role === 'assistant' && t.kind === 'thinking' ? { ...t, label } : t)));
     const requestBody = {
       userMessage: text,
       workspaceId: 'default',
       conversationId,
+      requestId: activityRequestId,
       projectId: selectedProjectId || undefined,
       appId: selectedAppId || undefined,
       model: selectedModel || undefined,
@@ -2109,7 +2175,7 @@ export default function AgentConsole() {
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
-        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`), activityRequestId });
         return;
       }
       const reader = res.body.getReader();
@@ -2136,7 +2202,11 @@ export default function AgentConsole() {
           }
           else if (ev.type === 'answer_delta') {
             liveReply += ev.delta || '';
-            appendThinkingDebug(thinkingId, 'Supervisor answer delta', ev.delta || '');
+            setTurns((prev) => prev.map((turn) => (
+              turn.id === thinkingId && turn.role === 'assistant' && turn.kind === 'thinking'
+                ? { ...turn, partialText: cleanChat(liveReply) }
+                : turn
+            )));
           }
           else if (ev.type === 'heartbeat') {
             // Keeps production proxies from treating a long AI call as idle.
@@ -2211,6 +2281,7 @@ export default function AgentConsole() {
           role: 'assistant',
           kind: 'text',
           text: cleanChat(finalReply || 'Done.'),
+          activityRequestId,
           execution: finalUsage ? {
             ...currentExecution(),
             promptTokens: finalUsage.inputTokens,
@@ -2222,7 +2293,7 @@ export default function AgentConsole() {
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.' });
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.', activityRequestId });
         return;
       }
       const message = err instanceof Error ? err.message : String(err || 'network error');
@@ -2231,6 +2302,7 @@ export default function AgentConsole() {
         role: 'assistant',
         kind: 'text',
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
+        activityRequestId,
       });
     }
   }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps, presentDeepUnderstanding, selectedProjectId, selectedAppId, selectedModel, selectedEffort, currentExecution]);
@@ -2257,6 +2329,7 @@ export default function AgentConsole() {
       const clearActiveRequest = () => {
         if (activeAbortRef.current === requestController) activeAbortRef.current = null;
         if (activeThinkingIdRef.current === thinkingId) activeThinkingIdRef.current = null;
+        if (activeActivityRef.current?.thinkingId === thinkingId) activeActivityRef.current = null;
       };
       setTurns((prev) => {
         const nextTurns: Turn[] = editedTurnId
@@ -2406,10 +2479,9 @@ export default function AgentConsole() {
           }
           return;
         }
-        // Affirmative reply → start the deep run with the reviewed understanding.
-        // ONLY the understanding the user actually reviewed. Falling back to the longest previous answer
-        // shipped the last task's output as this run's approved grounding.
-        const approvedUnderstanding = activePending.understanding || '';
+        // Affirmative reply → start the deep run with the reviewed understanding, else the scope this
+        // exchange just produced. Never an earlier task's answer — see scopeFromCurrentExchange.
+        const approvedUnderstanding = activePending.understanding || scopeFromCurrentExchange();
         setPendingDeep(null);
         try {
           updateThinkingLabel(thinkingId, 'Starting reviewed test run...');
@@ -2539,9 +2611,9 @@ export default function AgentConsole() {
           targetUrl: turn.targetUrl || '',
           websiteId: turn.websiteId || undefined,
           websiteName: turn.websiteName || undefined,
-          approvedUnderstanding: turn.understanding || '',
+          approvedUnderstanding: turn.understanding || scopeFromCurrentExchange(),
           understandingSource: turn.understandingSource || '',
-          priorGrounding: turn.understanding || '',
+          priorGrounding: turn.understanding || scopeFromCurrentExchange(),
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
           metadataRefs: turn.metadataRefs,
           // The scope already chosen for this chain — sent so no gate re-asks for it at run start.
@@ -3019,6 +3091,18 @@ export default function AgentConsole() {
                 );
               }
               if (turn.kind === 'thinking') {
+                if (turn.activityRequestId) {
+                  return (
+                    <AgentActivity
+                      key={turn.id}
+                      conversationId={conversationId}
+                      requestId={turn.activityRequestId}
+                      liveLabel={turn.label}
+                      partialText={turn.partialText}
+                      onCompleted={turn.id.startsWith('activity-') ? () => { void loadConversation(conversationId); } : undefined}
+                    />
+                  );
+                }
                 const visibleDebug = (turn.debug || []).filter((entry) => !containsPrivateFileActivity(entry));
                 return (
                   <div key={turn.id} className="text-sm text-[var(--text-muted)]">
@@ -3039,6 +3123,11 @@ export default function AgentConsole() {
                       ))}
                     </span>
                     </div>
+                    {turn.partialText && (
+                      <div className="ml-6 mt-2 max-w-[95%] whitespace-pre-wrap break-words text-[var(--text-primary)]">
+                        {turn.partialText}
+                      </div>
+                    )}
                     {showQueryLogs && visibleDebug.length > 0 && (
                       <details className="ml-6 mt-2 max-w-[95%] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
                         <summary className="cursor-pointer text-xs font-semibold text-[var(--text-primary)]">
@@ -3247,6 +3336,13 @@ export default function AgentConsole() {
                         <BrainCircuit className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
+                        {turn.activityRequestId ? (
+                          <AgentActivity
+                            conversationId={conversationId}
+                            requestId={turn.activityRequestId}
+                            className="mb-2"
+                          />
+                        ) : null}
                         <div className={cn(
                           'min-w-0 rounded-2xl rounded-bl-sm border px-4 py-2.5 text-sm text-[var(--text-primary)]',
                           isErr ? 'border-red-500/30 bg-red-500/5' : 'border-[var(--border)] bg-[var(--bg-card)]',

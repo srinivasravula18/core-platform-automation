@@ -94,6 +94,8 @@ export interface RunToolLoopOptions {
   /** How many accept-driven retries before giving up. Default 2. */
   maxAcceptRetries?: number;
   onStep?: (step: AgentStep) => void;
+  /** Fired immediately before a granted tool begins executing. */
+  onToolStart?: (invocation: ToolInvocation) => void;
   /** Native agent-message deltas, forwarded while the model is still producing its answer. */
   onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;

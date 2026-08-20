@@ -12,7 +12,7 @@
 import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent } from './orchestrator';
 import { assembleConversationContext } from './memory/contextAssembler';
 import { executeIntent, stripReasoningPreamble } from './controller';
-import type { AgentTool, ToolContext, AgentStep } from './tools/types';
+import type { AgentTool, ToolContext, AgentStep, ToolInvocation } from './tools/types';
 import { queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { corePlatformDataTools } from './tools/corePlatformData';
 import { corePlatformMetaTools } from './tools/corePlatformMeta';
@@ -405,6 +405,8 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   projectId?: string; appId?: string | null;
   apps?: Array<{ name: string; baseUrl: string }>;
   onProgress?: (label: string) => void;
+  onToolStart?: (invocation: ToolInvocation) => void;
+  onStep?: (step: AgentStep) => void;
   signal?: AbortSignal;
   contextManifestId?: string;
   conversationId?: string;
@@ -420,6 +422,26 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
   const broadCoverage = isBroadCoverageQuestion(question);
+  let observedStep = 0;
+  const observeTool = async <T>(
+    name: string,
+    args: Record<string, unknown>,
+    run: () => Promise<T>,
+    summarize: (result: T) => unknown,
+  ): Promise<T> => {
+    const stepIndex = observedStep++;
+    const id = `research:${stepIndex}:${name}`;
+    const started = Date.now();
+    opts.onToolStart?.({ id, name, arguments: args });
+    try {
+      const result = await run();
+      opts.onStep?.({ index: stepIndex, toolCalls: [{ id, name, arguments: args, result: summarize(result), ms: Date.now() - started }] });
+      return result;
+    } catch (error: any) {
+      opts.onStep?.({ index: stepIndex, toolCalls: [{ id, name, arguments: args, error: String(error?.message || error), ms: Date.now() - started }] });
+      throw error;
+    }
+  };
 
   // BROAD questions ("all features", "end to end", "every sub-feature") would overflow a single
   // model window if ONE agent read every full file at once (the 1.43M-char crash). Decompose into
@@ -466,10 +488,8 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       maxTotalTokens: 250_000,
       contextManifestId: opts.contextManifestId,
       temperature: 0.2,
-      onStep: (step) => {
-        const call = step.toolCalls?.[0];
-        if (call) opts.onProgress?.(`exploring: ${call.name}(${JSON.stringify(call.arguments).replace(/\s+/g, ' ').slice(0, 70)})…`);
-      },
+      onToolStart: opts.onToolStart,
+      onStep: opts.onStep,
       signal: opts.signal,
     });
     const loopAnswer = (loop.finalText || '').trim();
@@ -496,16 +516,26 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       io: {
         // Grep for the terms, then FOLLOW imports from the strongest hits to the connected
         // child/nth-child files, so each facet sees the real wiring — not just the keyword match.
-        search: async (terms, limit) => {
-          const hits = relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms);
-          try {
-            // Drill the import subgraph DEEP and dynamically (relevance-pruned by the facet terms),
-            // to the end of the relevant connected files — not a fixed 2 hops.
-            const graph = await expandByReferences(hits.slice(0, 14), { read: async (p, b) => readCodeFileInScope(p, scopeArg, b) }, { terms, maxDepth: 8, maxFiles: 200 });
-            return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
-          } catch { return hits; }
-        },
-        read: (p, b) => readCodeFileInScope(p, scopeArg, b),
+        search: (terms, limit) => observeTool(
+          'search_codebase',
+          { terms, limit, purpose: 'research an investigation area' },
+          async () => {
+            const hits = relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms);
+            try {
+              // Drill the import subgraph DEEP and dynamically (relevance-pruned by the facet terms),
+              // to the end of the relevant connected files — not a fixed 2 hops.
+              const graph = await expandByReferences(hits.slice(0, 14), { read: async (p, b) => readCodeFileInScope(p, scopeArg, b) }, { terms, maxDepth: 8, maxFiles: 200 });
+              return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
+            } catch { return hits; }
+          },
+          (result) => ({ matchCount: result.length }),
+        ),
+        read: (p, b) => observeTool(
+          'read_code_file',
+          { byteLimit: b, purpose: 'research an investigation area' },
+          () => readCodeFileInScope(p, scopeArg, b),
+          (result) => ({ charactersRead: result.length }),
+        ),
       },
       orchestratorAgent: 'chatAssistant',
       workspaceId: opts.workspaceId,
@@ -538,10 +568,14 @@ ${notes}\n`;
   for (const a of opts.apps || []) if (a?.name) baseTerms.push(...keywordsFor(a.name));
   const searchTerms = Array.from(new Set(baseTerms)).slice(0, 12);
 
-  opts.onProgress?.(`Searching the codebase for ${searchTerms.slice(0, 5).join(', ') || 'the feature'}…`);
   let files: Array<{ path: string }> = [];
   try {
-    const r1 = await searchCodeInScope(searchTerms, scopeArg, 300);
+    const r1 = await observeTool(
+      'search_codebase',
+      { terms: searchTerms },
+      () => searchCodeInScope(searchTerms, scopeArg, 300),
+      (result) => ({ matchCount: result.matches.length }),
+    );
     files = r1.matches as Array<{ path: string }>;
   } catch (err: any) {
     return `I couldn't read the codebase files for this scope. It looked in "${scope.repoLabel}"${scope.roots.length ? ` within ${scope.roots.join(', ')}` : ''}, but the repo access failed: ${err?.message || 'unknown error'}.`;
@@ -550,15 +584,24 @@ ${notes}\n`;
   // ROUND 2 — follow references: read the strongest round-1 files, harvest the identifiers
   // they use, and grep those so the modules they depend on join the candidate pool.
   const seed = relevantSourcePaths(files.map((f) => f.path), searchTerms);
-  const seedContents = await Promise.all(seed.map(async (p) => {
-    try { return (await readCodeFileInScope(p, scopeArg, 4000)).slice(0, 4000); } catch { return ''; }
-  }));
+  const seedContents = await observeTool(
+    'read_code_file',
+    { fileCount: seed.length, purpose: 'discover connected modules' },
+    () => Promise.all(seed.map(async (p) => {
+      try { return (await readCodeFileInScope(p, scopeArg, 4000)).slice(0, 4000); } catch { return ''; }
+    })),
+    (result) => ({ filesRead: result.filter(Boolean).length }),
+  );
   const refTerms = Array.from(new Set(seedContents.flatMap(harvestReferenceTerms)))
     .filter((t) => !searchTerms.includes(t));
   if (refTerms.length) {
-    opts.onProgress?.('Following references across the codebase…');
     try {
-      const r2 = await searchCodeInScope(refTerms, scopeArg, 300);
+      const r2 = await observeTool(
+        'search_codebase',
+        { terms: refTerms, purpose: 'follow discovered references' },
+        () => searchCodeInScope(refTerms, scopeArg, 300),
+        (result) => ({ matchCount: result.matches.length }),
+      );
       const have = new Set(files.map((f) => f.path));
       for (const m of (r2.matches as Array<{ path: string }>)) if (!have.has(m.path)) files.push(m);
     } catch { /* round 2 is best-effort */ }
@@ -568,19 +611,24 @@ ${notes}\n`;
   // not a fixed top-N.
   const allTerms = Array.from(new Set([...searchTerms, ...refTerms]));
   const top = relevantSourcePaths(files.map((f) => f.path), allTerms);
-  opts.onProgress?.(top.length ? `Reading ${top.length} relevant file(s) in depth…` : 'Reading the codebase…');
-  const excerptParts = await Promise.all(top.map(async (p) => {
-    try {
-      // Cap the per-file excerpt: this is the bounded fallback (used on slow CLI providers and
-      // when the deeper paths fail), so it must make few calls and never overflow the window.
-      return `FILE: ${p}\n${numberLines((await readCodeFileInScope(p, scopeArg, 3200)).slice(0, 3500))}`;
-    } catch {
-      return '';
-    }
-  }));
+  const excerptParts = await observeTool(
+    'read_code_file',
+    { fileCount: top.length, purpose: 'ground the answer' },
+    () => Promise.all(top.map(async (p) => {
+      try {
+        // Cap the per-file excerpt: this is the bounded fallback (used on slow CLI providers and
+        // when the deeper paths fail), so it must make few calls and never overflow the window.
+        return `FILE: ${p}\n${numberLines((await readCodeFileInScope(p, scopeArg, 3200)).slice(0, 3500))}`;
+      } catch {
+        return '';
+      }
+    })),
+    (result) => ({ filesRead: result.filter(Boolean).length }),
+  );
   const excerpts = excerptParts.filter(Boolean).join('\n\n---\n\n');
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
+  opts.onProgress?.('Synthesizing grounded findings…');
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId, model: opts.model, effort: opts.effort });
   const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real codebase files provided below (your source of truth). Markdown/documentation files are excluded. Be specific and concrete. If the provided codebase files do not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
 Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
@@ -620,6 +668,7 @@ export async function runSupervisor(input: {
   model?: string;
   effort?: string;
   onStep?: (step: AgentStep) => void;
+  onToolStart?: (invocation: ToolInvocation) => void;
   onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<SupervisorResult> {
@@ -667,6 +716,7 @@ export async function runSupervisor(input: {
     contextManifestId: assembled.manifest.id,
     temperature: 0.2,
     onStep: input.onStep,
+    onToolStart: input.onToolStart,
     onTextDelta: input.onTextDelta,
     signal: input.signal,
   });

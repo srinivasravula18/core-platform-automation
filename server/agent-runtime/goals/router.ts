@@ -97,14 +97,7 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
  */
 const GROUNDED_SUBJECT_RE = /\b(?:code(?:base)?|repo(?:sitory)?|implementation|component|database|schema|endpoint|api|selector|dom|page|screen|feature|workflow|list\s+view|workspace|artifact|test\s+case|suite|plan|run|script|defect|report|requirement|failed|failure|error)(?:e?s)?\b/;
 
-export function shouldUseConversationalFastPath(
-  message: string,
-  opts: { hasPriorTurns?: boolean } = {},
-): boolean {
-  // A follow-up inside an established conversation keeps whatever capability the chat already had.
-  // Small talk is short-circuited before this is ever called, so this cannot strand a greeting on
-  // the expensive path — it only stops turn 2 from silently losing the tools turn 1 had.
-  if (opts.hasPriorTurns) return false;
+export function shouldUseConversationalFastPath(message: string): boolean {
   const text = cleanText(message);
   const conversationalAsk = looksLikeQuestionOrCoverageAsk(message)
     || /^(?:explain|define|describe|compare)\b/.test(text);

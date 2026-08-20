@@ -75,6 +75,7 @@ import { reqScope, reqGrants, scopeFilter, scopeStamp } from '../../shared/scope
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
+import { beginTurnActivity, completeTurnActivity, recordTurnActivity, summarizeActivityValue } from '../controller/turnActivity';
 import {
   renderSelectorRegistryForPrompt,
   runContextBuilderPhase,
@@ -1995,6 +1996,10 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     }),
   })
     .catch(() => undefined);
+  // The scope the case writer will actually author from. Logged because an empty value here is
+  // indistinguishable in the output from a weak model: cases silently collapse to GOAL + live DOM.
+  const graphUnderstanding = (resolveUnderstanding(run) || '').trim();
+  console.log(`[graph] run ${String(run.id).slice(0, 8)} understanding=${graphUnderstanding.length} chars${graphUnderstanding ? '' : ' — authoring from the prompt + DOM ONLY'}`);
   await startGraphRun({
     runId: run.id,
     workspaceId: run.projectId || undefined,
@@ -2003,7 +2008,7 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     goal: run.prompt || '',
     // The chat's code-grounded feature analysis — so the case writer authors from the real behaviors/rules
     // it found (derivation, validation, payload, edges), not just the one-line prompt + the live DOM catalog.
-    understanding: (resolveUnderstanding(run) || '').trim() || undefined,
+    understanding: graphUnderstanding || undefined,
     conversationId: run.conversationId || undefined,
     requestedCaseCount: Number(gs.requestedCaseCount) || 0,
     reviewPolicy: gs.reviewPolicy === 'auto' ? 'auto' : 'manual',
@@ -5025,7 +5030,11 @@ Rules:
     for (const job of understandingJobs.values()) if (job.conversationId === id) job.consumed = true;
   }
 
-  async function computeUnderstanding(body: any, scope: { userId?: string; projectId?: string | null; appId?: string | null }): Promise<any> {
+  async function computeUnderstanding(
+    body: any,
+    scope: { userId?: string; projectId?: string | null; appId?: string | null },
+    onProgress: (kind: 'agent_started' | 'progress' | 'tool_started' | 'tool_completed' | 'responding', detail: Record<string, unknown>) => void = () => {},
+  ): Promise<any> {
     const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history, conversationId } = body || {};
     // The console sends the model/effort the user picked in the topbar; without threading them here the
     // understanding silently ran on the saved Settings model instead.
@@ -5110,6 +5119,9 @@ Rules:
         const apps = targetLabel
           ? [{ name: rawTargetName || targetLabel, baseUrl: rawTargetUrl || targetLabel }]
           : undefined;
+        onProgress('agent_started', {
+          label: rawTargetName ? `Planning code research for ${rawTargetName}` : 'Planning code research',
+        });
         const grounded = await answerAppQuestionFromCode(groundingPrompt || intentPrompt, {
           workspaceId: scope.userId || 'default',
           userId: scope.userId,
@@ -5118,6 +5130,23 @@ Rules:
           apps,
           model: requestedModel,
           effort: requestedEffort,
+          onProgress: (label) => onProgress('progress', { label }),
+          onToolStart: (tool) => onProgress('tool_started', {
+            tool: { name: tool.name, arguments: tool.arguments },
+          }),
+          onStep: (step) => {
+            for (const call of step.toolCalls) {
+              onProgress('tool_completed', {
+                tool: {
+                  name: call.name,
+                  arguments: call.arguments,
+                  resultSummary: call.error ? undefined : summarizeActivityValue(call.result),
+                  error: call.error ? summarizeActivityValue(call.error) : undefined,
+                  ms: call.ms,
+                },
+              });
+            }
+          },
         });
         const understanding = stripCodebaseLocationsForAgentConsole(String(grounded || '').trim());
         if (understanding) {
@@ -5140,6 +5169,7 @@ Rules:
     }
 
     try {
+      onProgress('responding', { label: 'Synthesizing reviewed test scope' });
       const ai = await getOrchestrator('chatAssistant', { workspaceId: scope.userId || 'default', model: requestedModel, effort: requestedEffort });
       const result = await ai.generateObject<any>({
         prompt:
@@ -5177,7 +5207,7 @@ Rules:
     }
   }
 
-  app.post('/api/agent/understand-request', (req, res) => {
+  app.post('/api/agent/understand-request', async (req, res) => {
     const body = req.body || {};
     if (!String(body.prompt || '').trim() && !String(body.contextPrompt || '').trim()) {
       return res.status(400).json({ error: 'prompt is required' });
@@ -5185,9 +5215,20 @@ Rules:
     pruneUnderstandingJobs();
     const scope = reqScope(req);
     const jobId = randomUUID();
+    const conversationId = String(body.conversationId || '').trim();
+    const activityRequestId = conversationId ? `understanding:${jobId}` : '';
+    const activity = activityRequestId
+      ? await beginTurnActivity({
+          conversationId,
+          requestId: activityRequestId,
+          ownerId: scope.userId,
+          workspaceId: 'default',
+          projectId: scope.projectId,
+        }).catch(() => null)
+      : null;
     understandingJobs.set(jobId, {
       status: 'running', createdAt: Date.now(),
-      conversationId: String(body.conversationId || '').trim() || undefined,
+      conversationId: conversationId || undefined,
       ownerId: scope.userId || undefined,
       // Enough to rebuild the review card on re-attach (see /for-conversation below).
       context: {
@@ -5197,13 +5238,17 @@ Rules:
     });
     // Run in the background; the job NEVER fails hard  -  computeUnderstanding already
     // degrades to the deterministic fallback payload on any model/research error.
-    computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId })
+    const progress = (kind: 'agent_started' | 'progress' | 'tool_started' | 'tool_completed' | 'responding', detail: Record<string, unknown>) => {
+      if (activity) void recordTurnActivity(activityRequestId, kind, detail);
+    };
+    computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId }, progress)
       .catch((err: any) => ({ understanding: '', source: 'fallback', error: getAIErrorMessage(err) }))
-      .then((result) => {
+      .then(async (result) => {
+        if (activity) await completeTurnActivity(activityRequestId, { label: 'Reviewed test scope is ready' });
         const job = understandingJobs.get(jobId);
         if (job) { job.status = 'done'; job.result = result; }
       });
-    res.json({ job_id: jobId });
+    res.json({ job_id: jobId, activity_request_id: activityRequestId || undefined });
   });
 
   app.get('/api/agent/understand-request/:jobId', (req, res) => {
@@ -5746,6 +5791,11 @@ Rules:
     }
     approvedUnderstanding = stripScriptBlocksFromScope(approvedUnderstanding);
     priorGrounding = stripScriptBlocksFromScope(priorGrounding);
+    // A run with no scope authors from the bare prompt and whatever DOM it lands on — thin, generic
+    // cases that look like a model failure. Say so, instead of failing quietly.
+    if (!approvedUnderstanding && !priorGrounding) {
+      console.warn(`[agent] run starting with NO approved understanding — cases will be authored from the prompt alone: ${String(prompt || '').slice(0, 80)}`);
+    }
     // Scope the user already resolved in this conversation, inherited exactly like the understanding above:
     // a module/application they picked (or that was auto-resolved) must never be asked for twice.
     const inheritedScope = inheritResolvedScope(priorSessionRun?.mission_context, { targetChanged, featureChanged });

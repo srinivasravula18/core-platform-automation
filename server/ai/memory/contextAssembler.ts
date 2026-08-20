@@ -15,9 +15,52 @@ export interface ConversationMessage {
 }
 
 function normalize(turn: any): ConversationMessage | null {
-  const content = String(turn?.content ?? turn?.text ?? turn?.summary ?? '').trim();
+  if (!turn) return null;
+  const role = turn?.role === 'assistant' ? 'assistant' : 'user';
+  const kind = String(turn?.kind || 'text');
+
+  // Extract content based on turn kind (matching frontend buildHistory serialization)
+  let content = '';
+  switch (kind) {
+    case 'folderask':
+      content = String(turn?.understanding ?? turn?.text ?? '').trim();
+      break;
+    case 'cases':
+      if (Array.isArray(turn?.cases)) {
+        content = `Generated ${turn.cases.length} test case(s): ${turn.cases.map((c: any, i: number) => `${c?.id || c?.caseId || i + 1}: ${c?.title || c?.name || `case ${i + 1}`}`).join('; ')}`;
+      }
+      break;
+    case 'deeprun':
+      content = `Started a deep test-generation run (task ${turn?.taskId || 'unknown'})${turn?.targetUrl ? ` for ${turn.targetUrl}` : ''}.`;
+      break;
+    case 'reqdiscovery':
+      content = `Requirement discovery: ${typeof turn?.result === 'string' ? turn.result : (turn?.result?.summary || JSON.stringify(turn?.result || {})).slice(0, 600)}`;
+      break;
+    case 'reqdraft':
+      content = `Requirement draft: ${turn?.result?.requirement?.title || turn?.query || ''}. ${turn?.result?.requirement?.description || ''}`;
+      break;
+    case 'codereview':
+      content = `Code review findings: ${typeof turn?.analysis === 'string' ? turn.analysis : (turn?.analysis?.summary || JSON.stringify(turn?.analysis || {})).slice(0, 600)}`;
+      break;
+    case 'plan':
+      const steps = Array.isArray(turn?.plan?.steps)
+        ? turn.plan.steps.map((s: any, i: number) => `${i + 1}. ${s?.intent?.title || s?.intent?.kind || 'step'}`).join('; ')
+        : '';
+      content = [turn?.plan?.summary, steps && `Plan steps: ${steps}`].filter(Boolean).join(' ');
+      break;
+    case 'appask':
+      content = String(turn?.text ?? '').trim();
+      break;
+    case 'clarify':
+      content = String(turn?.summary ?? '').trim();
+      break;
+    default:
+      // Fallback to standard fields
+      content = String(turn?.content ?? turn?.text ?? turn?.summary ?? '').trim();
+  }
+
   if (!content) return null;
-  return { role: turn?.role === 'assistant' ? 'assistant' : 'user', content, kind: String(turn?.kind || 'text') };
+  return { role, content, kind };
 }
 
 function fallbackTurns(history: unknown): ConversationMessage[] {
@@ -46,8 +89,8 @@ export async function assembleConversationContext(input: {
   path: string;
 }) {
   const stored = input.conversationId ? await ChatConversations.get(input.conversationId).catch(() => null) : null;
-  let turns = stored?.turns?.map(normalize).filter(Boolean) as ConversationMessage[] | undefined;
-  if (!turns?.length) turns = fallbackTurns(input.fallbackHistory);
+  let turns = fallbackTurns(stored?.turns);
+  if (!turns.length) turns = fallbackTurns(input.fallbackHistory);
   if (turns.at(-1)?.role === 'user' && turns.at(-1)?.content === input.currentMessage.trim()) turns = turns.slice(0, -1);
 
   if (input.conversationId && !stored) {
