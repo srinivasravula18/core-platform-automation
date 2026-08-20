@@ -273,7 +273,7 @@ type Turn =
   | { id: string; role: 'user'; text: string }
   | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
-  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean; createdAt?: string; execution?: ExecutionMeta }
+  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
@@ -1622,6 +1622,13 @@ export default function AgentConsole() {
     moduleName?: string;
     metadataRefs?: string[];
   }) => {
+    const requestedActivityId = globalThis.crypto.randomUUID();
+    activeActivityRef.current = { conversationId, requestId: requestedActivityId, thinkingId: args.thinkingId };
+    setTurns((prev) => prev.map((turn) => (
+      turn.id === args.thinkingId && turn.role === 'assistant' && turn.kind === 'thinking'
+        ? { ...turn, activityRequestId: requestedActivityId }
+        : turn
+    )));
     updateThinkingLabel(args.thinkingId, 'Starting agent run...');
     const res = await fetch('/api/agent/start', {
       method: 'POST',
@@ -1633,6 +1640,7 @@ export default function AgentConsole() {
         websiteName: args.websiteName || undefined,
         prompt: args.prompt,
         conversationId,
+        activityRequestId: requestedActivityId,
         approvedUnderstanding: args.approvedUnderstanding || '',
         understandingSource: args.understandingSource || '',
         priorGrounding: args.priorGrounding || args.approvedUnderstanding || '',
@@ -1658,6 +1666,7 @@ export default function AgentConsole() {
       }),
     });
     const data = await res.json().catch(() => ({}));
+    const activityRequestId = String(data?.activity_request_id || '');
     if (data?.app_options?.apps?.length) {
       // Ambiguous target: pause and let the user pick the app/navigation from a dropdown
       // instead of a plain-text question; Continue resubmits this same run with the choice.
@@ -1677,9 +1686,9 @@ export default function AgentConsole() {
         runArgs,
       });
     } else if (data?.task_id) {
-      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id, activityRequestId });
     } else if (data?.chat_response) {
-      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
+      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response, activityRequestId: activityRequestId || undefined });
     } else {
       commitTurn(args.thinkingId, {
         id: args.thinkingId,
@@ -3175,6 +3184,9 @@ export default function AgentConsole() {
                         <BrainCircuit className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
+                        {turn.activityRequestId ? (
+                          <AgentActivity conversationId={conversationId} requestId={turn.activityRequestId} className="mb-2" />
+                        ) : null}
                         {/* saved is threaded through the persisted turn so "Save all" stays "Saved" after navigation. */}
                         <DeepRunResult
                           taskId={turn.taskId}

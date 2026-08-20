@@ -75,7 +75,7 @@ import { reqScope, reqGrants, scopeFilter, scopeStamp } from '../../shared/scope
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
-import { beginTurnActivity, completeTurnActivity, recordTurnActivity, summarizeActivityValue } from '../controller/turnActivity';
+import { beginTurnActivity, cancelTurnActivity, completeTurnActivity, failTurnActivity, recordTurnActivity, summarizeActivityValue } from '../controller/turnActivity';
 import {
   renderSelectorRegistryForPrompt,
   runContextBuilderPhase,
@@ -1436,6 +1436,11 @@ function pushPhase(run: any, msg: any): void {
     throw new Error('RUN_CANCELLED');
   }
   run.messages.push({ ...msg, at: nowIso() });
+  if (run.activityRequestId) {
+    void recordTurnActivity(run.activityRequestId, 'progress', {
+      label: `${String(msg?.agent || 'Agent')} ${String(msg?.status || 'updated').replace(/_/g, ' ')}`,
+    });
+  }
 }
 
 function runDetailsPayload(run: any): any {
@@ -1472,6 +1477,11 @@ function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): vo
   if (run.status === 'cancelled') return;
   run.status = status;
   run.completed_at = nowIso();
+  if (run.activityRequestId) {
+    if (status === 'failed') void failTurnActivity(run.activityRequestId, 'Agent run failed');
+    else if (status === 'cancelled') void cancelTurnActivity(run.conversationId, run.activityRequestId);
+    else void completeTurnActivity(run.activityRequestId, { label: 'Agent run completed' });
+  }
   // Conversational Runtime Phase 6: publish the terminal outcome into the conversation session.
   projectRunLifecycleSafe({ run, phase: 'completed' });
 }
@@ -5632,6 +5642,23 @@ Rules:
       return res.json({ chat_response: setup.message });
     }
     const conversationId = String(req.body.conversationId || req.body.agentConsoleId || req.body.sessionId || '').trim();
+    const activityRequestId = String(req.body.activityRequestId || '').trim();
+    const activity = conversationId && activityRequestId
+      ? await beginTurnActivity({
+          conversationId,
+          requestId: activityRequestId,
+          ownerId: reqScope(req).userId,
+          workspaceId: 'default',
+          projectId: reqScope(req).projectId,
+        }).catch(() => null)
+      : null;
+    let runOwnsActivity = false;
+    if (activity) {
+      await recordTurnActivity(activityRequestId, 'agent_started', { label: 'Preparing agent run' });
+      res.once('finish', () => {
+        if (!runOwnsActivity) void completeTurnActivity(activityRequestId, { label: 'Run preparation completed' });
+      });
+    }
     // Starting a run IS proceeding past the review gate — retire its understanding job so a later
     // reload cannot re-attach and append the "Look right? … Proceed" card behind the running card.
     consumeUnderstandingJobs(conversationId);
@@ -6176,6 +6203,7 @@ Rules:
       // Persist the model the run will actually use: agent_runs.model is fed from this and was left blank,
       // so no run recorded which model produced it.
       model: resolveModelForAgent('caseWriter', runProvider, requestedModel),
+      activityRequestId: activity ? activityRequestId : '',
     };
     newRun.messages.push({
       agent: 'System',
@@ -6197,10 +6225,11 @@ Rules:
     }
 
     db.agentRuns.unshift(newRun);
+    runOwnsActivity = Boolean(activity);
     saveAgentRunStateSoon(newRun, 'new agent run');
     // Conversational Runtime Phase 6: the session now knows a run is in flight.
     projectRunLifecycleSafe({ run: newRun, phase: 'started' });
-    res.json({ task_id: taskId });
+    res.json({ task_id: taskId, activity_request_id: activity ? activityRequestId : undefined });
 
     // COST QUOTA (book Ch 16: Resource-Aware Optimization): if this project has already burned
     // its daily budget, refuse to start the (expensive) pipeline rather than overspending. The

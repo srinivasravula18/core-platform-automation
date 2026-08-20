@@ -145,6 +145,15 @@ export async function listTurnActivity(conversationId: string, sinceSeq = 0) {
   for (const event of allEvents) latestByRequest.set(String(event.correlationId || event.payload?.requestId || ''), event);
   for (const [requestId, event] of latestByRequest) {
     if (!requestId || event.payload?.status !== 'running' || activeTurns.has(requestId)) continue;
+    // A completion can commit between the first read and its active-map cleanup. Re-read only for
+    // apparent orphans so polling cannot turn a legitimately completed request into "interrupted".
+    const currentEvents = (await ConversationSessions.listEvents(conversationId, 0))
+      .filter((candidate) => candidate.eventType === 'TurnActivity');
+    const current = [...currentEvents].reverse().find((candidate) =>
+      String(candidate.correlationId || candidate.payload?.requestId || '') === requestId,
+    );
+    allEvents = currentEvents;
+    if (current?.payload?.status !== 'running') continue;
     await ConversationSessions.commit({
       conversationId,
       events: [{
