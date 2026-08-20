@@ -90,12 +90,26 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
  * full application tool catalogue. Product/code/workspace questions stay on the grounded
  * Supervisor path; general explanations get one streamed model turn.
  */
-export function shouldUseConversationalFastPath(message: string): boolean {
+/**
+ * App/workspace nouns that must reach the grounded path. Written singular; the trailing `(?:e?s)?`
+ * accepts the plural of each, because matching only the singular meant "important pages" and
+ * "major workflows" slipped onto the tool-less path while "page"/"workflow" did not.
+ */
+const GROUNDED_SUBJECT_RE = /\b(?:code(?:base)?|repo(?:sitory)?|implementation|component|database|schema|endpoint|api|selector|dom|page|screen|feature|workflow|list\s+view|workspace|artifact|test\s+case|suite|plan|run|script|defect|report|requirement|failed|failure|error)(?:e?s)?\b/;
+
+export function shouldUseConversationalFastPath(
+  message: string,
+  opts: { hasPriorTurns?: boolean } = {},
+): boolean {
+  // A follow-up inside an established conversation keeps whatever capability the chat already had.
+  // Small talk is short-circuited before this is ever called, so this cannot strand a greeting on
+  // the expensive path — it only stops turn 2 from silently losing the tools turn 1 had.
+  if (opts.hasPriorTurns) return false;
   const text = cleanText(message);
   const conversationalAsk = looksLikeQuestionOrCoverageAsk(message)
     || /^(?:explain|define|describe|compare)\b/.test(text);
   if (!conversationalAsk) return false;
-  return !/\b(?:code(?:base)?|repo(?:sitory)?|implementation|component|database|schema|endpoint|api|selector|dom|page|screen|feature|workflow|list\s+view|workspace|artifact|test\s+cases?|suite|plan|run|script|defect|report|requirement|failed|failure|error)\b/.test(text);
+  return !GROUNDED_SUBJECT_RE.test(text);
 }
 
 /** Explicit live-test commands can enter the reviewed scope workflow without an LLM routing turn. */

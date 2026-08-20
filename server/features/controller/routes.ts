@@ -217,7 +217,10 @@ export function registerControllerRoutes(app: Express) {
         await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
         return res.json({ reply: quick.reply, accepted: true, fast: true, source: quick.source, actions: quick.actions || [], trace: [] });
       }
-      if (shouldUseConversationalFastPath(userMessage)) {
+      const priorTurns = Array.isArray(history) && history.some((turn: any) => turn?.role === 'assistant');
+      const useFastPath = shouldUseConversationalFastPath(userMessage, { hasPriorTurns: priorTurns });
+      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${useFastPath ? 'fast (no tools)' : 'grounded'} (priorTurns=${priorTurns})`);
+      if (useFastPath) {
         const reply = await explainIntent(userMessage, {
           workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
           conversationId, history, apps, model, effort,
@@ -283,7 +286,11 @@ export function registerControllerRoutes(app: Express) {
         await sendFinalReply(res, send, quick.reply, { accepted: true, fast: true, source: quick.source, actions: quick.actions || [] });
         return res.end();
       }
-      if (shouldUseConversationalFastPath(userMessage)) {
+      // A follow-up must not silently lose the tools the first turn had — see the two-turn forensic.
+      const hasPriorTurns = Array.isArray(history) && history.some((turn: any) => turn?.role === 'assistant');
+      const fastPath = shouldUseConversationalFastPath(userMessage, { hasPriorTurns });
+      console.log(`[routing] ${conversationId || '(no conversation)'} -> ${fastPath ? 'fast (no tools)' : 'grounded'} (priorTurns=${hasPriorTurns})`);
+      if (fastPath) {
         let reply = '';
         for await (const delta of streamExplain(userMessage, {
           workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,

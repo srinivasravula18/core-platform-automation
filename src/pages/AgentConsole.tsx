@@ -386,6 +386,19 @@ const CONV_KEY_BASE = 'tfa_active_conversation';
 const MODEL_PREF_KEY = RUNTIME_MODEL_KEY;
 const EFFORT_PREF_KEY = 'tfa_runtime_effort';
 const DEFAULT_EFFORT_LEVELS = ['low', 'medium', 'high'];
+
+/**
+ * The topbar pick is the runtime setting, not a private local preference — persist it so Settings
+ * shows the same value. Best-effort: on failure the pick still governs this session locally.
+ */
+function persistRuntimeChoice(runtimeName: string | undefined, body: { model?: string; effort?: string }) {
+  if (!runtimeName) return;
+  void fetch(`/api/ai/providers/${encodeURIComponent(runtimeName)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => { /* keep the local pick */ });
+}
 function runtimeModelIds(runtime: any): string[] {
   const live = Array.isArray(runtime?.models) ? runtime.models.map((model: any) => String(model?.id || '')).filter(Boolean) : [];
   return live.length ? live : [runtime?.defaultModel, ...(Array.isArray(runtime?.alternatives) ? runtime.alternatives : [])].filter(Boolean).map(String);
@@ -705,18 +718,23 @@ export default function AgentConsole() {
     // Usage is metered per model, so the topbar pill must re-read the allowance for the new pick.
     window.dispatchEvent(new CustomEvent(RUNTIME_MODEL_EVENT, { detail: model }));
     const runtime = providers.find((provider: any) => provider.callable);
+    // Write through to the runtime settings: the topbar and Settings are ONE choice, not a local
+    // preference shadowing a saved default that then disagree with each other.
+    persistRuntimeChoice(runtime?.name, { model });
     const efforts = runtimeEfforts(runtime, model);
     if (!efforts.includes(selectedEffort)) {
       const next = efforts.includes(runtime?.effort) ? runtime.effort : (efforts[0] || 'medium');
       setSelectedEffort(next);
       writeScopedStorage(EFFORT_PREF_KEY, next);
+      persistRuntimeChoice(runtime?.name, { effort: next });
     }
   }, [providers, selectedEffort]);
 
   const handleEffortChange = useCallback((effort: string) => {
     setSelectedEffort(effort);
     writeScopedStorage(EFFORT_PREF_KEY, effort || null);
-  }, []);
+    persistRuntimeChoice(providers.find((provider: any) => provider.callable)?.name, { effort });
+  }, [providers]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1090,11 +1108,13 @@ export default function AgentConsole() {
           const offered = runtimeModelIds(runtime);
           const savedModel = readScopedStorage(MODEL_PREF_KEY) || '';
           const savedEffort = readScopedStorage(EFFORT_PREF_KEY) || '';
-          // A remembered model the runtime no longer offers is dropped rather than sent and rejected.
-          const nextModel = offered.includes(savedModel) ? savedModel : (offered.includes(runtime.model) ? runtime.model : offered[0]);
+          // The SERVER value wins: the topbar writes through to it, so it is always at least as fresh
+          // as the local pref — and this is what makes a change made in Settings show up here.
+          // The stored pref is only a fallback for a runtime that reports no model of its own.
+          const nextModel = offered.includes(runtime.model) ? runtime.model : (offered.includes(savedModel) ? savedModel : offered[0]);
           const efforts = runtimeEfforts(runtime, nextModel);
           setSelectedModel(nextModel);
-          setSelectedEffort(efforts.includes(savedEffort) ? savedEffort : (efforts.includes(runtime.effort) ? runtime.effort : (efforts[0] || 'medium')));
+          setSelectedEffort(efforts.includes(runtime.effort) ? runtime.effort : (efforts.includes(savedEffort) ? savedEffort : (efforts[0] || 'medium')));
         }
       })
       .catch(() => {});
