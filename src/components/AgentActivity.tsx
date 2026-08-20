@@ -150,7 +150,7 @@ export const AgentActivity = memo(function AgentActivity({
           {steps.length > 0 ? <span className="ml-auto text-xs font-normal text-[var(--text-muted)]">{steps.length} step{steps.length === 1 ? '' : 's'}</span> : null}
         </summary>
 
-        <div className="relative ml-2.5 mt-2 border-l border-[var(--border)] pl-6">
+        <div className="custom-scrollbar relative ml-2.5 mt-2 max-h-[min(55vh,32rem)] overflow-y-auto overscroll-contain border-l border-[var(--border)] pl-6 pr-2">
           {steps.length ? steps.map((step) => {
             const detail = step.tool?.error || step.tool?.resultSummary;
             const visibleDetail = detail && !containsPrivateFileActivity(detail) ? detail : '';
@@ -172,7 +172,7 @@ export const AgentActivity = memo(function AgentActivity({
                   {typeof step.tool?.ms === 'number' ? <span className="ml-auto shrink-0 text-xs text-[var(--text-muted)]">{step.tool.ms} ms</span> : null}
                 </div>
                 {visibleDetail ? (
-                  <div className="custom-scrollbar mt-2 max-h-40 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-5 text-[var(--text-muted)]">
+                  <div className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-5 text-[var(--text-muted)]">
                     <pre className="whitespace-pre-wrap break-words font-sans">{visibleDetail}</pre>
                   </div>
                 ) : null}

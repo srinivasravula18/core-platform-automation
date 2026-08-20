@@ -279,7 +279,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[]; applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[]; applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string; activityRequestId?: string }
   | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string; baseUrl?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[]; partialText?: string; activityRequestId?: string };
 
@@ -495,11 +495,13 @@ function drillLinksForPlan(plan: any): { label: string; href: string; icon: type
 // LOCAL here and are committed on blur / select / Proceed only.
 const FolderAskCard = memo(function FolderAskCard({
   turn,
+  conversationId,
   onCommit,
   onProceed,
   onCancel,
 }: {
   turn: FolderAskTurn;
+  conversationId: string;
   onCommit: (turnId: string, patch: { understanding?: string }) => void;
   onProceed: (turn: FolderAskTurn) => void;
   onCancel: (turnId: string) => void;
@@ -519,33 +521,42 @@ const FolderAskCard = memo(function FolderAskCard({
         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
           <FolderTree className="h-4 w-4" />
         </div>
-        <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
-          {turn.understanding && (
-            <textarea
-              ref={taRef}
-              value={understanding}
-              rows={3}
-              onChange={(e) => setUnderstanding(e.target.value)}
-              onBlur={() => onCommit(turn.id, { understanding })}
-              className="mb-2 w-full resize-none overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+        <div className="min-w-0">
+          {turn.activityRequestId ? (
+            <AgentActivity
+              conversationId={conversationId}
+              requestId={turn.activityRequestId}
+              className="mb-2"
             />
-          )}
-          <p className="text-[var(--text-primary)]">{turn.text}</p>
-          {/* Review the understanding above (edit if needed), then proceed or cancel. */}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => onProceed({ ...turn, understanding })}
-              title="Start the run"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
-            >
-              <Sparkles className="h-3.5 w-3.5" /> Proceed
-            </button>
-            <button
-              onClick={() => onCancel(turn.id)}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-            >
-              Cancel
-            </button>
+          ) : null}
+          <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
+            {turn.understanding && (
+              <textarea
+                ref={taRef}
+                value={understanding}
+                rows={3}
+                onChange={(e) => setUnderstanding(e.target.value)}
+                onBlur={() => onCommit(turn.id, { understanding })}
+                className="mb-2 w-full resize-none overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              />
+            )}
+            <p className="text-[var(--text-primary)]">{turn.text}</p>
+            {/* Review the understanding above (edit if needed), then proceed or cancel. */}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => onProceed({ ...turn, understanding })}
+                title="Start the run"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Proceed
+              </button>
+              <button
+                onClick={() => onCancel(turn.id)}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -920,6 +931,7 @@ export default function AgentConsole() {
         const understanding = String(result?.understanding || '').trim() || fallbackUnderstanding;
         const understandingSource = String(result?.source || 'fallback');
         const caseCountPrompt = originalRequest || prompt;
+        const activityRequestId = job.jobId ? `understanding:${job.jobId}` : undefined;
         setPendingDeep({ prompt, originalRequest, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 });
         convTargetRef.current = { targetUrl, websiteId, websiteName };
         const cardId = nextId();
@@ -931,7 +943,7 @@ export default function AgentConsole() {
           return [...prev, {
             id: cardId, role: 'assistant', kind: 'folderask' as const, understanding, understandingSource,
             originalPrompt: contextPrompt || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName,
-            revisionCount: 0,
+            revisionCount: 0, activityRequestId,
             text: 'Look right? Review the summary above, then Proceed — or tell me what to change.',
           }];
         });
@@ -944,7 +956,13 @@ export default function AgentConsole() {
       setTurns((prev) => {
         if (token !== loadReqRef.current) return prev;
         if (prev.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return prev;
-        return [...prev, { id: thinkingId, role: 'assistant', kind: 'thinking' as const, label: 'Resuming — finishing what I was analyzing…' }];
+        return [...prev, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'thinking' as const,
+          label: 'Resuming — finishing what I was analyzing…',
+          activityRequestId: job.jobId ? `understanding:${job.jobId}` : undefined,
+        }];
       });
       for (let i = 0; i < 240; i++) {
         await new Promise((res) => setTimeout(res, 5000));
@@ -1705,8 +1723,9 @@ export default function AgentConsole() {
     });
     const started = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(started?.error || 'Failed to understand request');
-    if (started?.activity_request_id && args.thinkingId) {
-      const requestId = String(started.activity_request_id);
+    const activityRequestId = String(started?.activity_request_id || '');
+    if (activityRequestId && args.thinkingId) {
+      const requestId = activityRequestId;
       activeActivityRef.current = { conversationId, requestId, thinkingId: args.thinkingId };
       setTurns((prev) => prev.map((turn) => (
         turn.id === args.thinkingId && turn.role === 'assistant' && turn.kind === 'thinking'
@@ -1714,7 +1733,7 @@ export default function AgentConsole() {
           : turn
       )));
     }
-    if (!started?.job_id) return started; // older backend replied synchronously — use it as-is
+    if (!started?.job_id) return { ...started, activityRequestId }; // older backend replied synchronously — use it as-is
     return await new Promise((resolve, reject) => {
       const es = new EventSource(withEventSourceAuth(`/api/agent/understand-request/${started.job_id}/events`));
       let settled = false;
@@ -1725,7 +1744,7 @@ export default function AgentConsole() {
         settled = true;
         cleanup();
         const data = JSON.parse((ev as MessageEvent).data || '{}');
-        resolve(data.result || {});
+        resolve({ ...(data.result || {}), activityRequestId });
       });
       es.onerror = async () => {
         if (settled) return;
@@ -1761,6 +1780,9 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     let understandingSource = 'fallback';
+    let activityRequestId = activeActivityRef.current?.thinkingId === thinkingId
+      ? activeActivityRef.current.requestId
+      : undefined;
     // Explicit case-generation requests already enter the evidence-grounded workflow after review.
     // Do not make the user wait for a second, pre-run research pass that duplicates that work.
     if (!/\b(?:generate|create|write|draft|author)\b[\s\S]{0,80}\btest\s*cases?\b/i.test(originalRequest || prompt)) {
@@ -1768,6 +1790,7 @@ export default function AgentConsole() {
         const generated = await requestDeepUnderstanding({ thinkingId, prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
         understanding = generated.understanding || fallbackUnderstanding;
         understandingSource = generated.source || understandingSource;
+        activityRequestId = generated.activityRequestId || activityRequestId;
       } catch (error: any) {
         if (/aborted/i.test(String(error?.message || error || ''))) return;
         /* use deterministic fallback */
@@ -1792,6 +1815,7 @@ export default function AgentConsole() {
       websiteName,
       ...targetChoiceFields(),
       revisionCount: 0,
+      activityRequestId,
       text: 'Look right? Review the summary above, then Proceed — or tell me what to change.',
     });
   }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
@@ -2432,6 +2456,7 @@ export default function AgentConsole() {
           try {
             updateThinkingLabel(thinkingId, 'Revising reviewed test scope...');
             const revised = await requestDeepUnderstanding({
+              thinkingId,
               prompt: activePending.prompt,
               originalRequest: activePending.originalRequest || activePending.prompt,
               contextPrompt: activePending.contextPrompt || activePending.prompt,
@@ -2463,6 +2488,7 @@ export default function AgentConsole() {
               websiteName: nextPending.websiteName,
               ...targetChoiceFields(),
               revisionCount: nextPending.revisionCount,
+              activityRequestId: revised.activityRequestId,
               text: 'I updated what I understood. Review it and Proceed, or correct me again.',
             });
           } catch (err: any) {
@@ -3315,6 +3341,7 @@ export default function AgentConsole() {
                   <FolderAskCard
                     key={turn.id}
                     turn={turn}
+                    conversationId={conversationId}
                     onCommit={commitFolderAskDraft}
                     onProceed={proceedDeepFromTurn}
                     onCancel={cancelFolderAsk}
