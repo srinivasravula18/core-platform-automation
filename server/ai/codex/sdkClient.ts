@@ -84,6 +84,8 @@ export async function* streamSdkTurn(
     workingDirectory: config.workingDirectory || process.cwd(),
     sandboxMode: opts.sandboxMode ?? ('read-only' as const),
     approvalPolicy: opts.approvalPolicy ?? ('never' as const),
+    // Hosted search is an explicit Codex capability, independent of shell network access.
+    webSearchMode: opts.webSearchMode ?? ('disabled' as const),
     ...(opts.networkAccessEnabled !== undefined ? { networkAccessEnabled: opts.networkAccessEnabled } : {}),
     ...(opts.effort ? { modelReasoningEffort: opts.effort as any } : {}),
   };

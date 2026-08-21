@@ -2,7 +2,7 @@ import { inspectApplicationFlow } from './inspectionService';
 import { exploreAndVerifyPage } from './domExplorer';
 import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
-import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
+import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/targetData';
 import { collectMcpDomFacts } from './mcpDomFacts';
 import { recordEvidence } from './evidence/registry';
 import { PROVENANCE, mapSelectorEvidenceType, type Provenance, type EvidenceConfidence } from './evidence/provenance';

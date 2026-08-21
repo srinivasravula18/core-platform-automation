@@ -57,6 +57,7 @@ export interface BridgeSession {
   onInvocation?: (invocation: BridgeInvocation) => void;
   /** Fired immediately before a granted tool begins executing. */
   onInvocationStart?: (invocation: BridgeInvocationStart) => void;
+  guard?: { before(name: string, args: Record<string, unknown>): string | undefined; after(failed: boolean): string | undefined };
 }
 
 const sessions = new Map<string, BridgeSession>();
@@ -123,14 +124,22 @@ function buildMcpServer(session: BridgeSession): Server {
       settle({ id: randomUUID(), name, arguments: args, error, ms: 0 });
       return { content: [{ type: 'text' as const, text: `ERROR: ${error}` }], isError: true };
     }
+    const stopReason = session.guard?.before(name, args);
+    if (stopReason) {
+      settle({ id: invocationId, name, arguments: args, error: stopReason, ms: 0 });
+      return { content: [{ type: 'text' as const, text: `STOP: ${stopReason}` }], isError: true };
+    }
     try {
       try { session.onInvocationStart?.({ id: invocationId, name, arguments: args }); } catch { /* observers never break a tool call */ }
       const result = await tool.execute(args, session.ctx);
       settle({ id: invocationId, name, arguments: args, result, ms: Date.now() - started });
+      session.guard?.after(false);
       return { content: [{ type: 'text' as const, text: safeJson(result) }] };
     } catch (err: any) {
       const error = err?.message || String(err);
       settle({ id: invocationId, name, arguments: args, error, ms: Date.now() - started });
+      const stop = session.guard?.after(true);
+      if (stop) return { content: [{ type: 'text' as const, text: `STOP: ${stop}` }], isError: true };
       // Tool errors stay VISIBLE to Codex so it can self-correct rather than silently stalling.
       return { content: [{ type: 'text' as const, text: `ERROR: ${error}` }], isError: true };
     }
@@ -198,12 +207,13 @@ export interface OpenSessionOptions {
   /** Restrict to these tool names; omitted means every tool passed in `tools`. */
   allowedTools?: string[];
   ttlMs?: number;
-  /** Tool-call ceiling for the session. Default 12. */
+  /** Tool-call ceiling for the session. Default 32. */
   maxToolCalls?: number;
   /** Fired as each call settles — used for tracing and artifact memory. */
   onInvocation?: (invocation: BridgeInvocation) => void;
   /** Fired immediately before a granted tool begins executing. */
   onInvocationStart?: (invocation: BridgeInvocationStart) => void;
+  guard?: BridgeSession['guard'];
 }
 
 export interface OpenSessionResult {
@@ -230,9 +240,10 @@ export async function openBridgeSession(opts: OpenSessionOptions): Promise<OpenS
     ctx: opts.ctx,
     expiresAt: Date.now() + (opts.ttlMs ?? SESSION_TTL_MS),
     invocations: [],
-    maxToolCalls: opts.maxToolCalls ?? 12,
+    maxToolCalls: Math.min(100, Math.max(64, opts.maxToolCalls ?? (Number(process.env.AGENT_MAX_TOOL_ITERATIONS) || 64))),
     onInvocation: opts.onInvocation,
     onInvocationStart: opts.onInvocationStart,
+    guard: opts.guard,
   };
   sessions.set(session.id, session);
   return {

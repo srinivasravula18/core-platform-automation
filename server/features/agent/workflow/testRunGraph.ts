@@ -35,7 +35,7 @@ import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/d
 import { stashArtifactsDurable, stashArtifacts, readArtifacts } from './artifactStash';
 import { renderBehaviorForPrompt } from '../behaviorOracle';
 import { classifyOutcomes } from '../outcomeValidator';
-import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
+import { renderMetadataForPrompt } from '../../../ai/tools/targetData';
 import { advanceLedgerForStage, attributePreRunUnderstanding, planMissionForRun, runCriticExchange, settleOpenTasks } from './nodes/agentCoordination';
 import { emptyOrchestration, type WorkflowOrchestration } from './state';
 import type { MissionKind } from '../../../agent-core/orchestration/contracts';
@@ -281,7 +281,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // Real path only — an injected context seam (tests) skips the live schema fetch, same as the auth prep.
     if (!deps.contextNode && state.mission?.applicationId && credential) {
       try {
-        const { fetchObjectSchema } = await import('../../../ai/tools/corePlatformData');
+        const { fetchObjectSchema } = await import('../../../ai/tools/targetData');
         const conn = { baseUrl: state.mission.targetUrl, token: credential.token, username: credential.username, password: credential.password };
         // The object under test is most reliably named by the URL's ?object= param (runtime surfaces carry it),
         // then the module/tab; include the goal's nouns so "create a new account" still resolves the account object.

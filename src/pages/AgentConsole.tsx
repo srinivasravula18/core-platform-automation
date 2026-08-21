@@ -78,7 +78,8 @@ import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscover
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
 import type { AIImageAttachment } from '@/src/components/AIImageAttachmentPicker';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
-import { AgentActivity } from '@/src/components/AgentActivity';
+import { AgentActivity, restoreActiveActivity } from '@/src/components/AgentActivity';
+import { selectTargetActionResult, TargetActionResult, type TargetActionSummary } from '@/src/components/TargetActionResult';
 
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
 // GEN_VERB_RE, siteActionable, isQuestionForSupervisor, isCoreListViewText, isProceedLike,
@@ -271,7 +272,7 @@ function initialThinkingLabel(_text: string, opts: { selectedApps: number; requi
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string; targetResult?: TargetActionSummary }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean; createdAt?: string; execution?: ExecutionMeta; activityRequestId?: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
@@ -1027,19 +1028,7 @@ export default function AgentConsole() {
       );
       const activity = await activityRequest;
       if (token !== loadReqRef.current) return;
-      const latest = activity?.latest;
-      const latestRequestId = String(latest?.requestId || '');
-      const latestStatus = String(latest?.status || '');
-      const hasRecordedResponse = clean.some((turn: any) => turn.role === 'assistant' && turn.activityRequestId === latestRequestId);
-      const restored: Turn[] = latestRequestId && !hasRecordedResponse && ['running', 'failed', 'cancelled', 'interrupted'].includes(latestStatus)
-        ? [...clean, {
-            id: `activity-${latestRequestId}`,
-            role: 'assistant',
-            kind: 'thinking',
-            label: latestStatus === 'running' ? 'Resuming background work...' : latestStatus === 'cancelled' ? 'Stopped' : latestStatus === 'interrupted' ? 'Interrupted' : 'Could not complete',
-            activityRequestId: latestRequestId,
-          }]
-        : clean;
+      const restored: Turn[] = restoreActiveActivity(clean, activity);
       convTitleRef.current = String(d.title || '');
       setTurns(restored);
       // Re-attach any run the snapshot lost (navigated away mid-start) — see reconcileConversationRuns.
@@ -1116,21 +1105,31 @@ export default function AgentConsole() {
       if (turnsRef.current.length > 0) {
         // Never wipe a live/hydrated thread; a cache-hydrated revisit still reconciles (idempotent) to resume.
         if (hydratedRef.current) {
+          const activity = await fetch(`/api/controller/activity/for-conversation/${encodeURIComponent(conversationId)}`, { cache: 'no-store' })
+            .then((response) => response.ok ? response.json() : null)
+            .catch(() => null);
+          const restored = restoreActiveActivity(turnsRef.current, activity) as Turn[];
+          setTurns(restored);
           void reconcileConversationRuns(conversationId, token);
-          void reconcileUnderstanding(conversationId, token, turnsRef.current);
-          void reconcileGoal(conversationId, token, turnsRef.current);
+          void reconcileUnderstanding(conversationId, token, restored);
+          void reconcileGoal(conversationId, token, restored);
         }
         return;
       }
+      const activity = await fetch(`/api/controller/activity/for-conversation/${encodeURIComponent(chosen)}`, { cache: 'no-store' })
+        .then((response) => response.ok ? response.json() : null)
+        .catch(() => null);
+      if (token !== loadReqRef.current) return;
+      const restored = restoreActiveActivity(chosenTurns, activity) as Turn[];
       convTitleRef.current = chosenTitle;
       if (chosen !== conversationId) setConversationId(chosen);
-      setTurns(chosenTurns);
+      setTurns(restored);
       // Re-attach any run the snapshot lost for the restored conversation (navigated away mid-start).
       void reconcileConversationRuns(chosen, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
-      void reconcileUnderstanding(chosen, token, chosenTurns);
+      void reconcileUnderstanding(chosen, token, restored);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(chosen, token, chosenTurns);
+      void reconcileGoal(chosen, token, restored);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -2044,30 +2043,35 @@ export default function AgentConsole() {
 
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
-  const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
+  const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ id: w.id, name: w.name, baseUrl: w.baseUrl }));
   const allAppsSelected = websites.length > 0 && selectedAppIds.size === websites.length;
-  const selectedAppsRef = useRef<Array<{ name: string; baseUrl: string }>>([]);
+  const selectedAppsRef = useRef<Array<{ id?: string; name: string; baseUrl: string }>>([]);
   useEffect(() => { selectedAppsRef.current = selectedApps; });
   const projectAppsRef = useRef<ProjectApp[]>([]);
   useEffect(() => { projectAppsRef.current = scopeProject?.apps || []; });
   // The top-bar scope app, mirrored to a ref so callbacks read the latest.
-  const scopeAppRef = useRef<{ name: string; baseUrl: string } | null>(null);
-  useEffect(() => { scopeAppRef.current = scopeApp ? { name: scopeApp.name, baseUrl: scopeApp.baseUrl } : null; });
+  const scopeAppRef = useRef<{ id?: string; name: string; baseUrl: string } | null>(null);
+  useEffect(() => { scopeAppRef.current = scopeApp ? { id: scopeApp.id, name: scopeApp.name, baseUrl: scopeApp.baseUrl } : null; });
   // The single "selected apps" payload sent on EVERY chat fetch: merges the top-bar scope app and the
   // composer multi-select. Deduped by name+baseUrl (not baseUrl alone) so distinct apps that share a
   // base URL — common in core-platform where tenant/admin apps sit under one host — aren't collapsed.
-  const getSelectedApps = useCallback((): Array<{ name: string; baseUrl: string }> => {
-    const out: Array<{ name: string; baseUrl: string }> = [];
+  const getSelectedApps = useCallback((): Array<{ id?: string; name: string; baseUrl: string }> => {
+    const out: Array<{ id?: string; name: string; baseUrl: string }> = [];
     const seen = new Set<string>();
-    const add = (a?: { name: string; baseUrl: string } | null) => {
+    const add = (a?: { id?: string; name: string; baseUrl: string } | null) => {
       if (!a || !a.baseUrl) return;
       const key = `${(a.name || '').trim().toLowerCase()}|${a.baseUrl.trim().toLowerCase()}`;
       if (seen.has(key)) return;
       seen.add(key);
-      out.push({ name: a.name, baseUrl: a.baseUrl });
+      out.push({ id: a.id, name: a.name, baseUrl: a.baseUrl });
     };
     add(scopeAppRef.current);
     for (const a of selectedAppsRef.current) add(a);
+    if (!out.length) {
+      for (const app of projectAppsRef.current) {
+        if (app.baseUrl) add({ id: app.id, name: app.name, baseUrl: app.baseUrl });
+      }
+    }
     return out;
   }, []);
   const authorScriptFromSteps = useCallback(async (thinkingId: string, text: string) => {
@@ -2208,14 +2212,14 @@ export default function AgentConsole() {
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
-        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`), activityRequestId });
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
         return;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let finalReply = '';
-      let finalUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } | null = null;
+      let finalUsage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number; costUsd?: number } | null = null;
       let liveReply = '';
       let finalActions: Array<{ tool?: string; arguments?: Record<string, any>; result?: any }> = [];
       for (;;) {
@@ -2259,6 +2263,7 @@ export default function AgentConsole() {
       const requirement = [...finalActions].reverse().find((action) => action.tool === 'draft_requirement')?.result;
       const generatedCases = [...finalActions].reverse().find((action) => action.tool === 'create_cases')?.result?.cases;
       const liveTest = [...finalActions].reverse().find((action) => action.tool === 'prepare_test_scope');
+      const targetResult = selectTargetActionResult(finalActions);
       if (liveTest) {
         const scopePrompt = String(liveTest.result?.scope || liveTest.arguments?.scope || text);
         const targetUrl = String(liveTest.result?.targetUrl || liveTest.arguments?.targetUrl || getSelectedApps()[0]?.baseUrl || convTargetRef.current?.targetUrl || '');
@@ -2315,10 +2320,12 @@ export default function AgentConsole() {
           kind: 'text',
           text: cleanChat(finalReply || 'Done.'),
           activityRequestId,
+          targetResult,
           execution: finalUsage ? {
             ...currentExecution(),
             promptTokens: finalUsage.inputTokens,
             completionTokens: finalUsage.outputTokens,
+            cachedTokens: (finalUsage.cacheReadTokens || 0) + (finalUsage.cacheWriteTokens || 0),
             totalTokens: finalUsage.totalTokens,
             costUsd: finalUsage.costUsd,
           } : currentExecution(),
@@ -2335,7 +2342,6 @@ export default function AgentConsole() {
         role: 'assistant',
         kind: 'text',
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
-        activityRequestId,
       });
     }
   }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps, presentDeepUnderstanding, selectedProjectId, selectedAppId, selectedModel, selectedEffort, currentExecution]);
@@ -2829,7 +2835,7 @@ export default function AgentConsole() {
   sendRef.current = send;
 
   return (
-    <><div className="flex h-full w-full flex-col">
+    <><div className="flex h-full min-h-0 w-full flex-col">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -3387,6 +3393,7 @@ export default function AgentConsole() {
                           isErr ? 'border-red-500/30 bg-red-500/5' : 'border-[var(--border)] bg-[var(--bg-card)]',
                         )}>
                           <MarkdownText value={turn.text} />
+                          {turn.targetResult ? <TargetActionResult result={turn.targetResult} /> : null}
                           {authoredScriptFromTurn(turn) && !(turn.screenshotUrls || []).length && (
                             <button
                               type="button"

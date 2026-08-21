@@ -53,17 +53,20 @@ function applySettingsCredentials(code: string, baseUrl: string) {
 
 export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionId, singleSession, screenshotMode, onProgress, requireAuth, authContext }: any) {
   if (!Array.isArray(scripts) || scripts.length === 0) throw new Error('No linked Playwright scripts were found.');
-  const runnableScripts = scripts.map((script: any) => ({
-    ...script,
-    code: requireAuth ? String(script?.code || '') : applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')),
-  }));
-  const needsMissionRunner = runnableScripts.some((script: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(script?.code || '')));
   const matchedOriginRun = runId ? db.agentRuns.find((run: any) => run.id === runId || String(runId).startsWith(String(run.id))) : null;
   const originRun = matchedOriginRun && (!authContext?.ownerId || matchedOriginRun.ownerId === authContext.ownerId) ? matchedOriginRun : null;
+  // Any rerun attached to an agent run must begin from that run's authenticated session.
+  // Older Console bundles did not send requireAuth, which left those reruns at the login page.
+  const requireSession = Boolean(requireAuth || originRun);
+  const runnableScripts = scripts.map((script: any) => ({
+    ...script,
+    code: requireSession ? String(script?.code || '') : applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')),
+  }));
+  const needsMissionRunner = runnableScripts.some((script: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(script?.code || '')));
   let storageStatePath: string | undefined;
   let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
-  if (needsMissionRunner || requireAuth) {
-    if (!baseUrl && requireAuth) throw new Error('Authentication is required, but this test run has no target URL.');
+  if (needsMissionRunner || requireSession) {
+    if (!baseUrl && requireSession) throw new Error('Authentication is required, but this test run has no target URL.');
     if (baseUrl) {
       const agentAuthPath = originRun ? path.join(process.cwd(), '.testflow-pw', `${safeId(originRun.id)}-auth.json`) : '';
       const agentSessionPath = originRun ? path.join(process.cwd(), '.testflow-pw', `${safeId(originRun.id)}-session-storage.json`) : '';
@@ -84,7 +87,7 @@ export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionI
         const creds = stored?.username && stored?.password
           ? { username: stored.username, password: stored.password }
           : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
-        if (!creds && requireAuth) throw new Error('Authentication is required, but no matching credentials are configured for this application.');
+        if (!creds && requireSession) throw new Error('Authentication is required, but no matching credentials are configured for this application.');
         if (!creds) {
           storageStatePath = undefined;
         } else {
@@ -97,7 +100,7 @@ export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionI
           if (auth?.ok || auth?.sessionStorage) {
             storageStatePath = authPath;
             sessionStorageState = auth?.sessionStorage;
-          } else if (requireAuth) {
+          } else if (requireSession) {
             throw new Error(`Authentication failed before script execution${auth?.reason ? `: ${auth.reason}` : '.'}`);
           }
         }

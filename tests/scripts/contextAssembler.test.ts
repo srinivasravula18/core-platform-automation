@@ -4,7 +4,7 @@ import test from 'node:test';
 
 process.env.DISABLE_POSTGRES = 'true';
 
-const { ChatConversations } = await import('../../server/db/repository');
+const { ChatConversations, reconcileConversationTurns } = await import('../../server/db/repository');
 const { assembleConversationContext } = await import('../../server/ai/memory/contextAssembler');
 
 const persisted = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -99,3 +99,9 @@ test('malformed persisted turns are ignored without hiding valid turns', async (
   assert.deepEqual(context.history, [{ role: 'user', content: 'Valid turn', kind: 'text' }]);
 });
 
+test('reconciliation keeps one rich assistant result per activity request', () => {
+  const requestId = randomUUID();
+  const rich = { role: 'assistant', kind: 'text', text: 'Created Account: assdg', activityRequestId: requestId, targetResult: { data: { id: 'account-1' } } };
+  const plain = { role: 'assistant', kind: 'text', text: 'Created Account: `assdg`', activityRequestId: requestId };
+  assert.deepEqual(reconcileConversationTurns([rich, plain], [plain]), [rich]);
+});

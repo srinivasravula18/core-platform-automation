@@ -3,14 +3,14 @@
  *
  * Populates `WorkflowState.context.metadata` from the application's metadata map. Deliberately
  * does no browser/DOM work — that is `discovery.ts`'s job, built in parallel. Reuses
- * `fetchCorePlatformMetadataMap` (server/ai/tools/corePlatformData.ts) exactly as
+ * `fetchCorePlatformMetadataMap` (server/ai/tools/targetData.ts) exactly as
  * pipelineDelta.ts's `runMetadataFetchPhase` already calls it; does not reimplement fetch/caching.
  *
  * Retries happen at exactly one layer (the graph's node policy, per workflow/errors.ts) — this
  * node never retries itself, it only classifies and returns a WorkflowError for the caller to act on.
  */
 import { createHash } from 'crypto';
-import { fetchCorePlatformMetadataMap, type CatalogConn, type CorePlatformMetadataMap } from '../../../../ai/tools/corePlatformData';
+import { fetchCorePlatformMetadataMap, type CatalogConn, type CorePlatformMetadataMap } from '../../../../ai/tools/targetData';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { ContextMetadataSummary, MissionRef } from '../state';
 

@@ -15,7 +15,7 @@ import { runCompilationNode } from '../nodes/compilation';
 import type { MissionContext } from '../../mission/missionContext';
 import type { TestPlan } from '../../compiler/testPlan';
 import { readArtifacts, stashArtifacts } from '../artifactStash';
-import { renderMetadataForPrompt } from '../../../../ai/tools/corePlatformData';
+import { renderMetadataForPrompt } from '../../../../ai/tools/targetData';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import {
   WorkflowStateAnnotation,

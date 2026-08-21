@@ -20,6 +20,10 @@ import * as fs from 'fs';
 import type { AgentTool, ToolContext } from './types';
 import { resolveCredentials, getWebsite } from '../../features/credentials/credentialsService';
 import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
+import { fetchOpenApiSpec, parseOpenApi } from '../../features/api-intelligence/discovery';
+import { allowsTargetMutation } from '../agent-runtime/policy';
+import { resolveServiceBase } from './targetData';
+import { withEvidence } from './evidenceEnvelope';
 
 /* ─── Connection helpers ─────────────────────────────────────────────────── */
 
@@ -27,8 +31,16 @@ interface AppConn { baseUrl: string; username: string; password: string }
 
 /** Per-call token cache keyed by baseUrl so multiple workspaces don't share a token. */
 const tokenCache = new Map<string, string>();
+const operationCache = new WeakMap<ToolContext, Promise<any[]>>();
 
-function resolveConnection(ctx?: ToolContext): AppConn {
+async function resolveConnection(ctx?: ToolContext): Promise<AppConn> {
+  const target = ctx?.targetApps?.find((item) => item?.id);
+  if (target?.id) {
+    const cred = resolveCredentials({ websiteId: String(target.id), baseUrl: target.baseUrl, role: 'admin', ownerId: ctx?.userId ? String(ctx.userId) : undefined });
+    if (cred?.baseUrl && cred?.username && cred?.password) {
+      return { baseUrl: await resolveServiceBase({ baseUrl: cred.baseUrl }), username: cred.username, password: cred.password };
+    }
+  }
   // 1. ctx.appId → Websites table (per-workspace)
   if (ctx?.appId) {
     const cred = resolveCredentials({
@@ -37,12 +49,12 @@ function resolveConnection(ctx?: ToolContext): AppConn {
       ownerId: ctx.userId ? String(ctx.userId) : undefined,
     });
     if (cred?.baseUrl && cred?.username && cred?.password) {
-      return { baseUrl: cred.baseUrl.replace(/\/$/, ''), username: cred.username, password: cred.password };
+      return { baseUrl: await resolveServiceBase({ baseUrl: cred.baseUrl }), username: cred.username, password: cred.password };
     }
     const site = getWebsite(String(ctx.appId));
     if (site?.baseUrl) {
       return {
-        baseUrl: site.baseUrl.replace(/\/$/, ''),
+        baseUrl: await resolveServiceBase({ baseUrl: site.baseUrl }),
         username: process.env.TARGET_USERNAME || '',
         password: process.env.TARGET_PASSWORD || '',
       };
@@ -50,33 +62,42 @@ function resolveConnection(ctx?: ToolContext): AppConn {
   }
   // 2. env vars
   return {
-    baseUrl: (process.env.TARGET_BASE_URL || '').replace(/\/$/, ''),
+    baseUrl: await resolveServiceBase({ baseUrl: process.env.TARGET_BASE_URL || '' }),
     username: process.env.TARGET_USERNAME || '',
     password: process.env.TARGET_PASSWORD || '',
   };
+}
+
+export function loginPathCandidates(configured = process.env.TARGET_AUTH_PATH || ''): string[] {
+  return [...new Set([configured.trim(), '/auth/login', '/api/auth/login'].filter(Boolean).map((path) => path.startsWith('/') ? path : `/${path}`))];
 }
 
 async function getToken(conn: AppConn, forceRefresh = false): Promise<string> {
   const staticToken = String(process.env.TARGET_TOKEN || '').trim();
   if (staticToken) return staticToken;
 
-  const cached = tokenCache.get(conn.baseUrl);
+  const cacheKey = `${conn.baseUrl}\n${conn.username}`;
+  const cached = tokenCache.get(cacheKey);
   if (cached && !forceRefresh) return cached;
 
-  const res = await fetch(`${conn.baseUrl}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: conn.username, password: conn.password }),
-  });
-  const json = (await res.json().catch(() => null)) as any;
-  const token: string = json?.access_token || json?.token || json?.accessToken || '';
-  if (!res.ok || !token) throw new Error(`Login failed (${res.status})`);
-  tokenCache.set(conn.baseUrl, token);
-  return token;
+  for (const path of loginPathCandidates()) {
+    const res = await fetch(`${conn.baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: conn.username, password: conn.password }),
+    });
+    if (res.status === 404) continue;
+    const json = (await res.json().catch(() => null)) as any;
+    const token: string = json?.access_token || json?.token || json?.accessToken || '';
+    if (!res.ok || !token) throw new Error(`Login failed (${res.status})`);
+    tokenCache.set(cacheKey, token);
+    return token;
+  }
+  throw new Error('No configured or standard login operation exists on the target API.');
 }
 
 async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolContext): Promise<unknown> {
-  const conn = resolveConnection(ctx);
+  const conn = await resolveConnection(ctx);
   const call = async (token: string) => {
     return fetch(`${conn.baseUrl}${path}`, {
       method,
@@ -88,7 +109,7 @@ async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolCo
   let token = await getToken(conn);
   let res = await call(token);
   if (res.status === 401 && !process.env.TARGET_TOKEN) {
-    tokenCache.delete(conn.baseUrl);
+    tokenCache.delete(`${conn.baseUrl}\n${conn.username}`);
     token = await getToken(conn, true);
     res = await call(token);
   }
@@ -101,12 +122,67 @@ async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolCo
   try { return text ? JSON.parse(text) : null; } catch { return text; }
 }
 
+export async function listTargetApiOperations(ctx?: ToolContext): Promise<any[]> {
+  const load = async () => {
+    const conn = await resolveConnection(ctx);
+    const token = await getToken(conn);
+    const spec = await fetchOpenApiSpec(conn.baseUrl, token);
+    return spec ? parseOpenApi(spec, conn.baseUrl).endpoints : [];
+  };
+  if (!ctx) return load();
+  const cached = operationCache.get(ctx);
+  if (cached) return cached;
+  const pending = load();
+  operationCache.set(ctx, pending);
+  try { return await pending; }
+  catch (error) { operationCache.delete(ctx); throw error; }
+}
+
+function operationPath(operation: any, pathParams: Record<string, unknown>, query: Record<string, unknown>): string {
+  const segments = String(operation.path).split('/').map((part) => {
+    if (!(part.startsWith('{') && part.endsWith('}'))) return part;
+    const value = pathParams[part.slice(1, -1)];
+    if (value === undefined || value === null || value === '') throw new Error(`Missing required path parameter ${part}.`);
+    return encodeURIComponent(String(value));
+  });
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null) params.set(key, String(value));
+  const suffix = params.toString();
+  return `${segments.join('/')}${suffix ? `?${suffix}` : ''}`;
+}
+
+export async function callTargetReadOperation(operationId: string, pathParams: Record<string, unknown>, query: Record<string, unknown>, ctx?: ToolContext): Promise<unknown> {
+  const operation = (await listTargetApiOperations(ctx)).find((item: any) => item.id === operationId);
+  if (!operation) throw new Error('The operation is not present in the target OpenAPI document.');
+  if (String(operation.method).toUpperCase() !== 'GET') throw new Error('Only documented GET operations are available until a write is explicitly confirmed.');
+  const path = operationPath(operation, pathParams, query);
+  const raw = await cpRequest('GET', path, ctx);
+  const payload = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : { data: raw };
+  const returned = Array.isArray(raw) ? raw.length : undefined;
+  const total = typeof (payload as any).total_count === 'number' ? (payload as any).total_count : undefined;
+  return withEvidence(payload, {
+    subject: String(operation.summary || operation.id || 'API result'),
+    scope: { kind: 'target', label: ctx?.targetApps?.[0]?.name },
+    method: 'GET', operation: path, complete: total == null ? false : returned == null || returned >= total, returned, total,
+  });
+}
+
+export async function callTargetWriteOperation(operationId: string, pathParams: Record<string, unknown>, query: Record<string, unknown>, body: unknown, ctx?: ToolContext): Promise<unknown> {
+  const operation = (await listTargetApiOperations(ctx)).find((item: any) => item.id === operationId);
+  if (!operation) throw new Error('The operation is not present in the target OpenAPI document.');
+  const method = String(operation.method).toUpperCase();
+  if (!allowsTargetMutation(method, String(operation.path))) {
+    throw new Error('This documented operation is not available to the agent.');
+  }
+  return cpFetch(method, operationPath(operation, pathParams, query), body, ctx);
+}
+
 const cpRequest = (method: string, path: string, ctx?: ToolContext) => cpFetch(method, path, undefined, ctx);
 const cpRequestPost = (path: string, body: unknown, ctx?: ToolContext) => cpFetch('POST', path, body, ctx);
 
 /** Resolve the app's API contract (endpoint templates) from its OWN OpenAPI — no path literals. */
 async function metaContract(ctx?: ToolContext): Promise<AppApiContract> {
-  const conn = resolveConnection(ctx);
+  const conn = await resolveConnection(ctx);
   if (!conn.baseUrl) return {};
   let token: string | undefined;
   try { token = await getToken(conn); } catch { /* spec is often public */ }
@@ -118,20 +194,52 @@ async function metaPath(role: keyof AppApiContract, vars: { appId?: string; obje
   return fillApiPath(c[role]!, vars);
 }
 const asItems = (data: any): any[] => Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+
+export const listAppsTool: AgentTool = {
+  spec: { name: 'list_apps', description: 'List applications available to the authenticated target user through REST. Always use this for the current app count or current app list; never inspect the UI for those answers.', parameters: { type: 'object', properties: {} } },
+  async execute(_args, ctx) {
+    try {
+      const contract = await metaContract(ctx);
+      if (!contract.listApps) return { error: "The target's OpenAPI exposes no list-applications endpoint." };
+      const apps = asItems(await cpRequest('GET', contract.listApps, ctx));
+      return withEvidence({ apps }, {
+        subject: 'applications', scope: { kind: 'target', label: ctx?.targetApps?.[0]?.name },
+        method: 'GET', operation: contract.listApps, complete: true, returned: apps.length, total: apps.length,
+      });
+    } catch (err: any) { return { error: err?.message ?? String(err) }; }
+  },
+};
+
+export const listObjectsTool: AgentTool = {
+  spec: { name: 'list_objects', description: 'List and count exact objects. Pass app_id from list_apps for one application; omit it for all applications. Use this for totals.', parameters: { type: 'object', properties: { app_id: { type: 'string' } } } },
+  async execute(args, ctx) {
+    const contract = await metaContract(ctx);
+    if (!contract.listObjects) return { error: 'The target OpenAPI has no object-list operation.' };
+    const appId = String(args.app_id || '').trim();
+    const all = appId ? null : await listAllObjectsViaContract(ctx);
+    const listed = appId ? asItems(await cpRequest('GET', fillApiPath(contract.listObjects, { appId }), ctx)) : all!.objects;
+    const objects = appId ? listed : [...new Map(listed.map((item) => [String(item?.id || String(item?.app_id) + ':' + String(item?.api_name)), item])).values()];
+    const apps = appId && contract.listApps ? asItems(await cpRequest('GET', contract.listApps, ctx)) : [];
+    const app = apps.find((item) => String(item?.id) === appId);
+    const complete = Boolean(appId) || all!.complete;
+    return withEvidence({ objects, count: objects.length }, { subject: 'objects', scope: appId ? { kind: 'application', id: appId, label: String(app?.label || appId) } : { kind: 'all_applications', label: 'all applications' }, method: 'GET', operation: contract.listObjects, complete, returned: objects.length, ...(complete ? { total: objects.length } : {}) });
+  },
+};
 /** Every object across the app's apps — replaces the CP-specific __all_apps__ cross-app scope with iteration. */
-async function listAllObjectsViaContract(ctx?: ToolContext): Promise<any[]> {
+async function listAllObjectsViaContract(ctx?: ToolContext): Promise<{ objects: any[]; complete: boolean }> {
   const c = await metaContract(ctx);
-  if (!c.listApps || !c.listObjects) return [];
+  if (!c.listApps || !c.listObjects) return { objects: [], complete: false };
   const apps = asItems(await cpRequest('GET', c.listApps, ctx));
   const out: any[] = [];
+  let complete = true;
   for (const app of apps) {
     if (!app?.id) continue;
     try {
       const objs = asItems(await cpRequest('GET', fillApiPath(c.listObjects, { appId: String(app.id) }), ctx));
       for (const o of objs) out.push({ ...o, app_id: o.app_id || app.id, app_prefix: o.app_prefix || app.app_prefix });
-    } catch { /* skip this app, keep the rest */ }
+    } catch { complete = false; }
   }
-  return out;
+  return { objects: out, complete };
 }
 
 /* ─── Stop words for keyword extraction ──────────────────────────────────── */
@@ -164,7 +272,7 @@ export const searchRelevantObjectsTool: AgentTool = {
       if (!kws.length) return { error: 'query must contain at least one non-stop keyword' };
 
       // All objects across the app's apps — from the app's OpenAPI contract, not a hardcoded scope.
-      const allObjects: any[] = await listAllObjectsViaContract(ctx);
+      const { objects: allObjects } = await listAllObjectsViaContract(ctx);
 
       if (!allObjects.length) return { note: 'no objects found — check connection', objects: [] };
 
@@ -187,7 +295,10 @@ export const searchRelevantObjectsTool: AgentTool = {
           app_id: o.app_id,
         }));
 
-      return { objects: scored, count: scored.length };
+      return withEvidence({ objects: scored, count: scored.length }, {
+        subject: 'objects', scope: { kind: 'filtered', label: String(args.query || '') },
+        method: 'GET', operation: 'OpenAPI:listApps+listObjects', complete: true, returned: scored.length, total: scored.length,
+      });
     } catch (err: any) {
       return { error: err?.message ?? String(err) };
     }
@@ -231,7 +342,7 @@ export const getObjectFieldsTool: AgentTool = {
         read_only: f.read_only ?? false,
       }));
 
-      return {
+      return withEvidence({
         object: apiName,
         table_name: objectMeta.table_name ?? null,
         app_prefix: objectMeta.app_prefix ?? null,
@@ -242,7 +353,11 @@ export const getObjectFieldsTool: AgentTool = {
           object_label: r.object_label,
           field_api_name: r.field_api_name,
         })),
-      };
+      }, {
+        subject: 'fields', scope: { kind: 'application', id: appId, label: apiName },
+        method: 'GET', operation: await metaPath('describeObject', { appId, object: apiName }, ctx),
+        complete: true, returned: fieldSummary.length, total: fieldSummary.length,
+      });
     } catch (err: any) {
       return { error: err?.message ?? String(err) };
     }
@@ -281,7 +396,12 @@ export const querySampleRecordsTool: AgentTool = {
 
       const data = (await cpRequestPost(await metaPath('queryListView', { appId, object: apiName }, ctx), body, ctx)) as any;
       const records: any[] = Array.isArray(data?.items) ? data.items : [];
-      return { object: apiName, records, count: records.length, total_count: data?.total_count ?? null };
+      const total = typeof data?.total_count === 'number' ? data.total_count : undefined;
+      return withEvidence({ object: apiName, records, count: records.length, total_count: total ?? null }, {
+        subject: 'records', scope: { kind: args.filters ? 'filtered' : 'application', id: appId, label: apiName },
+        method: 'POST', operation: await metaPath('queryListView', { appId, object: apiName }, ctx),
+        complete: total != null && records.length >= total, returned: records.length, total,
+      });
     } catch (err: any) {
       return { error: err?.message ?? String(err) };
     }
@@ -319,7 +439,11 @@ export const countRecordsTool: AgentTool = {
 
       const data = (await cpRequestPost(await metaPath('queryListView', { appId, object: apiName }, ctx), body, ctx)) as any;
       const count = data?.summary?.count ?? data?.total_count ?? null;
-      return { object: apiName, count };
+      return withEvidence({ object: apiName, count }, {
+        subject: 'records', scope: { kind: args.filters ? 'filtered' : 'application', id: appId, label: apiName },
+        method: 'POST', operation: await metaPath('queryListView', { appId, object: apiName }, ctx),
+        complete: count != null, returned: count == null ? 0 : Number(count), total: count == null ? undefined : Number(count),
+      });
     } catch (err: any) {
       return { error: err?.message ?? String(err) };
     }
@@ -439,6 +563,8 @@ export function corePlatformMetaConfigured(): boolean {
 }
 
 export const corePlatformMetaTools: AgentTool[] = [
+  listAppsTool,
+  listObjectsTool,
   searchRelevantObjectsTool,
   getObjectFieldsTool,
   querySampleRecordsTool,

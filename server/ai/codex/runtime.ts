@@ -15,6 +15,12 @@ import { estimateCost, type ProviderUsage } from '../providers/types';
 
 /** Runtime-reported value (for example low/medium/high/xhigh); kept open for future models. */
 export type CodexEffort = string;
+/** Hosted Codex web search only; it does not grant shell or package-network access. */
+export type CodexWebSearchMode = 'disabled' | 'cached' | 'live';
+export interface CodexWebSearchActivity {
+  query: string;
+  status: 'started' | 'completed';
+}
 
 /** Sentinel meaning "let the local Codex config choose" — never sent as a model id. */
 export const CODEX_LOCAL_DEFAULT_MODEL = 'codex-default';
@@ -50,6 +56,10 @@ export interface CodexRunOptions {
   sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
   approvalPolicy?: 'never' | 'on-request' | 'on-failure' | 'untrusted';
   networkAccessEnabled?: boolean;
+  /** Disabled unless a caller deliberately requests hosted Codex web search. */
+  webSearchMode?: CodexWebSearchMode;
+  /** Observes hosted-search activity while run() collects the final answer. */
+  onWebSearch?: (activity: CodexWebSearchActivity) => void;
 }
 
 /** A tool call Codex made this turn, for tracing and console steps. */
@@ -73,6 +83,7 @@ export type CodexEvent =
   | { type: 'thread.started'; threadId: string }
   | { type: 'text.delta'; delta: string }
   | { type: 'reasoning'; text: string }
+  | { type: 'web.search' } & CodexWebSearchActivity
   | { type: 'tool.started'; call: CodexToolCall }
   | { type: 'tool.completed'; call: CodexToolCall }
   | { type: 'message'; text: string }
@@ -119,13 +130,21 @@ export function describeCodexFailure(message: string): string {
   return text.split(/\r?\n/)[0] || 'Codex turn failed.';
 }
 
-function usageFrom(breakdown: any, model: string, billed: boolean): ProviderUsage {
+export function normalizeCodexUsage(breakdown: any, model: string, billed: boolean): ProviderUsage {
+  const inputTokens = Math.max(0, Number(breakdown?.inputTokens) || 0);
+  const cacheReadTokens = Math.max(0, Number(breakdown?.cachedInputTokens) || 0);
+  const cacheWriteTokens = Math.max(0, Number(breakdown?.cacheWriteInputTokens) || 0);
+  const freshInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+  const outputTokens = Math.max(0, Number(breakdown?.outputTokens) || 0);
   const usage: ProviderUsage = {
-    inputTokens: Math.max(0, Number(breakdown?.inputTokens || 0) - Number(breakdown?.cachedInputTokens || 0)),
-    outputTokens: Number(breakdown?.outputTokens || 0),
-    cacheReadTokens: Number(breakdown?.cachedInputTokens || 0),
-    cacheWriteTokens: Number(breakdown?.cacheWriteInputTokens || 0),
-    totalTokens: Number(breakdown?.totalTokens || 0),
+    // Codex includes cache writes in inputTokens, so each billing class must be disjoint.
+    inputTokens: freshInputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    // App Server can report a cumulative total beside last-turn categories. Deriving this value
+    // from the mutually exclusive categories keeps displayed and billed totals consistent.
+    totalTokens: freshInputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
     costUsd: 0,
   };
   // Subscription/account turns are not billed per token; only API-key mode has a rate.
@@ -208,7 +227,7 @@ export class CodexRuntime {
       // Always send the table, even empty: Codex merges the user's own ~/.codex/config.toml, so a
       // developer's global server (a Playwright one drives a REAL browser window) would otherwise be
       // inherited by every agent turn. Sending it explicitly makes our scoped set the only one.
-      config: { mcp_servers: mcp ?? {} },
+      config: { mcp_servers: mcp ?? {}, web_search: opts.webSearchMode ?? 'disabled' },
       ...(opts.system ? { developerInstructions: opts.system } : {}),
     };
   }
@@ -271,6 +290,8 @@ export class CodexRuntime {
           case 'item.started':
             if (event.item.type === 'mcp_tool_call') {
               yield { type: 'tool.started', call: { server: event.item.server, tool: event.item.tool, arguments: event.item.arguments } };
+            } else if (event.item.type === 'web_search') {
+              yield { type: 'web.search', query: event.item.query, status: 'started' };
             } else if (event.item.type === 'agent_message') {
               streamedText = '';
             }
@@ -292,6 +313,8 @@ export class CodexRuntime {
               yield { type: 'message', text: event.item.text };
             } else if (event.item.type === 'reasoning') {
               yield { type: 'reasoning', text: event.item.text };
+            } else if (event.item.type === 'web_search') {
+              yield { type: 'web.search', query: event.item.query, status: 'completed' };
             } else if (event.item.type === 'mcp_tool_call') {
               yield { type: 'tool.completed', call: { server: event.item.server, tool: event.item.tool, arguments: event.item.arguments, error: event.item.error?.message } };
             } else if (event.item.type === 'error') {
@@ -299,7 +322,7 @@ export class CodexRuntime {
             }
             break;
           case 'turn.completed':
-            yield { type: 'usage', usage: usageFrom({
+            yield { type: 'usage', usage: normalizeCodexUsage({
               inputTokens: event.usage.input_tokens,
               cachedInputTokens: event.usage.cached_input_tokens,
               cacheWriteInputTokens: event.usage.cache_write_input_tokens,
@@ -367,6 +390,8 @@ export class CodexRuntime {
         case 'item/started':
           if (params?.item?.type === 'mcpToolCall') {
             push({ type: 'tool.started', call: { server: params.item.server, tool: params.item.tool, arguments: params.item.arguments } });
+          } else if (params?.item?.type === 'webSearch') {
+            push({ type: 'web.search', query: String(params.item.query || ''), status: 'started' });
           }
           return;
         case 'item/completed': {
@@ -374,6 +399,8 @@ export class CodexRuntime {
           if (!item) return;
           if (item.type === 'mcpToolCall') {
             push({ type: 'tool.completed', call: { server: item.server, tool: item.tool, arguments: item.arguments, error: item.error?.message } });
+          } else if (item.type === 'webSearch') {
+            push({ type: 'web.search', query: String(item.query || ''), status: 'completed' });
           } else if (item.type === 'agentMessage' && item.text) {
             push({ type: 'message', text: String(item.text) });
           } else if (item.type === 'reasoning' && item.text) {
@@ -384,7 +411,7 @@ export class CodexRuntime {
           return;
         }
         case 'thread/tokenUsage/updated':
-          push({ type: 'usage', usage: usageFrom(params?.tokenUsage?.last, model, this.billed) });
+          push({ type: 'usage', usage: normalizeCodexUsage(params?.tokenUsage?.last, model, this.billed) });
           return;
         case 'turn/completed': {
           if (params?.turn?.status === 'failed' || params?.turn?.error) {
@@ -466,6 +493,7 @@ export class CodexRuntime {
       switch (event.type) {
         case 'thread.started': threadId = event.threadId; break;
         case 'text.delta': opts.onTextDelta?.(event.delta); break;
+        case 'web.search': opts.onWebSearch?.({ query: event.query, status: event.status }); break;
         case 'tool.completed': toolCalls.push(event.call); break;
         case 'message': lastMessage = event.text; break;
         case 'usage': usage = event.usage; break;

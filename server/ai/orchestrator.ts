@@ -12,9 +12,10 @@
 
 import type { AIProvider, ProviderAuthMode, ProviderName, ProviderResponse, ProviderImage, ProviderUsage } from './providers/types';
 import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
-import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
+import { addUsage, type AgentStep, type AgentRunResult, type RunToolLoopOptions, type ToolInvocation, type AggregateUsage } from './tools/types';
 import { CodexProvider } from './providers/codex';
 import { openBridgeSession } from './codex/mcpBridge';
+import { createToolLoopGuard } from './agent-runtime/tool-loop-guard';
 import { isKnownCodexModel } from './codex/runtime';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
@@ -30,6 +31,11 @@ export interface ProviderCredentials {
   apiKey: string;
   model?: string;
   authMode: ProviderAuthMode;
+}
+
+/** Keep the surrounding request context while replacing an unsafe user fragment. */
+export function sanitizedTaskForToolLoop(task: string, guardrailInput: string | undefined, sanitizedInput: string): string {
+  return guardrailInput ? task.replace(guardrailInput, sanitizedInput) : sanitizedInput;
 }
 
 /** One runtime. The name survives because usage/trace records and RBAC grants key on it. */
@@ -396,13 +402,14 @@ export class AgentOrchestrator {
       err.status = pipeline.policyVerdict.code;
       throw err;
     }
+    const task = sanitizedTaskForToolLoop(opts.task, opts.guardrailInput, pipeline.sanitizedInput);
     const system = opts.system || (await this.assembleSystem(pipeline));
     const ctx = opts.toolContext || {};
     const maxAcceptRetries = opts.maxAcceptRetries ?? 2;
 
     const steps: AgentStep[] = [];
     const toolResults: AgentRunResult['toolResults'] = [];
-    const totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+    const totalUsage: AggregateUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0 };
     let stepIndex = 0;
 
     // Tool calls settle inside the bridge; this is where each becomes a visible step, a trace
@@ -411,6 +418,7 @@ export class AgentOrchestrator {
       tools: opts.tools,
       ctx,
       maxToolCalls: opts.maxSteps ?? 12,
+      guard: createToolLoopGuard(),
       onInvocationStart: (invocation) => {
         opts.onToolStart?.({
           id: invocation.id,
@@ -442,14 +450,14 @@ export class AgentOrchestrator {
           toolInvoked: invocation.name,
           toolInputs: invocation.arguments,
           toolOutputs: invocation.result ?? invocation.error,
-          contextReceived: opts.task,
+          contextReceived: task,
           contextPassed: invocation.result ?? invocation.error,
           tokenUsage: null,
           informationTruncated: false,
           evidenceDiscarded: false,
           assumptionsMade: 'Not explicitly provided by model',
           whyNextToolSelected: 'Chosen by the agent during its own tool loop',
-          finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.task }]),
+          finalPromptSent: serializePrompt(system, [{ role: 'user', content: task }]),
           runId: opts.contextManifestId || pipeline.requestId,
         }).catch(console.error);
       },
@@ -469,7 +477,7 @@ export class AgentOrchestrator {
     let acceptRetries = 0;
 
     try {
-      let prompt = history ? `CONVERSATION SO FAR:\n${history}\n\nTASK:\n${opts.task}` : opts.task;
+      let prompt = history ? `CONVERSATION SO FAR:\n${history}\n\nTASK:\n${task}` : task;
       for (;;) {
         if (opts.signal?.aborted) return { finalText, steps, accepted: false, stoppedReason: 'aborted', toolResults, totalUsage };
         if (opts.maxTotalTokens && totalUsage.totalTokens >= opts.maxTotalTokens) {
@@ -483,6 +491,13 @@ export class AgentOrchestrator {
           effort: this.effort,
           signal: opts.signal,
           onTextDelta: opts.onTextDelta,
+          webSearchMode: opts.webSearchMode,
+          onWebSearch: (search) => {
+            if (search.status !== 'started') return;
+            const step: AgentStep = { index: stepIndex++, text: search.query ? `Searching the web for: ${search.query}` : 'Searching the web...', toolCalls: [] };
+            steps.push(step);
+            opts.onStep?.(step);
+          },
           threadId: resumeFrom,
           mcpServers: bridge.mcpServers,
           env: bridge.env,
@@ -501,10 +516,7 @@ export class AgentOrchestrator {
         threadId = turn.threadId || threadId;
         finalText = turn.text || '';
 
-        totalUsage.inputTokens += turn.usage.inputTokens ?? 0;
-        totalUsage.outputTokens += turn.usage.outputTokens ?? 0;
-        totalUsage.totalTokens += turn.usage.totalTokens ?? 0;
-        totalUsage.costUsd += turn.usage.costUsd ?? 0;
+        addUsage(totalUsage, turn.usage);
         await recordUsage({
           workspaceId: this.workspaceId,
           userId: this.userId,
@@ -528,7 +540,7 @@ export class AgentOrchestrator {
           toolInvoked: null,
           toolInputs: null,
           toolOutputs: finalText,
-          contextReceived: opts.task,
+          contextReceived: task,
           contextPassed: finalText,
           tokenUsage: { promptTokens: turn.usage.inputTokens ?? 0, completionTokens: turn.usage.outputTokens ?? 0 },
           informationTruncated: false,

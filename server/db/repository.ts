@@ -1982,10 +1982,18 @@ function mapMessage(r: any) {
   return { ...payload, role: r.role, kind: r.kind || payload.kind || 'text', ...(payload.content === undefined && payload.text === undefined ? { text: r.content || '' } : {}) };
 }
 
-/** Identity of a stored turn/message for reconciliation: role + kind + its text. */
+/** Text identity retained for legacy turns that predate activity request IDs. */
 function turnSignature(turn: any): string {
   return `${turn?.role === 'assistant' ? 'assistant' : 'user'}|${String(turn?.kind || 'text')}|${messageContent(turn).slice(0, 400)}`;
 }
+
+function turnRequestSignature(turn: any): string {
+  const requestId = String(turn?.activityRequestId || '').trim();
+  return requestId ? `${turn?.role === 'assistant' ? 'assistant' : 'user'}|${String(turn?.kind || 'text')}|request:${requestId}` : '';
+}
+
+const turnSignatures = (turn: any) => [turnSignature(turn), turnRequestSignature(turn)].filter(Boolean);
+const turnRichness = (turn: any) => Object.keys(turn || {}).length + (turn?.targetResult ? 100 : 0);
 
 /**
  * Reconcile the console's rich `turns` snapshot with the append-only `chat_messages` log.
@@ -2000,11 +2008,23 @@ function turnSignature(turn: any): string {
  */
 export function reconcileConversationTurns(snapshot: any[], logged: any[]): any[] {
   if (!snapshot.length) return logged;
-  const shown = new Set(snapshot.map(turnSignature));
+  const deduped: any[] = [];
+  const snapshotRequestIndex = new Map<string, number>();
+  for (const turn of snapshot) {
+    const requestSignature = turnRequestSignature(turn);
+    const existingIndex = requestSignature ? snapshotRequestIndex.get(requestSignature) : undefined;
+    if (existingIndex === undefined) {
+      if (requestSignature) snapshotRequestIndex.set(requestSignature, deduped.length);
+      deduped.push(turn);
+    } else if (turnRichness(turn) > turnRichness(deduped[existingIndex])) {
+      deduped[existingIndex] = turn;
+    }
+  }
+  const shown = new Set(deduped.flatMap(turnSignatures));
   let lastRecognized = -1;
-  logged.forEach((message, i) => { if (shown.has(turnSignature(message))) lastRecognized = i; });
-  const extra = logged.slice(lastRecognized + 1).filter((message) => !shown.has(turnSignature(message)));
-  return extra.length ? [...snapshot, ...extra] : snapshot;
+  logged.forEach((message, i) => { if (turnSignatures(message).some((signature) => shown.has(signature))) lastRecognized = i; });
+  const extra = logged.slice(lastRecognized + 1).filter((message) => !turnSignatures(message).some((signature) => shown.has(signature)));
+  return extra.length ? [...deduped, ...extra] : deduped;
 }
 
 function mapConversation(r: any, includeTurns = true) {

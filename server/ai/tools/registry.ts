@@ -17,8 +17,8 @@ import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/
 import { getProject, getProjectRepoPath } from '../../features/projects/projectService';
 import { findUntestedEdges } from '../exploration/edgeFinder';
 import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
-import { corePlatformDataTools } from './corePlatformData';
-import { corePlatformMetaTools } from './corePlatformMeta';
+import { corePlatformDataTools } from './targetData';
+import { corePlatformMetaTools } from './targetMetadata';
 import { expandByReferences } from '../exploration/referenceGraph';
 import { searchCodeWithContext, resolveTargetRepo } from '../../features/git-agent/gitAgentService';
 import {

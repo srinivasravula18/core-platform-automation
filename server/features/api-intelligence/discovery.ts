@@ -152,13 +152,24 @@ export function parsePostman(collection: any, baseUrl = ''): DiscoveryResult {
 // ---------------------------------------------------------------- live OpenAPI fetch (probe standard paths)
 const OPENAPI_PATHS = ['/openapi.json', '/swagger.json', '/v3/api-docs', '/api-docs', '/swagger/v1/swagger.json', '/api/openapi.json'];
 
+export function openApiSpecUrls(baseUrl: string): string[] {
+  try {
+    const url = new URL(baseUrl);
+    const mounted = url.pathname.replace(/\/+$/, '');
+    const roots = mounted ? [`${url.origin}${mounted}`, url.origin] : [url.origin];
+    return [...new Set(roots.flatMap((root) => OPENAPI_PATHS.map((path) => `${root}${path}`)))];
+  } catch {
+    const root = baseUrl.replace(/\/+$/, '');
+    return OPENAPI_PATHS.map((path) => `${root}${path}`);
+  }
+}
+
 export async function fetchOpenApiSpec(baseUrl: string, token?: string, timeoutMs = 8000): Promise<any | null> {
-  const origin = (() => { try { return new URL(baseUrl).origin; } catch { return baseUrl.replace(/\/+$/, ''); } })();
   const headers: Record<string, string> = { accept: 'application/json' };
   if (token) headers.authorization = `Bearer ${token}`;
-  for (const p of OPENAPI_PATHS) {
+  for (const specUrl of openApiSpecUrls(baseUrl)) {
     try {
-      const res = await fetch(`${origin}${p}`, { headers, signal: AbortSignal.timeout(timeoutMs) });
+      const res = await fetch(specUrl, { headers, signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) continue;
       const json = await res.json().catch(() => null);
       if (json && (json.paths || json.swagger || json.openapi)) return json;

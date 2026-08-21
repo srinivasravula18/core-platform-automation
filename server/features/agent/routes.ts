@@ -73,7 +73,7 @@ import { isProjectOverQuota } from '../../ai/costTracker';
 import { retrieveRunMemories, summarizeMemoriesForPrompt } from '../../ai/memory/runMemory';
 import { reqScope, reqGrants, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
-import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
+import { fetchTestDataPack } from '../../ai/tools/targetData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
 import { beginTurnActivity, cancelTurnActivity, completeTurnActivity, failTurnActivity, recordTurnActivity, summarizeActivityValue } from '../controller/turnActivity';
 import {
@@ -1437,8 +1437,12 @@ function pushPhase(run: any, msg: any): void {
   }
   run.messages.push({ ...msg, at: nowIso() });
   if (run.activityRequestId) {
+    const status = ['completed', 'failed', 'cancelled', 'interrupted'].includes(String(msg?.status))
+      ? msg.status
+      : 'running';
     void recordTurnActivity(run.activityRequestId, 'progress', {
       label: `${String(msg?.agent || 'Agent')} ${String(msg?.status || 'updated').replace(/_/g, ' ')}`,
+      status,
     });
   }
 }
@@ -1484,6 +1488,13 @@ function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): vo
   }
   // Conversational Runtime Phase 6: publish the terminal outcome into the conversation session.
   projectRunLifecycleSafe({ run, phase: 'completed' });
+}
+
+function completeRunActivity(run: any, label: string): void {
+  const requestId = String(run.activityRequestId || '');
+  if (!requestId) return;
+  run.activityRequestId = '';
+  void completeTurnActivity(requestId, { label });
 }
 
 async function saveAgentRunState(run: any, reason: string): Promise<void> {
@@ -1577,6 +1588,20 @@ function setCached(cache: Map<string, { at: number; value: any }>, key: string, 
 // startup, so admin's pre-existing credentials keep resolving.
 function ownerScopeForRun(run: any): string | undefined {
   return run?.ownerId || undefined;
+}
+
+function resolveRunCredentials(run: any) {
+  const resolved = resolveCredentials({
+    targetUrl: run.app_url,
+    websiteId: run.websiteId,
+    role: (run.credentials || {}).role,
+    ownerId: ownerScopeForRun(run),
+  });
+  if (resolved?.username && resolved?.password) return resolved;
+  const legacy = findSettingsCredentials(run.app_url);
+  return legacy.username && legacy.password
+    ? { ...legacy, siteName: '', baseUrl: run.app_url, environment: 'unknown' }
+    : resolved || undefined;
 }
 
 // OBJECT COVERAGE CONTRACT (prescriptive): when the goal names a metadata object we hold REAL
@@ -1986,7 +2011,7 @@ function missionRefFromRun(run: any): MissionRef {
 async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseTitles?: string[]; credential?: any }): Promise<void> {
   const gs = (run.graph_start || {}) as any;
   const creds = opts?.credential
-    || resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) })
+    || resolveRunCredentials(run)
     || run.credentials || {};
   const priorCapturedAt = Date.parse(String(run.session_context?.capturedAt || ''));
   const priorVerifiedElements = Number.isFinite(priorCapturedAt) && Date.now() - priorCapturedAt < 15 * 60 * 1000
@@ -2933,6 +2958,7 @@ ${CASE_AUTHORING_CONTRACT}`,
     (run as any).review_stage = 'cases';
     run.review_started_at = nowIso();
     pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
+    completeRunActivity(run, 'Test cases are ready for review');
     await persistAgentRunAndReportArtifacts(run);
     persistDataInBackground('review-required agent run');
     return;
@@ -6094,11 +6120,12 @@ Rules:
     const runProvider = requestedProvider || resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
-    const knowledgeCtx = { knowledgePackId: selectedApp?.knowledgePackId || undefined, websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
+    const resolvedWebsiteId = req.body.websiteId || resolvedCreds?.websiteId || (credentials as any).websiteId || '';
+    const knowledgeCtx = { knowledgePackId: selectedApp?.knowledgePackId || undefined, websiteId: resolvedWebsiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
     const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
     const artifactIdContext = {
       ownerId: scope.userId || '',
-      websiteId: req.body.websiteId || '',
+      websiteId: resolvedWebsiteId,
       websiteName: exactAppName,
       targetUrl,
       sourceText: prompt || '',
@@ -6128,7 +6155,7 @@ Rules:
       priorGrounding,
       conversationId,
       previousAgentRunId: priorSessionRun?.id || '',
-      websiteId: req.body.websiteId || '',
+      websiteId: resolvedWebsiteId,
       projectId: scope.projectId || '',
       appId: scope.appId || '',
       ownerId: scope.userId || '',
@@ -6264,6 +6291,7 @@ Rules:
         newRun.status = 'coverage_options';
         newRun.review_started_at = nowIso();
         pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s) that look related. Reuse them, add only the gaps, or generate fresh.` });
+        completeRunActivity(newRun, 'Coverage options are ready for review');
         await persistAgentQualityArtifacts(newRun).catch(() => undefined);
         persistDataInBackground('coverage-options graph run');
         return;
@@ -6331,7 +6359,7 @@ Rules:
     }
 
     try {
-      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+      const liveCreds = resolveRunCredentials(run);
 
       if (act === 'reuse' && matched.length) {
         // No generation  -  load the existing cases and let the human review, then
@@ -6372,7 +6400,7 @@ Rules:
         if (!correlationId) {
           const selectedExecutionCases = Array.isArray(executionCases) ? executionCases : [];
           const canStartAdditionalBatch = appendScripts
-            && ['completed', 'failed'].includes(String(run.status || ''))
+            && ['completed', 'failed', 'cancelled', 'interrupted'].includes(String(run.status || ''))
             && selectedExecutionCases.length > 0;
           if (!canStartAdditionalBatch) return res.status(409).json({ error: 'This run has no pending review to continue.' });
 
@@ -6457,7 +6485,7 @@ Rules:
       res.json({ success: true });
 
       try {
-        const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+        const liveCreds = resolveRunCredentials(run);
         await completeScriptProofFlow(run, run.app_url || '', { test_cases: run.generated_cases || [] }, liveCreds);
       } catch (err: any) {
         console.error('AI Script Continue Error:', err);
@@ -6497,7 +6525,7 @@ Rules:
     try {
       // Re-resolve the real credentials (the run only stores a masked copy) so the
       // evidence run can actually log in.
-      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+      const liveCreds = resolveRunCredentials(run);
       await runPostCaseAgentFlow(run, undefined as any, { test_cases: selectedExecutionCases }, run.app_url || '', liveCreds);
       if (priorScripts.length) {
         run.playwright_scripts = mergeScriptsByCase(priorScripts, Array.isArray(run.playwright_scripts) ? run.playwright_scripts : []);
@@ -6577,7 +6605,7 @@ Rules:
 
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
-    const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+    const liveCreds = resolveRunCredentials(run);
     if (!hasInspection) return res.json({ success: false, needsFullRestart: true, restart: fullRestartParams(run) });
     // A cancelled run retains both terminal status and cancelRequested. Clear them before any
     // revalidation work, otherwise the phase guard aborts the retry as RUN_CANCELLED.

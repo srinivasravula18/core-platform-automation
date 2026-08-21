@@ -2181,6 +2181,8 @@ function CostSection() {
   const capStatus = summary.capStatus || {};
   const byModel: any[] = summary.byModel || [];
   const allTime = windows.all || emptyWin;
+  const cacheInputTokens = allTime.inputTokens + allTime.cacheReadTokens + allTime.cacheWriteTokens;
+  const cacheHitRate = cacheInputTokens ? (allTime.cacheReadTokens / cacheInputTokens) * 100 : 0;
   const capsDirty = !sameSpendCaps(caps, savedCaps);
 
   return (
@@ -2238,6 +2240,7 @@ function CostSection() {
       {/* All-time token breakdown: input / output / cache read / cache write. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Tokens by Type (All Time)</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Cache hit rate: {cacheHitRate.toFixed(1)}%</p>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { k: 'inputTokens', label: 'Input' },

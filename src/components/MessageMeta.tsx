@@ -44,8 +44,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 export function MessageMeta({ createdAt, execution }: { createdAt?: string; execution?: ExecutionMeta }) {
   const [open, setOpen] = useState(false);
   const ex = execution || {};
+  const hasTokenParts = ex.promptTokens != null || ex.completionTokens != null || ex.cachedTokens != null;
+  const totalTokens = hasTokenParts
+    ? (ex.promptTokens || 0) + (ex.completionTokens || 0) + (ex.cachedTokens || 0)
+    : ex.totalTokens;
   const hasDetails =
-    ex.provider || ex.model || ex.durationMs != null || ex.totalTokens != null ||
+    ex.provider || ex.model || ex.durationMs != null || totalTokens != null ||
     ex.pipeline || ex.runId || ex.conversationId || ex.workspace;
 
   return (
@@ -55,7 +59,7 @@ export function MessageMeta({ createdAt, execution }: { createdAt?: string; exec
         <Timestamp value={createdAt} mode="absolute" seconds />
         {ex.durationMs != null && <span>· {humanizeDuration(ex.durationMs)}</span>}
         {ex.model && <span>· {ex.model}</span>}
-        {ex.totalTokens != null && <span>· {ex.totalTokens.toLocaleString()} tokens</span>}
+        {totalTokens != null && <span>· {totalTokens.toLocaleString()} tokens</span>}
         {hasDetails && (
           <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-0.5 hover:text-[var(--text-primary)]">
             Details <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -81,7 +85,7 @@ export function MessageMeta({ createdAt, execution }: { createdAt?: string; exec
             <Row label="Prompt tokens" value={ex.promptTokens} />
             <Row label="Completion tokens" value={ex.completionTokens} />
             <Row label="Cached tokens" value={ex.cachedTokens} />
-            <Row label="Total tokens" value={ex.totalTokens} />
+            <Row label="Total tokens" value={totalTokens} />
             <Row label="Est. cost" value={ex.costUsd != null ? `$${ex.costUsd.toFixed(4)}` : undefined} />
           </Section>
           <Section title="Pipeline">

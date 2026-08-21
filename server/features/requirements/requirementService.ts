@@ -25,7 +25,7 @@ import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { pushInboxItem } from '../inbox/routes';
 import { gitGrep, listRepoSourceFiles, readRepoFile, resolveTargetRepo } from '../git-agent/gitAgentService';
 import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystService';
-import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
+import { fetchCorePlatformObjectCatalog } from '../../ai/tools/targetData';
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { isUnderScope, type ResolvedSurfaceScope } from './surfaceScope';

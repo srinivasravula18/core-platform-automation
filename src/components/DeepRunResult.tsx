@@ -235,6 +235,20 @@ function evidenceTitle(title: string | undefined, i: number): string {
   return !t || /^compiled mission/i.test(t) ? `Test case ${i + 1}` : t;
 }
 
+/** Prefer the fresh artifact for each re-run test, keeping prior evidence only for tests not re-run. */
+export function mergeRerunEvidence(saved: any[], tests: any[]): any[] {
+  const fresh = tests
+    .filter((test) => test?.screenshotUrl || test?.evidenceUrls?.length)
+    .map((test) => ({
+      ...test,
+      stepScreenshots: test.evidenceUrls || test.stepScreenshots,
+      screenshotUrl: test.screenshotUrl || test.evidenceUrls?.at(-1) || '',
+    }));
+  if (!fresh.length) return saved;
+  const refreshedTitles = new Set(fresh.map((test) => String(test.title || '').trim()));
+  return [...fresh, ...saved.filter((shot) => !refreshedTitles.has(String(shot?.title || '').trim()))];
+}
+
 // One step frame in the evidence modal: url + the recorded action (when the step log is joined).
 type StepFrame = { url: string; kind?: string; label?: string; value?: string; ok?: boolean; error?: string };
 
@@ -412,6 +426,7 @@ export function DeepRunResult({
   }, [run, pwResult]);
 
   const status = run?.status;
+  const list = cases || [];
   const rawScripts: any[] = run?.playwright_scripts || [];
   // Apply any inline edits so the viewer AND every run use the edited code.
   const scriptKey = (s: any, i: number) => String(s?.filename || s?.test_case_title || s?.title || `script-${i + 1}`);
@@ -422,7 +437,7 @@ export function DeepRunResult({
   useEffect(() => {
     setSelectedScripts((prev) => new Set([...prev].filter((idx) => idx < scripts.length)));
   }, [scripts.length]);
-  const evidence: any[] = run?.evidence_screenshots || [];
+  const evidence: any[] = mergeRerunEvidence(run?.evidence_screenshots || [], pwResult?.tests || []);
   // Per-case "why no script" diagnostics (cases→scripts gap), grouped by case title. Populated by
   // both engines (graph projects them; legacy sets run.compiler_diagnostics directly).
   const compilerDiagnostics: any[] = Array.isArray(run?.compiler_diagnostics) ? run.compiler_diagnostics : [];
@@ -442,13 +457,13 @@ export function DeepRunResult({
   const scriptReviewing = reviewing && reviewStage === 'scripts';
   const canRegenerateScripts = failed && (run as any)?.engine !== 'langgraph';
   const canGenerateAdditionalScripts = ['completed', 'failed'].includes(status) && scripts.length > 0 && selectedCases.size > 0;
+  const canContinueSavedCases = ['cancelled', 'interrupted'].includes(String(status)) && list.length > 0;
   const coverageGate = status === 'coverage_options';
   const existingMatches: Case[] = run?.existing_matches || [];
   // Cases the user removed from the coverage card (by index) — dropped before reuse/gaps.
   const [removedMatches, setRemovedMatches] = useState<Set<number>>(new Set());
   const keptMatches = existingMatches.filter((_, i) => !removedMatches.has(i));
   const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
-  const list = cases || [];
   // Evidence may arrive reversed; order it to match the displayed case order by title (BUG 13).
   const orderedEvidence: any[] = useMemo(() => {
     const orderByTitle = new Map<string, number>();
@@ -978,6 +993,7 @@ export function DeepRunResult({
     }
     if (!toRun.length) return;
     setPwRunning(true);
+    setShotOpen(null);
     setPwResult(onlyFailed ? pwResult : null);
     try {
       // Start asynchronously so a reverse proxy cannot terminate the request while browsers run.
@@ -988,6 +1004,7 @@ export function DeepRunResult({
           scripts: toRun.map((s: any) => ({ filename: s.filename, title: s.title, code: s.code })),
           baseUrl: targetUrl,
           runId: `${activeTaskId}-pw`,
+          requireAuth: true,
         }),
       }, 30_000);
       const started = await readRunJson(startRes);
@@ -998,6 +1015,7 @@ export function DeepRunResult({
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
         const poll = await fetchWithTimeout(`/api/playwright/run/${encodeURIComponent(started.job_id)}`, {}, 30_000);
         const state = await readRunJson(poll);
+        if (state?.status === 'failed') throw new Error(state.error || 'Playwright run failed.');
         if (state?.status === 'done') { data = state.result; break; }
       }
       if (!data) throw new Error('Playwright run timed out while waiting for the server job.');
@@ -1584,7 +1602,7 @@ export function DeepRunResult({
                     {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                     {saved ? 'Saved' : 'Save All'}
                   </button>
-                  {(reviewing || canRegenerateScripts || canGenerateAdditionalScripts) && (
+                  {(reviewing || canRegenerateScripts || canGenerateAdditionalScripts || canContinueSavedCases) && (
                     <button
                       onClick={continueFlow}
                       disabled={busy === 'continue' || (!list.length && !scriptReviewing)}

@@ -97,6 +97,15 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
  */
 const GROUNDED_SUBJECT_RE = /\b(?:code(?:base)?|repo(?:sitory)?|implementation|component|database|schema|endpoint|api|selector|dom|page|screen|feature|workflow|list\s+view|workspace|artifact|test\s+case|suite|plan|run|script|defect|report|requirement|failed|failure|error)(?:e?s)?\b/;
 
+/** Hosted search is available only for explicit capability research, never ordinary turns. */
+export function capabilityDiscoveryWebSearchMode(message: string): 'disabled' | 'cached' | 'live' {
+  const text = cleanText(message);
+  const asksToResearch = /\b(?:find|search|research|discover|recommend|compare|evaluate|look\s+up|what|which)\b/.test(text);
+  const namesCapability = /\b(?:skills?|plugins?|mcp(?:\s+servers?)?|tools?|connectors?|capabilit(?:y|ies))\b/.test(text);
+  if (!asksToResearch || !namesCapability) return 'disabled';
+  return /\b(?:latest|current|currently|newest|up[- ]to[- ]date|today)\b/.test(text) ? 'live' : 'cached';
+}
+
 export function shouldUseConversationalFastPath(message: string): boolean {
   const text = cleanText(message);
   const conversationalAsk = looksLikeQuestionOrCoverageAsk(message)

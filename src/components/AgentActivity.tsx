@@ -17,6 +17,21 @@ export interface ActivityEvent {
   };
 }
 
+export function restoreActiveActivity<T extends { role: string; activityRequestId?: string }>(turns: T[], activity: any) {
+  const latest = activity?.latest;
+  const requestId = String(latest?.requestId || '');
+  const status = String(latest?.status || '');
+  const hasResponse = turns.some((turn) => turn.role === 'assistant' && turn.activityRequestId === requestId);
+  if (!requestId || hasResponse || !['running', 'failed', 'cancelled', 'interrupted'].includes(status)) return turns;
+  return [...turns, {
+    id: `activity-${requestId}`,
+    role: 'assistant' as const,
+    kind: 'thinking' as const,
+    label: status === 'running' ? 'Resuming background work...' : status === 'cancelled' ? 'Stopped' : status === 'interrupted' ? 'Interrupted' : 'Could not complete',
+    activityRequestId: requestId,
+  }];
+}
+
 interface ActivityStep {
   key: string;
   kind: string;
@@ -42,7 +57,7 @@ function friendlyTool(name = '') {
   return labels[name] || `Ran ${name.replace(/_/g, ' ')}`;
 }
 
-export function activitySteps(events: ActivityEvent[]): ActivityStep[] {
+export function activitySteps(events: ActivityEvent[], requestStatus?: ActivityStatus): ActivityStep[] {
   const steps: ActivityStep[] = [];
   const toolSteps = new Map<string, number>();
   const pending = new Map<string, Array<{ step: number; item: number }>>();
@@ -79,9 +94,16 @@ export function activitySteps(events: ActivityEvent[]): ActivityStep[] {
     }
     // Queueing and routing are request plumbing, not actions performed by the agent.
     if (payload.kind === 'queued' || payload.kind === 'routing') continue;
-    steps.push({ key: String(event.seq), kind: payload.kind, label: payload.label || payload.kind.replace(/_/g, ' '), status: payload.status });
+    const label = payload.label || payload.kind.replace(/_/g, ' ');
+    steps.push({ key: String(event.seq), kind: payload.kind, label, status: /\bcompleted$/i.test(label) ? 'completed' : payload.status });
   }
-  return steps;
+  return requestStatus && ['completed', 'cancelled', 'interrupted', 'failed'].includes(requestStatus)
+    ? steps.map((step) => ({
+      ...step,
+      status: step.status === 'running' ? requestStatus : step.status,
+      items: step.items?.map((item) => ({ ...item, status: item.status === 'running' ? requestStatus : item.status })),
+    }))
+    : steps;
 }
 
 function toolItemLabel(tool: ActivityEvent['payload']['tool']) {
@@ -123,18 +145,28 @@ export const AgentActivity = memo(function AgentActivity({
   const [status, setStatus] = useState<ActivityStatus>('running');
   const completedNotified = useRef(false);
   const lastSeq = useRef(0);
+  const unavailableAttempts = useRef(0);
+  const stepsRef = useRef<HTMLDivElement>(null);
+  const followStepsRef = useRef(true);
 
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     lastSeq.current = 0;
+    unavailableAttempts.current = 0;
     completedNotified.current = false;
+    followStepsRef.current = true;
     setEvents([]);
     setStatus('running');
+    const retryOrFail = () => {
+      unavailableAttempts.current += 1;
+      if (unavailableAttempts.current >= 2) setStatus('failed');
+      else timer = setTimeout(refresh, 750);
+    };
     const refresh = async () => {
       try {
         const response = await fetch(`/api/controller/activity/for-conversation/${encodeURIComponent(conversationId)}?since=${lastSeq.current}`, { cache: 'no-store' });
-        if (!response.ok) return;
+        if (!response.ok) return retryOrFail();
         const data = await response.json();
         if (disposed) return;
         const received = Array.isArray(data.events) ? data.events as ActivityEvent[] : [];
@@ -144,10 +176,13 @@ export const AgentActivity = memo(function AgentActivity({
         const request = (Array.isArray(data.requests) ? data.requests : []).find((item: any) => item.requestId === requestId);
         if (received.length) lastSeq.current = Math.max(lastSeq.current, ...received.map((event) => Number(event.seq) || 0));
         if (matching.length) setEvents((current) => [...current, ...matching]);
-        setStatus(request?.status || matching.at(-1)?.payload?.status || 'running');
-        if ((request?.status || matching.at(-1)?.payload?.status) === 'running') timer = setTimeout(refresh, 1_250);
+        const nextStatus = request?.status || matching.at(-1)?.payload?.status;
+        if (!nextStatus) return retryOrFail();
+        unavailableAttempts.current = 0;
+        setStatus(nextStatus);
+        if (nextStatus === 'running') timer = setTimeout(refresh, 1_250);
       } catch {
-        if (!disposed) timer = setTimeout(refresh, 2_500);
+        if (!disposed) retryOrFail();
       }
     };
     void refresh();
@@ -160,7 +195,11 @@ export const AgentActivity = memo(function AgentActivity({
     onCompleted?.();
   }, [onCompleted, status]);
 
-  const steps = useMemo(() => activitySteps(events), [events]);
+  const steps = useMemo(() => activitySteps(events, status), [events, status]);
+  useEffect(() => {
+    const el = stepsRef.current;
+    if (el && followStepsRef.current) el.scrollTop = el.scrollHeight;
+  }, [steps, partialText]);
   const heading = status === 'running'
     ? (liveLabel || steps.at(-1)?.label || 'Working on your request...')
     : status === 'completed' ? (steps.some((step) => step.kind.startsWith('tool_')) ? 'Worked through sources' : 'Completed')
@@ -183,7 +222,14 @@ export const AgentActivity = memo(function AgentActivity({
           {steps.length > 0 ? <span className="ml-auto text-xs font-normal text-[var(--text-muted)]">{steps.length} step{steps.length === 1 ? '' : 's'}</span> : null}
         </summary>
 
-        <div className="custom-scrollbar mt-2 max-h-[min(55vh,32rem)] overflow-y-auto overscroll-contain pl-2 pr-2">
+        <div
+          ref={stepsRef}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            followStepsRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+          className="custom-scrollbar mt-2 max-h-[min(55vh,32rem)] overflow-y-auto overscroll-contain pl-2 pr-2"
+        >
           <div className="relative ml-2.5 border-l border-[var(--border)] pl-6">
             {steps.length ? steps.map((step) => {
             const items = step.items || [];
@@ -191,7 +237,7 @@ export const AgentActivity = memo(function AgentActivity({
               <div key={step.key} className="relative pb-4 last:pb-1">
                 <span className={cn(
                   'absolute -left-[33px] top-0 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--bg-primary)]',
-                  step.status === 'failed' ? 'text-red-500' : step.status === 'running' ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]',
+                  step.status === 'failed' ? 'text-red-500' : step.status === 'running' ? 'text-[var(--accent)]' : step.status === 'completed' ? 'text-emerald-400' : 'text-[var(--text-muted)]',
                 )}>
                   <StepIcon step={step} />
                 </span>

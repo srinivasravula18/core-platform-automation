@@ -12,12 +12,28 @@
  */
 import type { ToolSpec, ProviderUsage } from '../providers/types';
 
+export type LiveEvidenceScopeKind = 'target' | 'application' | 'all_applications' | 'filtered';
+
+export interface LiveEvidence {
+  subject: string;
+  scope: { kind: LiveEvidenceScopeKind; id?: string; label?: string };
+  source: { method: string; operation: string };
+  completeness: { complete: boolean; returned: number; total?: number };
+  observedAt: string;
+}
+
+export type EvidenceResult<T extends Record<string, unknown> = Record<string, unknown>> = T & { evidence: LiveEvidence };
+
 /** Ambient data a tool needs that the model should not have to supply. */
 export interface ToolContext {
   workspaceId?: string;
   userId?: string;
+  /** Server-derived console role. Tool selection narrows from this value; it never trusts model text. */
+  role?: string;
   projectId?: string;
   appId?: string | null;
+  /** Exact target credentials selected in the Console; never model-authored. */
+  targetApps?: Array<{ id?: string; name: string; baseUrl: string }>;
   runId?: string;
   /** Free-form scratch shared across a single agent run (e.g. the inspection context). */
   scratch?: Record<string, unknown>;
@@ -49,6 +65,24 @@ export interface AgentStep {
 
 export type StopReason = 'accepted' | 'final_text' | 'max_steps' | 'budget' | 'aborted' | 'empty_response' | 'truncated';
 
+export interface AggregateUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+export function addUsage(total: AggregateUsage, usage: ProviderUsage): void {
+  total.inputTokens += usage.inputTokens ?? 0;
+  total.outputTokens += usage.outputTokens ?? 0;
+  total.cacheReadTokens += usage.cacheReadTokens ?? 0;
+  total.cacheWriteTokens += usage.cacheWriteTokens ?? 0;
+  total.totalTokens += usage.totalTokens ?? 0;
+  total.costUsd += usage.costUsd ?? 0;
+}
+
 export interface AgentRunResult {
   finalText: string;
   steps: AgentStep[];
@@ -56,7 +90,7 @@ export interface AgentRunResult {
   stoppedReason: StopReason;
   /** Every successful tool result, in call order (for downstream consumers). */
   toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown }>;
-  totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number };
+  totalUsage: AggregateUsage;
 }
 
 /** Grounded acceptance gate. Return ok:false plus feedback to make the agent retry
@@ -82,7 +116,7 @@ export interface RunToolLoopOptions {
   system?: string;
   tools: AgentTool[];
   toolContext?: ToolContext;
-  /** Hard backstop against a runaway loop: the tool-call ceiling for the whole run. Default 12.
+  /** Hard backstop against a runaway loop: the tool-call ceiling for the whole run. Default 32.
    *  Past it, further calls are refused with an instruction to answer from what it already has. */
   maxSteps?: number;
   /** Token budget across the whole loop. When exceeded, stop. */
@@ -98,5 +132,7 @@ export interface RunToolLoopOptions {
   onToolStart?: (invocation: ToolInvocation) => void;
   /** Native agent-message deltas, forwarded while the model is still producing its answer. */
   onTextDelta?: (delta: string) => void;
+  /** Hosted Codex search, enabled only for explicit capability-discovery requests. */
+  webSearchMode?: 'disabled' | 'cached' | 'live';
   signal?: AbortSignal;
 }

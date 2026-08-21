@@ -15,8 +15,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import type { CatalogConn } from '../../ai/tools/corePlatformData';
-import { fetchCorePlatformApps, fetchCorePlatformAppTabs } from '../../ai/tools/corePlatformData';
+import type { CatalogConn } from '../../ai/tools/targetData';
+import { fetchCorePlatformApps, fetchCorePlatformAppTabs } from '../../ai/tools/targetData';
 
 export interface PlatformApp {
   id: string;

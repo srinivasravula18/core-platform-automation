@@ -7,7 +7,7 @@ import { redactSecrets } from '../../ai/memory/artifactMemory';
 import { ChatConversations } from '../../db/repository';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { quickUrlHealthAnswer, urlHealthTool } from '../../agent-core/registry/urlHealthTool';
-import { shouldPrepareTestScope, shouldUseConversationalFastPath } from '../../agent-runtime/goals/router';
+import { capabilityDiscoveryWebSearchMode, shouldPrepareTestScope, shouldUseConversationalFastPath } from '../../agent-runtime/goals/router';
 import {
   beginTurnActivity,
   cancelTurnActivity,
@@ -22,6 +22,10 @@ function conversationWorkspace(workspaceId: unknown, scope?: { projectId?: strin
   return scope
     ? `${scope.projectId || 'none'}::${scope.appId || 'all'}`
     : (typeof workspaceId === 'string' ? workspaceId : 'default');
+}
+
+function hasTargetContext(apps: unknown, scope: { appId?: string | null }): boolean {
+  return Boolean(scope.appId) || (Array.isArray(apps) && apps.some((app: any) => typeof app?.baseUrl === 'string' && app.baseUrl.trim()));
 }
 
 async function persistMessage(
@@ -252,7 +256,9 @@ export function registerControllerRoutes(app: Express) {
         await persistExchange(conversationId, workspaceId, userMessage, quick.reply, scope);
         return res.json({ reply: quick.reply, accepted: true, fast: true, source: quick.source, actions: quick.actions || [], trace: [] });
       }
-      const useFastPath = shouldUseConversationalFastPath(userMessage);
+      const useFastPath = !hasTargetContext(apps, scope)
+        && shouldUseConversationalFastPath(userMessage)
+        && capabilityDiscoveryWebSearchMode(userMessage) === 'disabled';
       console.log(`[routing] ${conversationId || '(no conversation)'} -> ${useFastPath ? 'fast (no tools)' : 'grounded'}`);
       if (useFastPath) {
         const reply = await explainIntent(userMessage, {
@@ -267,6 +273,7 @@ export function registerControllerRoutes(app: Express) {
         userMessage,
         workspaceId,
         userId: effectiveUserId,
+        role: scope.role,
         projectId: scope.projectId,
         appId: scope.appId,
         conversationId,
@@ -275,6 +282,7 @@ export function registerControllerRoutes(app: Express) {
         apps,
         model,
         effort,
+        webSearchMode: capabilityDiscoveryWebSearchMode(userMessage),
       });
       await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       res.json({
@@ -352,7 +360,9 @@ export function registerControllerRoutes(app: Express) {
         if (connected) return res.end();
         return;
       }
-      const fastPath = shouldUseConversationalFastPath(userMessage);
+      const fastPath = !hasTargetContext(apps, scope)
+        && shouldUseConversationalFastPath(userMessage)
+        && capabilityDiscoveryWebSearchMode(userMessage) === 'disabled';
       console.log(`[routing] ${conversationId || '(no conversation)'} -> ${fastPath ? 'fast (no tools)' : 'grounded'}`);
       if (fastPath) {
         let reply = '';
@@ -378,6 +388,7 @@ export function registerControllerRoutes(app: Express) {
         userMessage,
         workspaceId,
         userId: effectiveUserId,
+        role: scope.role,
         projectId: scope.projectId,
         appId: scope.appId,
         conversationId,
@@ -386,6 +397,7 @@ export function registerControllerRoutes(app: Express) {
         apps,
         model,
         effort,
+        webSearchMode: capabilityDiscoveryWebSearchMode(userMessage),
         onToolStart: (tool) => {
           const safeArguments = redactSecrets(tool.arguments);
           void recordTurnActivity(requestId, 'tool_started', {

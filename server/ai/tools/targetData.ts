@@ -18,6 +18,7 @@ import { createHash } from 'crypto';
 import type { AgentTool, ToolContext } from './types';
 import type { ObjectSchema } from '../../features/agent/testdata/types';
 import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
+import { withEvidence } from './evidenceEnvelope';
 
 function baseUrl(): string {
   return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
@@ -68,7 +69,7 @@ async function probeServiceBase(candidate: string): Promise<boolean> {
   return false;
 }
 
-async function resolveServiceBase(conn?: CatalogConn): Promise<string> {
+export async function resolveServiceBase(conn?: CatalogConn): Promise<string> {
   const raw = trimBaseUrl(conn?.baseUrl || baseUrl() || '');
   if (!raw) return '';
   const cached = serviceBaseCache.get(raw);
@@ -199,7 +200,11 @@ const num = { type: 'integer' };
 
 export const listAppsTool: AgentTool = {
   spec: { name: 'list_apps', description: 'List the applications the configured user can access. Use to discover real app ids before describing schema or querying records.', parameters: { type: 'object', properties: {} } },
-  async execute() { return { apps: items(await cpRequest('GET', await cpApiPath('listApps'))) }; },
+  async execute() {
+    const path = await cpApiPath('listApps');
+    const apps = items(await cpRequest('GET', path)) as any[];
+    return withEvidence({ apps }, { subject: 'applications', scope: { kind: 'target' }, method: 'GET', operation: path, complete: true, returned: apps.length, total: apps.length });
+  },
 };
 
 export const describeAppSchemaTool: AgentTool = {
@@ -221,7 +226,7 @@ export const describeAppSchemaTool: AgentTool = {
       }
       result.described = described;
     }
-    return result;
+    return withEvidence(result, { subject: 'objects', scope: { kind: 'application', id: appId }, method: 'GET', operation: await cpApiPath('listObjects', { appId }), complete: true, returned: Array.isArray(objects) ? objects.length : 0, total: Array.isArray(objects) ? objects.length : 0 });
   },
 };
 
@@ -232,10 +237,16 @@ export const queryRecordsTool: AgentTool = {
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object', description: 'Filter tree; omit for all accessible records.' }, page: num, page_size: num }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
-    return cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
+    const appId = String(args.app_id);
+    const object = String(args.object_api_name);
+    const path = await cpApiPath('queryListView', { appId, object });
+    const data = await cpRequest('POST', path, {
       filters: asFilters(args.filters),
       pagination: { page: Number(args.page ?? 1), page_size: Math.min(1000, Number(args.page_size ?? 50)) },
-    });
+    }) as Record<string, unknown>;
+    const rows = Array.isArray((data as any)?.items) ? (data as any).items.length : 0;
+    const total = typeof (data as any)?.total_count === 'number' ? (data as any).total_count : undefined;
+    return withEvidence(data, { subject: 'records', scope: { kind: args.filters ? 'filtered' : 'application', id: appId, label: object }, method: 'POST', operation: path, complete: total != null && rows >= total, returned: rows, total });
   },
 };
 
@@ -246,10 +257,14 @@ export const countRecordsTool: AgentTool = {
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object' } }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
-    const data = (await cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
+    const appId = String(args.app_id);
+    const object = String(args.object_api_name);
+    const path = await cpApiPath('queryListView', { appId, object });
+    const data = (await cpRequest('POST', path, {
       pagination: { page_size: 1 }, summary: { operations: ['count'] }, filters: asFilters(args.filters),
     })) as any;
-    return { count: data?.summary?.count ?? data?.total_count ?? null };
+    const count = data?.summary?.count ?? data?.total_count ?? null;
+    return withEvidence({ count }, { subject: 'records', scope: { kind: args.filters ? 'filtered' : 'application', id: appId, label: object }, method: 'POST', operation: path, complete: count != null, returned: count == null ? 0 : Number(count), total: count == null ? undefined : Number(count) });
   },
 };
 
@@ -262,14 +277,18 @@ export const aggregateRecordsTool: AgentTool = {
   async execute(args) {
     const chart: Record<string, unknown> = { group_by: String(args.group_by), operation: typeof args.operation === 'string' ? args.operation : 'count', sort_by: 'value', sort_direction: 'desc', max_buckets: 50 };
     if (typeof args.value_field === 'string' && args.value_field) chart.value_field = args.value_field;
-    const data = (await cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
+    const appId = String(args.app_id);
+    const object = String(args.object_api_name);
+    const path = await cpApiPath('queryListView', { appId, object });
+    const data = (await cpRequest('POST', path, {
       view_mode: 'chart', chart, pagination: { page_size: 1 }, filters: asFilters(args.filters),
     })) as any;
     const buckets = Array.isArray(data?.chart?.buckets) ? data.chart.buckets : [];
-    return {
+    const result = {
       group_by: chart.group_by, operation: chart.operation,
       groups: buckets.map((b: any) => ({ group: b.group_key === null || b.group_key === undefined || b.group_key === '' ? '(blank)' : b.group_key, value: b.value ?? null })),
     };
+    return withEvidence(result, { subject: 'record aggregates', scope: { kind: args.filters ? 'filtered' : 'application', id: appId, label: object }, method: 'POST', operation: path, complete: true, returned: result.groups.length, total: result.groups.length });
   },
 };
 

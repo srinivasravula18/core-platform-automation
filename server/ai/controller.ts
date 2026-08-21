@@ -96,7 +96,7 @@ export async function buildWorkspaceContext(options: { query?: string; userId?: 
 
 export type ChatTurn = { role: 'user' | 'assistant'; content: string };
 
-export type SelectedApp = { name: string; baseUrl: string };
+export type SelectedApp = { id?: string; name: string; baseUrl: string };
 
 // When the user has selected app(s) — via the top-bar scope switcher or the composer
 // "Apps to test" picker — build a directive block naming them as the target. This is

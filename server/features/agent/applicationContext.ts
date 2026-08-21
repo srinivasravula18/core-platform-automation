@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import path from 'path';
-import { fetchCorePlatformObjectCatalog, fetchTestDataPack, type CatalogConn } from '../../ai/tools/corePlatformData';
+import { fetchCorePlatformObjectCatalog, fetchTestDataPack, type CatalogConn } from '../../ai/tools/targetData';
 import { buildKnowledgeBlock } from '../knowledge/knowledgeService';
 import { getApp, getProject, resolveRepoPath, type AppRecord, type Project } from '../projects/projectService';
 

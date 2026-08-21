@@ -21,6 +21,7 @@
     "start:frontend": "node scripts/frontend-server.mjs",
     "seed:versioning-demo": "tsx scripts/seed-versioning-demo.ts",
     "backfill:harden-recordings": "tsx scripts/backfill-harden-recordings.ts",
+    "benchmark:prompt-cache": "tsx scripts/benchmark-prompt-cache.ts",
     "playwright:install": "node scripts/ensure-playwright.mjs",
     "playwright:deps": "playwright install-deps chromium",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",
