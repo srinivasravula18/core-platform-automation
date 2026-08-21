@@ -75,10 +75,17 @@ const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
   { key: 'PlaywrightAgent', label: 'Script Author' },
   { key: 'SelectorVerifier', label: 'Script Verifier' },
   { key: 'EvidenceAgent', label: 'Evidence Runner' },
+  { key: 'QAAnalyst', label: 'Final Analysis' },
 ];
 
 // Statuses that halt polling and await a human decision or are final.
 const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 'cancelled'];
+
+export function finalAnalysisState(status?: string): string {
+  if (status === 'completed') return 'completed';
+  if (status === 'failed' || status === 'cancelled') return 'skipped';
+  return 'pending';
+}
 
 function caseSummary(value?: string) {
   const clean = String(value || '').split(/\bTest Steps\s*:/i)[0].replace(/\s+/g, ' ').trim();
@@ -344,10 +351,12 @@ export function DeepRunResult({
   taskId,
   initialSaved,
   onSaved,
+  onActivityStarted,
 }: {
   taskId: string;
   initialSaved?: boolean;
   onSaved?: () => void;
+  onActivityStarted?: (requestId: string) => void;
 }) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence' | 'bugs'>('cases');
   const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
@@ -509,6 +518,7 @@ export function DeepRunResult({
 
   const agentState = (agent: string): string => {
     const msg = latestAgentMessage(agent);
+    if (agent === 'QAAnalyst' && !msg) return finalAnalysisState(status);
     if (agent === 'RequirementWriter' && !msg) {
       const advancedPastRequirements =
         hasPhase('CoverageScout', 'TestGenerationAgent', 'PlaywrightAgent', 'SelectorVerifier', 'EvidenceAgent') ||
@@ -866,6 +876,7 @@ export function DeepRunResult({
       });
       if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json().catch(() => ({}));
+      if (typeof data?.activity_request_id === 'string' && data.activity_request_id) onActivityStarted?.(data.activity_request_id);
       if (!scriptReviewing) setSelectedCases(new Set());
       if (data?.taskId) {
         setRun(null);
@@ -894,6 +905,8 @@ export function DeepRunResult({
         body: JSON.stringify({ taskId: activeTaskId, action, keep: keptMatches.map(matchKey) }),
       });
       if (!res.ok) throw await errorFromResponse(res);
+      const data = await res.json().catch(() => ({}));
+      if (typeof data?.activity_request_id === 'string' && data.activity_request_id) onActivityStarted?.(data.activity_request_id);
       setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
       setTimeout(pollStatus, 800); // resume polling for cases -> scripts -> evidence
     } catch (e: any) {
@@ -1256,7 +1269,11 @@ export function DeepRunResult({
                 ) : (
                   <span className="h-3 w-3 rounded-full border border-current opacity-40" />
                 )}
-                {effState === 'skipped' ? `${p.label} — skipped` : p.label}
+                {effState === 'skipped'
+                  ? `${p.label} — skipped`
+                  : p.key === 'QAAnalyst' && effState === 'running'
+                    ? (bugs.length ? `Analyzing ${bugs.length} failure${bugs.length === 1 ? '' : 's'}` : 'Finalizing results')
+                    : p.label}
                 {(() => {
                   const d = phaseMs(p.key);
                   return d != null && (effState === 'completed' || effState === 'running' || effState === 'failed' || effState === 'stopped')
@@ -1273,7 +1290,7 @@ export function DeepRunResult({
       {/* P7 — when the live A2A substrate exists it is the PRIMARY view (rendered + expanded by default),
           not hidden behind the query-logs toggle; the templated chip log remains only as the fallback. */}
       {(showQueryLogs || hasA2A) && (
-      <details className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+      <details open={isRunning || undefined} className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
           {hasA2A ? 'Agent-to-agent Communication' : 'Background Communication'}

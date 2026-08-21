@@ -10,6 +10,7 @@ export function buildAgentRuntimeContext(input: {
   appId?: string | null;
   userMessage: string;
   conversationId?: string;
+  requestId?: string;
   targets?: SelectedTarget[];
 }): ToolContext {
   const targetApps = (input.targets || [])
@@ -17,7 +18,7 @@ export function buildAgentRuntimeContext(input: {
     .map((target) => ({ id: String(target.id || ''), name: String(target.name || ''), baseUrl: target.baseUrl.trim() }));
   return {
     workspaceId: input.workspaceId || 'default', userId: input.userId, role: input.role, projectId: input.projectId,
-    appId: input.appId || null, userMessage: input.userMessage, conversationId: input.conversationId,
+    appId: input.appId || null, userMessage: input.userMessage, conversationId: input.conversationId, requestId: input.requestId,
     targetApps,
   };
 }

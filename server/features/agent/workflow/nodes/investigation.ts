@@ -3,18 +3,16 @@
  * execute_tests and finalize:
  *   1. Deterministic pre-analysis per failure CLUSTER (signature, error kind, console/network correlation)
  *      → a grounded classification guess with per-observation confidence, no LLM required.
- *   2. Optional LLM classification (strict failureClassificationSchema via the sanctioned one-repair loop),
- *      bounded to a per-run budget; the deterministic guess survives any LLM failure.
- *   3. Intent-outcome judge on PASSING mutation cases (the App1 false-PASS class): did the app actually
- *      accomplish the case's intent? Verdict → suspiciousPasses, later filed as an intent defect.
+ *   2. One compact LLM classification call for every failure cluster; deterministic guesses survive failure.
+ *   3. Optional injected intent-outcome judge for passing mutation cases; production does not spend a second call.
  *   4. Phase 5/6 seams (injectable, inert by default): record read-back for business-rule validation and a
  *      single re-run probe that demotes deterministic bugs to flaky.
  * Contract: NEVER throws; flag off → null (exact current behavior); output goes to the run stash only.
  */
 import { readFile } from 'fs/promises';
+import { z } from 'zod';
 import {
   failureClassificationSchema,
-  intentOutcomeSchema,
   type FailureClassification,
   type IntentOutcome,
   type Observation,
@@ -85,6 +83,7 @@ export interface ClassifyContext {
   stepLog: StepLogEntry[];
   consoleErrors: Array<{ type?: string; text?: string }>;
   networkFailures: Array<Record<string, unknown>>;
+  evidenceRefs: string[];
   deterministicGuess: { classification: string; confidence: number };
 }
 
@@ -99,8 +98,10 @@ export interface JudgeContext {
 }
 
 export interface InvestigationDeps {
-  /** LLM classification — injectable for tests; default uses the strict one-repair loop. */
+  /** Legacy per-cluster injection retained for compatibility. */
   classify?: (ctx: ClassifyContext) => Promise<FailureClassification | null>;
+  /** Preferred injection; production sends all clusters through this shape once. */
+  classifyBatch?: (contexts: ClassifyContext[]) => Promise<Array<FailureClassification | null>>;
   /** LLM intent-outcome judge — injectable for tests. */
   judgeIntent?: (ctx: JudgeContext) => Promise<IntentOutcome | null>;
   /** Phase 5 seam: fetch the record a mutation case created/updated (platform API). Inert when absent. */
@@ -124,8 +125,7 @@ export interface InvestigationNodeInput {
   deps?: InvestigationDeps;
 }
 
-const MAX_CLASSIFY_CALLS = 5;
-const MAX_JUDGE_CALLS = 5;
+const MAX_BATCH_PROMPT_CHARS = 12_000;
 const FAILED_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
 async function readJsonSafe<T>(path: string | undefined): Promise<T | null> {
@@ -159,18 +159,6 @@ captured evidence → classify. Rules:
 - classification 'automation_issue' means the TEST/tooling is wrong, not the product.
 - Return ONLY the JSON object required by the schema.`;
 
-const JUDGE_ADDENDUM = `
---- INTENT-OUTCOME JUDGMENT ---
-A data-mutating test case PASSED its assertions. Your job: decide whether the app actually accomplished
-the case's INTENT — assertions can pass while the outcome is wrong (record created in the wrong place,
-wrong status, not persisted). You receive the case, the per-step log (what was filled/clicked), console
-errors, failed network calls, and — when available — the record read back from the backend API.
-Rules:
-- intentSatisfied=false ONLY with concrete supporting evidence; cite it in observations[].verifiedBy.
-- If the read-back record is null after a create flow, that is strong evidence the intent failed.
-- If evidence is insufficient to doubt the pass, return intentSatisfied=true with your honest confidence.
-- Return ONLY the JSON object required by the schema.`;
-
 function zodValidate<T>(schema: { safeParse: (v: unknown) => any }) {
   return (wire: unknown): { value: T | null; issues: string[] } => {
     const r = schema.safeParse(wire);
@@ -180,51 +168,38 @@ function zodValidate<T>(schema: { safeParse: (v: unknown) => any }) {
   };
 }
 
-function defaultClassify(ctx: ClassifyContext): Promise<FailureClassification | null> {
-  const prompt = [
-    `CASE: ${ctx.caseRef?.title ?? ctx.tests[0]?.title ?? 'unknown'}`,
-    ctx.caseRef?.steps?.length ? `AUTHORED STEPS:\n${ctx.caseRef.steps.map((s, i) => `${i + 1}. ${s.action || ''}${s.expected ? ` → expect: ${s.expected}` : ''}`).join('\n')}` : '',
-    `AFFECTED TESTS (${ctx.tests.length}): ${ctx.tests.map((t) => t.title).join('; ')}`,
-    `ERROR (${ctx.errorKind}${ctx.failingTarget ? ` on "${ctx.failingTarget}"` : ''}): ${ctx.error.slice(0, 500)}`,
-    ctx.stepLog.length ? `STEP LOG:\n${ctx.stepLog.map((s) => `${s.n ?? '?'}. ${s.kind}${s.label ? ` "${s.label}"` : ''}${s.value ? ` = "${s.value}"` : ''} → ${s.ok === false ? `FAILED (${s.error || ''})` : 'ok'}`).join('\n').slice(0, 2000)}` : '',
-    ctx.consoleErrors.length ? `CONSOLE ERRORS:\n${ctx.consoleErrors.map((c) => `[${c.type}] ${c.text}`).join('\n').slice(0, 1200)}` : '',
-    ctx.networkFailures.length ? `FAILED NETWORK CALLS:\n${JSON.stringify(ctx.networkFailures.slice(0, 10)).slice(0, 1200)}` : '',
-    `DETERMINISTIC GUESS: ${ctx.deterministicGuess.classification} (confidence ${ctx.deterministicGuess.confidence}) — confirm or correct it against the evidence.`,
-  ].filter(Boolean).join('\n\n');
+const batchFailureClassificationSchema = z.object({
+  findings: z.array(z.object({
+    cluster: z.number().int().nonnegative(),
+    analysis: failureClassificationSchema,
+  })),
+});
+type BatchFailureClassification = z.infer<typeof batchFailureClassificationSchema>;
 
-  return generateStrictObject<FailureClassification, FailureClassification>({
+function defaultClassifyBatch(contexts: ClassifyContext[]): Promise<Array<FailureClassification | null>> {
+  const charsPerCluster = Math.max(250, Math.floor(MAX_BATCH_PROMPT_CHARS / contexts.length));
+  const prompt = contexts.map((ctx, cluster) => [
+    `FAILURE CLUSTER ${cluster}`,
+    `CASE: ${ctx.caseRef?.title ?? ctx.tests[0]?.title ?? 'unknown'}`,
+    ctx.caseRef?.steps?.length ? `EXPECTED STEPS: ${ctx.caseRef.steps.map((s, i) => `${i + 1}. ${s.action || ''}${s.expected ? ` -> ${s.expected}` : ''}`).join(' | ').slice(0, 800)}` : '',
+    `AFFECTED TESTS (${ctx.tests.length}): ${ctx.tests.map((t) => t.title).join('; ').slice(0, 500)}`,
+    `FAILURE: ${ctx.errorKind}${ctx.failingTarget ? ` on "${ctx.failingTarget}"` : ''}: ${ctx.error.slice(0, 400)}`,
+    ctx.stepLog.length ? `FAILED STEP: ${JSON.stringify([...ctx.stepLog].reverse().find((step) => step.ok === false) ?? ctx.stepLog.at(-1)).slice(0, 500)}` : '',
+    `EVIDENCE REFERENCES: ${ctx.evidenceRefs.join(', ') || 'none'}`,
+    `DETERMINISTIC GUESS: ${ctx.deterministicGuess.classification} (${ctx.deterministicGuess.confidence})`,
+  ].filter(Boolean).join('\n').slice(0, charsPerCluster)).join('\n\n').slice(0, MAX_BATCH_PROMPT_CHARS);
+
+  return generateStrictObject<BatchFailureClassification, BatchFailureClassification>({
     node: 'investigate_failures',
     agent: 'defectTriage',
-    schema: failureClassificationSchema,
+    schema: batchFailureClassificationSchema,
     system: `${systemPromptFor('defectTriage')}\n${INVESTIGATOR_ADDENDUM}`,
     prompt,
-    validate: zodValidate<FailureClassification>(failureClassificationSchema),
-  }).then((r) => r.value);
-}
-
-function defaultJudgeIntent(ctx: JudgeContext): Promise<IntentOutcome | null> {
-  const prompt = [
-    `CASE: ${ctx.title}`,
-    ctx.caseRef?.description ? `INTENT: ${ctx.caseRef.description}` : '',
-    ctx.caseRef?.steps?.length ? `AUTHORED STEPS:\n${ctx.caseRef.steps.map((s, i) => `${i + 1}. ${s.action || ''}${s.expected ? ` → expect: ${s.expected}` : ''}`).join('\n')}` : '',
-    ctx.stepLog.length ? `EXECUTED STEP LOG:\n${ctx.stepLog.map((s) => `${s.n ?? '?'}. ${s.kind}${s.label ? ` "${s.label}"` : ''}${s.value ? ` = "${s.value}"` : ''} → ${s.ok === false ? 'FAILED' : 'ok'}`).join('\n').slice(0, 2000)}` : '',
-    ctx.consoleErrors.length ? `CONSOLE ERRORS DURING RUN:\n${ctx.consoleErrors.map((c) => `[${c.type}] ${c.text}`).join('\n').slice(0, 1000)}` : '',
-    ctx.networkFailures.length ? `FAILED NETWORK CALLS DURING RUN:\n${JSON.stringify(ctx.networkFailures.slice(0, 10)).slice(0, 1000)}` : '',
-    ctx.readback === undefined
-      ? 'BACKEND READ-BACK: not available for this run.'
-      : ctx.readback === null
-        ? 'BACKEND READ-BACK: the record this flow should have created/updated was NOT FOUND via the API.'
-        : `BACKEND READ-BACK RECORD:\n${JSON.stringify(ctx.readback).slice(0, 1500)}`,
-  ].filter(Boolean).join('\n\n');
-
-  return generateStrictObject<IntentOutcome, IntentOutcome>({
-    node: 'investigate_failures',
-    agent: 'defectTriage',
-    schema: intentOutcomeSchema,
-    system: `${systemPromptFor('defectTriage')}\n${JUDGE_ADDENDUM}`,
-    prompt,
-    validate: zodValidate<IntentOutcome>(intentOutcomeSchema),
-  }).then((r) => r.value);
+    validate: zodValidate<BatchFailureClassification>(batchFailureClassificationSchema),
+  }).then((r) => {
+    const byCluster = new Map((r.value?.findings ?? []).map((finding) => [finding.cluster, finding.analysis]));
+    return contexts.map((_, cluster) => byCluster.get(cluster) ?? null);
+  });
 }
 
 /** Case ids whose compiled spec commits data (the compiler embeds its plan-derived marker in MISSION). */
@@ -254,7 +229,7 @@ export async function runInvestigationNode(input: InvestigationNodeInput): Promi
     const stepLogsByTitle = new Map<string, StepLogEntry[]>();
     const consoleByTitle = new Map<string, Array<{ type?: string; text?: string }>>();
     const networkByTitle = new Map<string, Array<Record<string, unknown>>>();
-    for (const t of input.tests) {
+    for (const t of deps.judgeIntent ? input.tests : failedTests) {
       const steps = await readJsonSafe<StepLogEntry[]>(t.stepLogPath);
       if (steps?.length) stepLogsByTitle.set(t.title, steps);
       const consoleLog = await readJsonSafe<Array<{ type?: string; text?: string }>>(t.consoleLogPath);
@@ -274,6 +249,7 @@ export async function runInvestigationNode(input: InvestigationNodeInput): Promi
       else clusters.set(sig.hash, { sig, tests: [t] });
     }
 
+    const batchWork: Array<{ finding: InvestigationFinding; context: ClassifyContext }> = [];
     for (const { sig, tests } of clusters.values()) {
       const lead = tests[0];
       const stepLog = stepLogsByTitle.get(lead.title) ?? [];
@@ -346,42 +322,55 @@ export async function runInvestigationNode(input: InvestigationNodeInput): Promi
         } catch { /* probe is best-effort */ }
       }
 
-      // Bounded LLM refinement; the deterministic finding survives any LLM failure.
-      const classify = deps.classify ?? (isInvestigationEnabled() ? defaultClassify : null);
-      if (classify && summary.llmCalls < MAX_CLASSIFY_CALLS) {
-        try {
-          summary.llmCalls += 1;
-          const llm = await classify({
-            caseRef: casesByTitle.get(lead.title) ?? null,
-            tests,
-            errorKind: sig.errorKind,
-            failingTarget: sig.target,
-            error: String(lead.error || ''),
-            stepLog,
-            consoleErrors,
-            networkFailures,
-            deterministicGuess: guess,
-          });
-          if (llm) {
-            // Flaky demotion and business-rule DATA reclassification are deterministic — the LLM never overrides them.
-            finding.classification = (finding.flaky || finding.businessRuleViolations?.length) ? finding.classification : llm.classification;
-            finding.rootCauseArea = llm.rootCauseArea || finding.rootCauseArea;
-            finding.confidence = llm.confidence;
-            finding.observations = [...observations, ...llm.observations];
-            finding.suggestedAreas = llm.suggestedAreas;
-            finding.severity = llm.severity;
-            finding.source = 'llm+deterministic';
-          }
-        } catch { /* LLM refinement is best-effort */ }
-      }
       summary.findings.push(finding);
+      batchWork.push({
+        finding,
+        context: {
+          caseRef: casesByTitle.get(lead.title) ?? null,
+          tests,
+          errorKind: sig.errorKind,
+          failingTarget: sig.target,
+          error: String(lead.error || ''),
+          stepLog,
+          consoleErrors,
+          networkFailures,
+          evidenceRefs: [lead.screenshotPath, lead.tracePath, lead.stepLogPath, lead.consoleLogPath, lead.networkLogPath].filter((ref): ref is string => Boolean(ref)),
+          deterministicGuess: guess,
+        },
+      });
+    }
+
+    // One cached-prefix model turn for the entire run. Dynamic content is limited to compact failure
+    // details and artifact references; conversation history and raw evidence payloads are never included.
+    if (batchWork.length) {
+      try {
+        const analyses = deps.classifyBatch
+          ? await deps.classifyBatch(batchWork.map((work) => work.context))
+          : deps.classify
+            ? await Promise.all(batchWork.map((work) => deps.classify!(work.context)))
+            : isInvestigationEnabled()
+              ? await defaultClassifyBatch(batchWork.map((work) => work.context))
+              : [];
+        summary.llmCalls += analyses.length ? (deps.classify ? batchWork.length : 1) : 0;
+        analyses.forEach((llm, index) => {
+          if (!llm) return;
+          const finding = batchWork[index]?.finding;
+          if (!finding) return;
+          finding.classification = (finding.flaky || finding.businessRuleViolations?.length) ? finding.classification : llm.classification;
+          finding.rootCauseArea = llm.rootCauseArea || finding.rootCauseArea;
+          finding.confidence = llm.confidence;
+          finding.observations = [...finding.observations, ...llm.observations];
+          finding.suggestedAreas = llm.suggestedAreas;
+          finding.severity = llm.severity;
+          finding.source = 'llm+deterministic';
+        });
+      } catch { /* deterministic findings survive model failure */ }
     }
 
     // ---- 3. Intent-outcome judge on PASSING mutation cases (the false-PASS class) ----
     const mutationTitles = mutationCaseTitles(input.compiledSources, input.caseTitleById);
     const passedMutations = input.tests.filter((t) => t.status === 'passed' && mutationTitles.has(t.title));
     for (const t of passedMutations) {
-      if (summary.llmCalls >= MAX_CLASSIFY_CALLS + MAX_JUDGE_CALLS && !deps.judgeIntent) break;
       try {
         // Phase 5 seam: read the record back first — a missing record is deterministic evidence.
         let readback: Record<string, unknown> | null | undefined = undefined;
@@ -419,7 +408,7 @@ export async function runInvestigationNode(input: InvestigationNodeInput): Promi
           }
         }
 
-        const judge = deps.judgeIntent ?? (isInvestigationEnabled() ? defaultJudgeIntent : null);
+        const judge = deps.judgeIntent ?? null;
         if (!judge) continue;
         summary.llmCalls += 1;
         const verdict = await judge({

@@ -264,7 +264,7 @@ export const queryWorkspaceTool: AgentTool = {
 export const searchConversationTool: AgentTool = {
   spec: {
     name: 'search_conversation',
-    description: 'Search older turns, immutable summary segments, and prior tool-result digests in this conversation. Read-only.',
+    description: 'Search older turns, immutable summary segments, and authorized prior tool-result digests. Tool evidence may be reused across conversations only within the same user/project/app scope. Read-only.',
     parameters: {
       type: 'object',
       properties: {
@@ -277,7 +277,7 @@ export const searchConversationTool: AgentTool = {
   async execute(args, ctx) {
     const conversationId = String(ctx.conversationId || '');
     if (!conversationId) throw new Error('No conversation is attached to this request.');
-    return searchConversationMemory(conversationId, String(args.query || ''), Number(args.limit) || 20);
+    return searchConversationMemory(conversationId, String(args.query || ''), Number(args.limit) || 20, ctx);
   },
 };
 

@@ -110,7 +110,7 @@ export function registerChatRoutes(app: Express) {
         },
       });
       final = result.finalText || 'Done.';
-      writeEvent(res, { type: 'final', content: final, accepted: result.accepted });
+      writeEvent(res, { type: 'final', content: final, accepted: result.accepted, usage: result.usage, cache: result.cache, providerCache: result.providerCache });
 
       const existing = await ChatConversations.get(String(sessionId)).catch(() => null);
       await ChatConversations.appendMessages({

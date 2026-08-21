@@ -23,6 +23,7 @@ import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './anal
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
 import { recordRunStageProgress, recordRunTerminal } from '../../../agent-core/bus/runInstrumentation';
+import { finishRunActivity } from '../../controller/turnActivity';
 import { buildTestRunGraph, getAuthoredCases, setAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
   createInitialWorkflowState,
@@ -67,6 +68,7 @@ export interface ReviewResolutionInput {
   decidedAt?: string;
   selectedCaseIndexes?: number[];
   reviewedCases?: any[];
+  activityRequestId?: string;
 }
 
 interface RunRegistryEntry {
@@ -104,7 +106,7 @@ const SEED_FIELDS = [
   // later persistence create a second fallback suite or rename it from URL context.
   'generatedSuiteId', 'suiteTitle',
   // Conversation/scope linkage: losing these orphaned graph runs from their chat (plan P11).
-  'conversationId', 'projectId', 'appId', 'ownerId', 'websiteId',
+  'conversationId', 'projectId', 'appId', 'ownerId', 'websiteId', 'activityRequestId',
   // The chat's approved scope and the runtime choices made for this run. Dropping these left the
   // authoring node with GOAL + DOM only, so it authored generic cases that ignored the agreed scope.
   'approvedUnderstanding', 'priorGrounding', 'conversationMemory',
@@ -346,8 +348,9 @@ async function projectAndPersist(runId: string, entry: RunRegistryEntry, state: 
     }
   }
   // Conversational Runtime Phase 6: identical session semantics for the graph engine (idempotent by sourceKey).
-  if (['completed', 'failed', 'cancelled'].includes(String(projection.status || ''))) {
+  if (['completed', 'failed', 'cancelled', 'review_required', 'coverage_options'].includes(String(projection.status || ''))) {
     projectRunLifecycleSafe({ run: projection, phase: 'completed' });
+    await finishRunActivity(projection);
   }
 }
 
@@ -774,7 +777,8 @@ export async function resumeGraphRun(runId: string, resolution: ReviewResolution
   await hydrateRunArtifacts(runId);
   if (entry.controller.signal.aborted) entry.controller = new AbortController();
   entry.cancelled = false;
-  const { reviewedCases, ...reviewResolution } = resolution;
+  const { reviewedCases, activityRequestId, ...reviewResolution } = resolution;
+  if (activityRequestId) entry.legacy = { ...entry.legacy, activityRequestId };
   if (Array.isArray(reviewedCases) && reviewedCases.length) {
     setAuthoredCases(runId, reviewedCases);
     entry.legacy = {

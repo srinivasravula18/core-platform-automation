@@ -92,6 +92,7 @@ import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
 import { generateValidCaseRework, requestsAdditionalCaseStep } from './reworkCaseValidation';
 import { prepareSse, sendSse } from '../../shared/sse';
+import { DEEP_SCOPE_CACHE_NAMESPACE, buildAgentCacheIdentity, completedDeepScopeCachePolicy, readCompletedAgentResult, storeCompletedAgentResult, type AgentCacheRequest } from '../../ai/agent-runtime/responseCache';
 
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
@@ -1495,6 +1496,23 @@ function completeRunActivity(run: any, label: string): void {
   if (!requestId) return;
   run.activityRequestId = '';
   void completeTurnActivity(requestId, { label });
+}
+
+async function beginResumedRunActivity(run: any, scope: { userId?: string; projectId?: string | null }, label: string): Promise<string> {
+  const conversationId = String(run?.conversationId || '').trim();
+  if (!conversationId) return '';
+  const requestId = `resume:${randomUUID()}`;
+  const activity = await beginTurnActivity({
+    conversationId,
+    requestId,
+    ownerId: scope.userId,
+    workspaceId: 'default',
+    projectId: scope.projectId || run.projectId || undefined,
+  }).catch(() => null);
+  if (!activity) return '';
+  run.activityRequestId = requestId;
+  await recordTurnActivity(requestId, 'agent_started', { label });
+  return requestId;
 }
 
 async function saveAgentRunState(run: any, reason: string): Promise<void> {
@@ -5262,6 +5280,37 @@ Rules:
           projectId: scope.projectId,
         }).catch(() => null)
       : null;
+    const cachePrompt = String(body.originalRequest || body.prompt || body.contextPrompt || '').trim();
+    const cachePolicy = completedDeepScopeCachePolicy(cachePrompt, String(body.correction || ''));
+    const cacheApp = scope.appId ? getApp(scope.appId) : undefined;
+    const cacheProject = scope.projectId ? getProject(scope.projectId) : undefined;
+    const cacheRequest: AgentCacheRequest = {
+      namespace: DEEP_SCOPE_CACHE_NAMESPACE,
+      userMessage: cachePrompt,
+      workspaceId: 'default',
+      userId: scope.userId,
+      projectId: scope.projectId || undefined,
+      appId: scope.appId,
+      targets: [{ name: String(body.targetName || body.websiteName || ''), baseUrl: String(body.targetUrl || '') }],
+      model: String(body.model || ''),
+      effort: String(body.effort || ''),
+      dependencyVersion: [cacheApp?.updatedAt || '', cacheProject?.lastSyncedSha || '', cacheProject?.updatedAt || ''].join(':'),
+    };
+    if (activity) await recordTurnActivity(activityRequestId, 'cache_lookup', { label: 'Checking reusable reviewed test scope' });
+    if (cachePolicy.reusable) {
+      const cached = await readCompletedAgentResult<any>(cacheRequest).catch(() => null);
+      if (cached) {
+        if (activity) {
+          await recordTurnActivity(activityRequestId, 'cache_hit', { label: 'Reused reviewed test scope', cache: { status: 'hit', ageMs: cached.ageMs, reason: 'same request and source version' } });
+          await completeTurnActivity(activityRequestId, { label: 'Reviewed test scope reused' });
+        }
+        return res.json({ ...cached.result, cache: { status: 'hit', ageMs: cached.ageMs }, activity_request_id: activityRequestId || undefined });
+      }
+    }
+    if (activity) await recordTurnActivity(activityRequestId, cachePolicy.reusable ? 'cache_miss' : 'cache_bypass', {
+      label: cachePolicy.reusable ? 'No reusable reviewed scope found' : `Reviewing scope: ${cachePolicy.reason}`,
+      cache: { status: cachePolicy.reusable ? 'miss' : 'bypass', reason: cachePolicy.reason },
+    });
     understandingJobs.set(jobId, {
       status: 'running', createdAt: Date.now(),
       conversationId: conversationId || undefined,
@@ -5280,6 +5329,9 @@ Rules:
     computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId }, progress)
       .catch((err: any) => ({ understanding: '', source: 'fallback', error: getAIErrorMessage(err) }))
       .then(async (result) => {
+        if (cachePolicy.reusable && result?.understanding) {
+          await storeCompletedAgentResult(cacheRequest, result, 24 * 60 * 60 * 1000).catch(() => undefined);
+        }
         if (activity) await completeTurnActivity(activityRequestId, { label: 'Reviewed test scope is ready' });
         const job = understandingJobs.get(jobId);
         if (job) { job.status = 'done'; job.result = result; }
@@ -6118,6 +6170,42 @@ Rules:
     const requestedModel = req.body.model || '';
     const requestedEffort = req.body.effort || '';
     const runProvider = requestedProvider || resolveProviderForAgent('chatAssistant');
+    const deepRunCachePolicy = completedDeepScopeCachePolicy(String(prompt || ''));
+    const deepRunCacheRequest: AgentCacheRequest = {
+      namespace: DEEP_SCOPE_CACHE_NAMESPACE,
+      userMessage: String(prompt || ''),
+      workspaceId: 'default',
+      userId: scope.userId,
+      projectId: scope.projectId || undefined,
+      appId: scope.appId,
+      targets: [{ name: targetAppLabel || selectedApp?.name || '', baseUrl: targetUrl }],
+      model: resolveModelForAgent('caseWriter', runProvider, requestedModel),
+      effort: String(requestedEffort || ''),
+      dependencyVersion: [selectedApp?.updatedAt || '', selectedProject?.lastSyncedSha || '', selectedProject?.updatedAt || ''].join(':'),
+    };
+    const deepRunCacheKey = buildAgentCacheIdentity(deepRunCacheRequest).cacheKey;
+    if (flowMode === 'review_cases') {
+      if (activity) await recordTurnActivity(activityRequestId, 'cache_lookup', { label: 'Checking reusable test cases and completed runs' });
+      // A human-review pause already has durable, user-approved-editable cases. Reattach it across
+      // chats rather than generating a second copy; Continue resumes the same durable interrupt.
+      const reusableRun = deepRunCachePolicy.reusable
+        ? scopeFilter(await AgentRuns.list().catch(() => []), scope).find((run: any) =>
+            ['review_required', 'completed'].includes(String(run.status || '')) && String(run.deepRunCacheKey || '') === deepRunCacheKey,
+          )
+        : undefined;
+      if (reusableRun) {
+        const reviewPaused = String(reusableRun.status || '') === 'review_required';
+        if (activity) {
+          await recordTurnActivity(activityRequestId, 'cache_hit', { label: reviewPaused ? 'Reused existing test cases awaiting review' : 'Reused completed test run', cache: { status: 'hit', reason: 'same request and source version' } });
+          await completeTurnActivity(activityRequestId, { label: reviewPaused ? 'Existing test cases are ready for review' : 'Completed test run reused' });
+        }
+        return res.json({ task_id: reusableRun.id, activity_request_id: activityRequestId || undefined, cache: { status: 'hit' } });
+      }
+      if (activity) await recordTurnActivity(activityRequestId, deepRunCachePolicy.reusable ? 'cache_miss' : 'cache_bypass', {
+        label: deepRunCachePolicy.reusable ? 'No reusable test cases or completed run found' : `Starting fresh run: ${deepRunCachePolicy.reason}`,
+        cache: { status: deepRunCachePolicy.reusable ? 'miss' : 'bypass', reason: deepRunCachePolicy.reason },
+      });
+    }
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
     const resolvedWebsiteId = req.body.websiteId || resolvedCreds?.websiteId || (credentials as any).websiteId || '';
@@ -6227,6 +6315,7 @@ Rules:
       requestedProvider,
       requestedModel,
       requestedEffort,
+      deepRunCacheKey,
       // Persist the model the run will actually use: agent_runs.model is fed from this and was left blank,
       // so no run recorded which model produced it.
       model: resolveModelForAgent('caseWriter', runProvider, requestedModel),
@@ -6322,11 +6411,12 @@ Rules:
       run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
       run.review_started_at = null;
     }
+    const resumeActivityId = await beginResumedRunActivity(run, reqScope(req), 'Continuing workflow after coverage review');
     run.status = 'running';
     run.completed_at = null;
     delete (run as any).cancelRequested;
-    persistDataInBackground('coverage decision');
-    res.json({ success: true, action: act });
+    await saveAgentRunState(run, 'coverage decision');
+    res.json({ success: true, action: act, activity_request_id: resumeActivityId || undefined });
 
     let matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
     // Honor per-case deletions from the coverage card: keep only the cases the user kept,
@@ -6453,15 +6543,17 @@ Rules:
           (run as any).all_generated_cases = cases;
           (run as any).execution_case_count = selectedIndexes.length || cases.length;
         }
+        const resumeActivityId = await beginResumedRunActivity(run, reqScope(req), `Continuing workflow to ${pending?.kind === 'cases' ? 'scripts' : 'execution'}`);
         run.status = 'running';
-        persistDataInBackground('continued graph run');
-        res.json({ success: true });
+        await saveAgentRunState(run, 'continued graph run');
+        res.json({ success: true, activity_request_id: resumeActivityId || undefined });
         await resumeGraphRun(taskId, {
           correlationId,
           decision: 'approved',
           actor: reqScope(req).userId || 'user',
           selectedCaseIndexes: selectedIndexes,
           reviewedCases: pending?.kind === 'cases' ? cases : undefined,
+          activityRequestId: resumeActivityId || undefined,
         });
       } catch (err: any) {
         console.error('Graph continue error:', err);

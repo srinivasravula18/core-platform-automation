@@ -7,6 +7,11 @@ export type TurnActivityKind =
   | 'routing'
   | 'agent_started'
   | 'progress'
+  | 'cache_lookup'
+  | 'cache_hit'
+  | 'cache_miss'
+  | 'cache_joined'
+  | 'cache_bypass'
   | 'tool_started'
   | 'tool_completed'
   | 'responding'
@@ -24,6 +29,7 @@ export interface TurnActivityEvent {
   at: string;
   label?: string;
   tool?: { name: string; arguments?: unknown; resultSummary?: string; error?: string; ms?: number };
+  cache?: { status?: string; ageMs?: number; savedTokens?: number; reason?: string };
 }
 
 interface ActiveTurn {
@@ -122,6 +128,16 @@ export function completeTurnActivity(requestId: string, detail: Record<string, u
 
 export function failTurnActivity(requestId: string, error: unknown) {
   return finish(requestId, 'failed', { label: 'Request failed', error: safeText(error instanceof Error ? error.message : error, 500) });
+}
+
+/** Close the parent chat activity from a terminal agent-run projection. */
+export async function finishRunActivity(run: any): Promise<void> {
+  const requestId = String(run?.activityRequestId || '');
+  if (!requestId) return;
+  if (run.status === 'failed') await failTurnActivity(requestId, 'Agent run failed');
+  else if (run.status === 'cancelled') await cancelTurnActivity(String(run.conversationId || ''), requestId);
+  else if (run.status === 'completed') await completeTurnActivity(requestId, { label: 'Agent run completed' });
+  else if (run.status === 'review_required' || run.status === 'coverage_options') await completeTurnActivity(requestId, { label: 'Waiting for your review' });
 }
 
 export async function cancelTurnActivity(conversationId: string, requestId: string) {

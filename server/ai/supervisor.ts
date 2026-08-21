@@ -13,6 +13,7 @@ import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, r
 import { assembleConversationContext } from './memory/contextAssembler';
 import { executeIntent, stripReasoningPreamble } from './controller';
 import type { AgentTool, ToolContext, AgentStep, ToolInvocation, AggregateUsage } from './tools/types';
+import { providerCacheMetrics, type ProviderCacheMetrics } from './providers/types';
 import { queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { corePlatformMetaTools } from './tools/targetMetadata';
 import { buildAgentRuntimeContext } from './agent-runtime/context-builder';
@@ -20,6 +21,17 @@ import { selectSupervisorTools } from './agent-runtime/registry';
 import { openApiReadTools } from './agent-runtime/openapi-tools';
 import { acceptGroundedTargetAnswer } from './agent-runtime/evidence-acceptance';
 import { authorCorePlatformFlowTool } from './agent-runtime/flow-authoring/tool';
+import { getApp, getProject } from '../features/projects/projectService';
+import {
+  buildAgentCacheIdentity,
+  completedResultCachePolicy,
+  getInFlightAgentResult,
+  readCompletedAgentResult,
+  resultContainsMutation,
+  storeCompletedAgentResult,
+  trackInFlightAgentResult,
+  type AgentCacheMetadata,
+} from './agent-runtime/responseCache';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 import { draftRequirement } from '../features/requirements/requirementService';
@@ -41,6 +53,7 @@ const RUNTIME_ANSWER_CAPABILITIES = new Set(['run_diagnostics', 'execution_revie
  */
 export async function answerViaConversationalRuntime(userMessage: string, opts: {
   conversationId?: string;
+  requestId?: string;
   workspaceId?: string;
   userId?: string;
   role?: string;
@@ -165,6 +178,8 @@ export interface SupervisorResult {
   toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: unknown }>;
   accepted: boolean;
   usage: AggregateUsage;
+  providerCache?: ProviderCacheMetrics;
+  cache?: AgentCacheMetadata;
 }
 
 // Only GRAMMATICAL fillers — NOT product nouns. Words like "list", "view", "features",
@@ -671,7 +686,7 @@ export function hasCodebaseEvidence(toolResults: Array<{ name: string; result: u
   });
 }
 
-export async function runSupervisor(input: {
+export interface SupervisorInput {
   userMessage: string;
   workspaceId?: string;
   userId?: string;
@@ -679,6 +694,7 @@ export async function runSupervisor(input: {
   projectId?: string;
   appId?: string | null;
   conversationId?: string;
+  requestId?: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   pageContext?: { path?: string };
   apps?: Array<{ name: string; baseUrl: string }>;
@@ -689,7 +705,9 @@ export async function runSupervisor(input: {
   onToolStart?: (invocation: ToolInvocation) => void;
   onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;
-}): Promise<SupervisorResult> {
+}
+
+async function runSupervisorUncached(input: SupervisorInput): Promise<SupervisorResult> {
   const ctx = buildAgentRuntimeContext({ ...input, targets: input.apps });
   const tools = buildSupervisorTools(ctx);
 
@@ -734,7 +752,78 @@ export async function runSupervisor(input: {
     accept: acceptGroundedTargetAnswer,
     signal: input.signal,
   });
-  return { finalText: result.finalText, steps: result.steps, toolResults: result.toolResults, accepted: result.accepted, usage: result.totalUsage };
+  return {
+    finalText: result.finalText,
+    steps: result.steps,
+    toolResults: result.toolResults,
+    accepted: result.accepted,
+    usage: result.totalUsage,
+    providerCache: providerCacheMetrics(result.totalUsage),
+  };
+}
+
+const ZERO_USAGE: AggregateUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0 };
+
+/**
+ * Cross-conversation exact-result reuse for conservative read-only requests. Mutations and explicit
+ * freshness requests always run normally. The shared promise is process-local single-flight; the
+ * durable completed entry is PostgreSQL-backed when configured.
+ */
+export async function runSupervisor(input: SupervisorInput): Promise<SupervisorResult> {
+  const policy = completedResultCachePolicy(input.userMessage);
+  if (!policy.reusable || input.signal?.aborted) {
+    const result = await runSupervisorUncached(input);
+    return { ...result, cache: { status: 'bypass', reason: policy.reason } };
+  }
+
+  const provider = resolveProviderForAgent('chatAssistant');
+  const resolvedModel = resolveModelForAgent('chatAssistant', provider, input.model);
+  const appVersion = input.appId ? getApp(String(input.appId))?.updatedAt || '' : '';
+  const project = input.projectId ? getProject(String(input.projectId)) : undefined;
+  const request = {
+    userMessage: input.userMessage,
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    role: input.role,
+    projectId: input.projectId,
+    appId: input.appId,
+    targets: input.apps,
+    model: `${provider}:${resolvedModel}`,
+    effort: input.effort,
+    dependencyVersion: [
+      appVersion,
+      project?.lastSyncedSha || '',
+      project?.updatedAt || '',
+    ].join(':'),
+  };
+  const identity = buildAgentCacheIdentity(request);
+  const cached = await readCompletedAgentResult(request).catch(() => null);
+  if (cached) {
+    input.onStep?.({ index: 0, text: 'Reused a validated result from the agent cache.', toolCalls: [] });
+    return {
+      ...cached.result,
+      usage: { ...ZERO_USAGE },
+      providerCache: providerCacheMetrics(),
+      cache: { status: 'hit', key: cached.key, ageMs: cached.ageMs, savedTokens: cached.result.usage?.totalTokens || 0 },
+    };
+  }
+
+  const existing = getInFlightAgentResult(identity.cacheKey);
+  if (existing) {
+    input.onStep?.({ index: 0, text: 'Attached to an identical agent request already in progress.', toolCalls: [] });
+    const result = await existing;
+    return { ...result, usage: { ...ZERO_USAGE }, providerCache: providerCacheMetrics(), cache: { status: 'joined', key: identity.cacheKey, savedTokens: result.usage?.totalTokens || 0 } };
+  }
+
+  const promise = runSupervisorUncached(input).then(async (result) => {
+    if (!resultContainsMutation(result)) {
+      await storeCompletedAgentResult(request, result).catch((error) => {
+        console.warn('[agent-cache] completed result write skipped:', (error as Error)?.message || error);
+      });
+    }
+    return { ...result, cache: { status: 'miss', key: identity.cacheKey } as AgentCacheMetadata };
+  });
+  return trackInFlightAgentResult(identity.cacheKey, promise);
 }
 
 /** Single source for the Supervisor catalogue so contract tests verify what the runtime receives. */

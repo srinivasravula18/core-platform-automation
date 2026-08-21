@@ -192,16 +192,12 @@ export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 're
   return 'execute_tests';
 }
 
-// Investigation runs only when the flag is on AND there is something to investigate: failed tests, or
-// passing MUTATION cases to intent-judge (the false-PASS class). Flag off → exact current behavior.
+// Zero failures finalize deterministically. Failure triage is the only path that spends an investigation turn.
 export function routeAfterExecuteTests(state: Pick<WorkflowState, 'runId' | 'execution'>): 'investigate_failures' | 'finalize' {
   if (!isInvestigationEnabled()) return 'finalize';
   const agg = state.execution?.aggregate;
   if (!agg) return 'finalize'; // infra failure — nothing ran to a verdict
-  if (agg.failed > 0) return 'investigate_failures';
-  const compiled = readArtifacts(state.runId).compiledSources ?? {};
-  const hasMutationPass = Object.values(compiled).some((code) => code.includes('"mutationIntent":true'));
-  return hasMutationPass ? 'investigate_failures' : 'finalize';
+  return agg.failed > 0 ? 'investigate_failures' : 'finalize';
 }
 
 // ---------------------------------------------------------------------------------------------

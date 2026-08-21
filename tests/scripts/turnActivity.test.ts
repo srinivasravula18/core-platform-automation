@@ -6,6 +6,7 @@ import {
   beginTurnActivity,
   cancelTurnActivity,
   completeTurnActivity,
+  finishRunActivity,
   listTurnActivity,
   recordTurnActivity,
 } from '../../server/features/controller/turnActivity';
@@ -101,5 +102,27 @@ test('rejects unsafe request ids before persistence', async () => {
   try {
     await assert.rejects(beginTurnActivity({ conversationId, requestId: 'bad/request/id' }), /requestId is invalid/);
     assert.equal((await ConversationSessions.listEvents(conversationId)).length, 0);
+  } finally { cleanup(conversationId); }
+});
+
+test('a terminal graph projection also completes its parent chat activity', async () => {
+  const conversationId = unique('activity-graph');
+  const requestId = unique('request');
+  try {
+    await beginTurnActivity({ conversationId, requestId });
+    await finishRunActivity({ conversationId, activityRequestId: requestId, status: 'completed' });
+    assert.equal((await listTurnActivity(conversationId)).latest?.status, 'completed');
+  } finally { cleanup(conversationId); }
+});
+
+test('a graph review pause also completes its parent chat activity', async () => {
+  const conversationId = unique('activity-review');
+  const requestId = unique('request');
+  try {
+    await beginTurnActivity({ conversationId, requestId });
+    await finishRunActivity({ conversationId, activityRequestId: requestId, status: 'review_required' });
+    const snapshot = await listTurnActivity(conversationId);
+    assert.equal(snapshot.latest?.status, 'completed');
+    assert.equal(snapshot.events.at(-1)?.payload?.label, 'Waiting for your review');
   } finally { cleanup(conversationId); }
 });

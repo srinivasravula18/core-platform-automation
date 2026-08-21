@@ -12,6 +12,8 @@ export interface ExecutionMeta {
   provider?: string; model?: string; effort?: string; temperature?: number;
   // Usage
   promptTokens?: number; completionTokens?: number; cachedTokens?: number; totalTokens?: number; costUsd?: number;
+  providerCacheReadTokens?: number; providerCacheWriteTokens?: number; providerCacheHitRate?: number;
+  resultCacheStatus?: string; resultCacheAgeMs?: number; resultCacheSavedTokens?: number;
   // Pipeline
   pipeline?: string; stages?: Array<{ name: string; durationMs?: number }>; toolCalls?: number; retries?: number; memoryRetrievals?: number;
   // Context
@@ -85,6 +87,12 @@ export function MessageMeta({ createdAt, execution }: { createdAt?: string; exec
             <Row label="Prompt tokens" value={ex.promptTokens} />
             <Row label="Completion tokens" value={ex.completionTokens} />
             <Row label="Cached tokens" value={ex.cachedTokens} />
+            <Row label="Provider cache reads" value={ex.providerCacheReadTokens} />
+            <Row label="Provider cache writes" value={ex.providerCacheWriteTokens} />
+            <Row label="Provider cache hit rate" value={ex.providerCacheHitRate != null ? `${(ex.providerCacheHitRate * 100).toFixed(1)}%` : undefined} />
+            <Row label="Result cache" value={ex.resultCacheStatus} />
+            <Row label="Cached result age" value={ex.resultCacheAgeMs != null ? humanizeDuration(ex.resultCacheAgeMs) : undefined} />
+            <Row label="Tokens avoided" value={ex.resultCacheSavedTokens} />
             <Row label="Total tokens" value={totalTokens} />
             <Row label="Est. cost" value={ex.costUsd != null ? `$${ex.costUsd.toFixed(4)}` : undefined} />
           </Section>

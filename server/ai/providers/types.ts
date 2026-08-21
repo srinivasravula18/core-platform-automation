@@ -75,6 +75,29 @@ export interface ProviderUsage {
   costUsd?: number;
 }
 
+export interface ProviderCacheMetrics {
+  readTokens: number;
+  writeTokens: number;
+  freshInputTokens: number;
+  reusableInputTokens: number;
+  hitRate: number;
+}
+
+/** Provider usage categories are mutually exclusive after runtime normalization. */
+export function providerCacheMetrics(usage?: ProviderUsage): ProviderCacheMetrics {
+  const readTokens = Math.max(0, Number(usage?.cacheReadTokens) || 0);
+  const writeTokens = Math.max(0, Number(usage?.cacheWriteTokens) || 0);
+  const freshInputTokens = Math.max(0, Number(usage?.inputTokens) || 0);
+  const reusableInputTokens = readTokens + writeTokens + freshInputTokens;
+  return {
+    readTokens,
+    writeTokens,
+    freshInputTokens,
+    reusableInputTokens,
+    hitRate: reusableInputTokens ? readTokens / reusableInputTokens : 0,
+  };
+}
+
 export interface ProviderResponse<T> {
   object: T;
   text: string;

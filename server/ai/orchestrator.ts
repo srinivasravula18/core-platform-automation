@@ -438,6 +438,10 @@ export class AgentOrchestrator {
         if (!invocation.error && ctx.conversationId) {
           rememberToolResult({
             conversationId: String(ctx.conversationId),
+            workspaceId: String(ctx.workspaceId || 'default'),
+            ownerId: ctx.userId ? String(ctx.userId) : undefined,
+            projectId: ctx.projectId ? String(ctx.projectId) : undefined,
+            appId: ctx.appId ? String(ctx.appId) : undefined,
             runId: ctx.runId ? String(ctx.runId) : undefined,
             toolName: invocation.name,
             arguments: invocation.arguments,

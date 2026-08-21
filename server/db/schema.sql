@@ -596,6 +596,48 @@ CREATE TABLE IF NOT EXISTS conversation_artifacts (
   UNIQUE (conversation_id, content_hash, tool_name, target_key)
 );
 CREATE INDEX IF NOT EXISTS conversation_artifacts_conversation_created ON conversation_artifacts(conversation_id, created_at DESC);
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS project_id TEXT;
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS app_id TEXT;
+CREATE INDEX IF NOT EXISTS conversation_artifacts_scope_created
+  ON conversation_artifacts(workspace_id, owner_id, project_id, app_id, created_at DESC);
+
+-- Cross-conversation agent cache. Scope and dependency hashes are part of the key so cached
+-- answers can never cross a user/app boundary or survive a grounding contract change.
+CREATE TABLE IF NOT EXISTS agent_cache_entries (
+  cache_key        TEXT PRIMARY KEY,
+  namespace        TEXT NOT NULL,
+  scope_hash       TEXT NOT NULL,
+  intent_hash      TEXT NOT NULL,
+  dependency_hash  TEXT NOT NULL,
+  result           JSONB NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at       TIMESTAMPTZ NOT NULL,
+  last_hit_at      TIMESTAMPTZ,
+  hit_count        BIGINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS agent_cache_entries_expiry ON agent_cache_entries(expires_at);
+CREATE INDEX IF NOT EXISTS agent_cache_entries_scope_intent ON agent_cache_entries(scope_hash, intent_hash);
+
+-- A write receipt is deliberately separate from the response cache: it prevents a repeated
+-- create/update request from replaying a side effect while retaining its verified outcome.
+CREATE TABLE IF NOT EXISTS agent_operation_receipts (
+  idempotency_key  TEXT PRIMARY KEY,
+  scope_hash       TEXT NOT NULL,
+  operation        TEXT NOT NULL,
+  target_type      TEXT NOT NULL DEFAULT '',
+  request_hash     TEXT NOT NULL,
+  status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  resource_id      TEXT,
+  response         JSONB,
+  verification     JSONB,
+  error            TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at     TIMESTAMPTZ,
+  expires_at       TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_operation_receipts_expiry ON agent_operation_receipts(expires_at);
 
 CREATE TABLE IF NOT EXISTS controller_plans (
   id           TEXT PRIMARY KEY,

@@ -132,6 +132,7 @@ export const AgentActivity = memo(function AgentActivity({
   liveLabel,
   partialText,
   className,
+  onActivity,
   onCompleted,
 }: {
   conversationId: string;
@@ -139,6 +140,7 @@ export const AgentActivity = memo(function AgentActivity({
   liveLabel?: string;
   partialText?: string;
   className?: string;
+  onActivity?: () => void;
   onCompleted?: () => void;
 }) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
@@ -199,7 +201,8 @@ export const AgentActivity = memo(function AgentActivity({
   useEffect(() => {
     const el = stepsRef.current;
     if (el && followStepsRef.current) el.scrollTop = el.scrollHeight;
-  }, [steps, partialText]);
+    onActivity?.();
+  }, [steps, partialText, onActivity]);
   const heading = status === 'running'
     ? (liveLabel || steps.at(-1)?.label || 'Working on your request...')
     : status === 'completed' ? (steps.some((step) => step.kind.startsWith('tool_')) ? 'Worked through sources' : 'Completed')

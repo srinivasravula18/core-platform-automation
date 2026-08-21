@@ -289,6 +289,8 @@ export function registerControllerRoutes(app: Express) {
         reply: result.finalText,
         accepted: result.accepted,
         usage: result.usage,
+        cache: result.cache,
+        providerCache: result.providerCache,
         actions: result.toolResults.map((t) => ({ tool: t.name, arguments: t.arguments, result: t.result })),
         trace: result.steps.map((s) => ({
           index: s.index,
@@ -384,6 +386,7 @@ export function registerControllerRoutes(app: Express) {
       // Grounded/action path: emit tool progress and native answer deltas as they arrive.
       let streamedReply = '';
       let respondingRecorded = false;
+      await recordTurnActivity(requestId, 'cache_lookup', { label: 'Checking reusable agent work' });
       const result = await runSupervisor({
         userMessage,
         workspaceId,
@@ -392,6 +395,7 @@ export function registerControllerRoutes(app: Express) {
         projectId: scope.projectId,
         appId: scope.appId,
         conversationId,
+        requestId,
         history,
         pageContext,
         apps,
@@ -440,11 +444,24 @@ export function registerControllerRoutes(app: Express) {
         signal: activity.signal,
       });
       if (activity.signal.aborted) return;
+      const cacheStatus = result.cache?.status || 'bypass';
+      const cacheLabels: Record<string, string> = {
+        hit: 'Reused validated cached result',
+        joined: 'Joined identical request already running',
+        miss: 'No reusable result; completed fresh work',
+        bypass: `Cache bypassed${result.cache?.reason ? `: ${result.cache.reason}` : ''}`,
+      };
+      await recordTurnActivity(requestId, `cache_${cacheStatus}`, {
+        label: cacheLabels[cacheStatus] || 'Cache decision completed',
+        cache: result.cache,
+      });
       await persistMessage(conversationId, workspaceId, userMessage, { role: 'assistant', kind: 'text', text: result.finalText, activityRequestId: requestId }, scope);
       await completeTurnActivity(requestId, { label: 'Request completed', accepted: result.accepted });
       const final = {
         accepted: result.accepted,
         usage: result.usage,
+        cache: result.cache,
+        providerCache: result.providerCache,
         actions: result.toolResults.map((tool) => ({ tool: tool.name, arguments: tool.arguments, result: tool.result })),
       };
       if (streamedReply) send({ type: 'final', reply: result.finalText, ...final });

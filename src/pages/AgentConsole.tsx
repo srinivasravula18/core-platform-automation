@@ -1367,6 +1367,12 @@ export default function AgentConsole() {
     if (!el) return;
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
+  const followChatBottom = useCallback(() => {
+    if (!atBottomRef.current) return;
+    const active = document.activeElement;
+    if (active && scrollRef.current?.contains(active) && active.matches('input, textarea, select, [contenteditable="true"]')) return;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
+  }, []);
   useEffect(() => {
     if (turns.length === 0) {
       scrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
@@ -2220,6 +2226,8 @@ export default function AgentConsole() {
       let buf = '';
       let finalReply = '';
       let finalUsage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number; costUsd?: number } | null = null;
+      let finalCache: { status?: string; ageMs?: number; savedTokens?: number; reason?: string } | null = null;
+      let finalProviderCache: { readTokens?: number; writeTokens?: number; hitRate?: number } | null = null;
       let liveReply = '';
       let finalActions: Array<{ tool?: string; arguments?: Record<string, any>; result?: any }> = [];
       for (;;) {
@@ -2253,6 +2261,8 @@ export default function AgentConsole() {
             finalReply = ev.reply || '';
             finalActions = Array.isArray(ev.actions) ? ev.actions : [];
             finalUsage = ev.usage || null;
+            finalCache = ev.cache || null;
+            finalProviderCache = ev.providerCache || null;
           }
           else if (ev.type === 'error') {
             appendThinkingDebug(thinkingId, 'Supervisor error', ev);
@@ -2328,6 +2338,12 @@ export default function AgentConsole() {
             cachedTokens: (finalUsage.cacheReadTokens || 0) + (finalUsage.cacheWriteTokens || 0),
             totalTokens: finalUsage.totalTokens,
             costUsd: finalUsage.costUsd,
+            providerCacheReadTokens: finalProviderCache?.readTokens,
+            providerCacheWriteTokens: finalProviderCache?.writeTokens,
+            providerCacheHitRate: finalProviderCache?.hitRate,
+            resultCacheStatus: finalCache?.status,
+            resultCacheAgeMs: finalCache?.ageMs,
+            resultCacheSavedTokens: finalCache?.savedTokens,
           } : currentExecution(),
         });
       }
@@ -3140,6 +3156,7 @@ export default function AgentConsole() {
                       requestId={turn.activityRequestId}
                       liveLabel={turn.label}
                       partialText={turn.partialText}
+                      onActivity={followChatBottom}
                       onCompleted={turn.id.startsWith('activity-') ? () => { void loadConversation(conversationId); } : undefined}
                     />
                   );
@@ -3198,6 +3215,7 @@ export default function AgentConsole() {
                           taskId={turn.taskId}
                           initialSaved={!!turn.saved}
                           onSaved={() => replaceTurn(turn.id, { ...turn, saved: true })}
+                          onActivityStarted={(activityRequestId) => replaceTurn(turn.id, { ...turn, activityRequestId })}
                         />
                         <MessageMeta createdAt={turn.createdAt} execution={turn.execution} />
                       </div>
