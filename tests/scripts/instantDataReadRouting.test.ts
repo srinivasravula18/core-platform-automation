@@ -56,6 +56,13 @@ test('selected targets receive generic read tools without entity-name routing', 
   assert.equal(names.includes('create_record'), false);
 });
 
+test('load-test scope stays advisory instead of starting the functional generation pipeline', async () => {
+  const ctx = buildAgentRuntimeContext({ userMessage: 'Can we run a 100-user stress/load test?', role: 'admin', targets: [] });
+  const tool = buildSupervisorTools(ctx).find((candidate) => candidate.spec.name === 'prepare_test_scope');
+  const result = await tool?.execute({ scope: 'read-only load test', targetUrl: 'https://target.example' }, ctx) as any;
+  assert.equal(result.startReviewedGeneration, false);
+});
+
 test('OpenAPI discovery exposes reads and safe staged writes, never destructive or reserved routes', () => {
   const endpoint = (method: ApiEndpoint['method'], path: string): ApiEndpoint => ({ id: `${method}-${path}`, method, path, tags: [], baseUrl: 'https://target.example', contract: { request: { params: [], headers: [] }, responses: {}, auth: { required: true } }, contractHash: 'hash', source: 'openapi' });
   const visible = discoverableTargetOperations([endpoint('GET', '/items'), endpoint('POST', '/flows'), endpoint('PATCH', '/flows/{id}'), endpoint('PUT', '/flows/{id}'), endpoint('DELETE', '/items/{id}'), endpoint('POST', '/auth/login')]);

@@ -5748,6 +5748,7 @@ Rules:
     let chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
     let conversationMemory = '';
     if (conversationId) {
+      if (activity) await recordTurnActivity(activityRequestId, 'progress', { label: 'Loading conversation context' });
       const storedConversation = await ChatConversations.get(conversationId).catch(() => null);
       if (storedConversation?.turns?.length) {
         chatHistory = storedConversation.turns.map((turn: any) => ({
@@ -5838,7 +5839,17 @@ Rules:
     // "requires a resolved mission with targetUrl", which blames the wrong thing — the URL is fine,
     // the app just is not running. Any HTTP answer counts as reachable (401/404 at root is normal);
     // only a connection-level failure means there is nothing to test.
+    if (activity) await recordTurnActivity(activityRequestId, 'tool_started', { tool: { name: 'check_url', arguments: { url: resolvedTargetUrl } } });
+    const reachabilityStartedAt = Date.now();
     const reachability = await checkTarget(resolvedTargetUrl);
+    if (activity) await recordTurnActivity(activityRequestId, 'tool_completed', {
+      tool: {
+        name: 'check_url',
+        arguments: { url: resolvedTargetUrl },
+        resultSummary: summarizeActivityValue(reachability),
+        ms: Date.now() - reachabilityStartedAt,
+      },
+    });
     if (!reachability.up) {
       return res.json(targetPicker(
         `I could not reach ${resolvedTargetUrl} (${reachability.error}), so there is nothing to inspect. Start that app, or pick a different target.`,
@@ -5848,6 +5859,7 @@ Rules:
     // Learn the connected app's OWN auth storage keys (from its repo) and register them for the inspector's
     // token injection — replaces hardcoded product keys with the app's learned keys. Best-effort, non-fatal.
     try {
+      if (activity) await recordTurnActivity(activityRequestId, 'progress', { label: 'Resolving application authentication and repository context' });
       const understanding = await resolveAppUnderstanding({
         connectedApp: {
           projectId: scope.projectId || undefined,
@@ -6045,6 +6057,7 @@ Rules:
         : null;
 
       if (!application && surfaceBaseUrl && (credentials.username || (credentials as any).token)) {
+        if (activity) await recordTurnActivity(activityRequestId, 'progress', { label: 'Discovering applications and navigation' });
         const conn = connForRun(surfaceBaseUrl, credentials, selectedApp?.specPath);
         const apps = await fetchCorePlatformApps(conn).catch(() => []);
         if (apps.length) {
@@ -6138,6 +6151,7 @@ Rules:
     // supplied in the folderMention field. Do NOT infer one from the prompt text  -  the prompt is the
     // test request (and derived context can contain stray @tokens like "@bvt" that would falsely
     // look like an @folder mention and bypass this gate).
+    if (activity) await recordTurnActivity(activityRequestId, 'progress', { label: 'Resolving workspace organization' });
     const availableFolders = scopeFilter(await Folders.list(), scope);
     const explicitFolderId = !!(req.body.folderId && availableFolders.some((f: any) => f.id === req.body.folderId));
     const explicitFolderMention = !!String(req.body.folderMention || '').trim();

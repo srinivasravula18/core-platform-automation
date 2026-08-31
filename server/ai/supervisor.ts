@@ -138,7 +138,14 @@ function buildIntentTool(def: IntentToolDef, ctx: ToolContext): AgentTool {
 }
 
 async function validateTestScope(args: Record<string, unknown>, ctx: ToolContext) {
-  if (!ctx.targetApps?.length) return { scope: String(args.scope || ctx.userMessage || ''), targetUrl: String(args.targetUrl || '') };
+  const result = {
+    scope: String(args.scope || ctx.userMessage || ''),
+    targetUrl: String(args.targetUrl || ''),
+    // The functional Playwright pipeline cannot execute load/performance tests. Keep these as
+    // grounded advisory answers instead of letting the client misroute them into case generation.
+    startReviewedGeneration: !/\b(?:load|stress|performance|concurren(?:cy|t)|throughput|requests?\s+per\s+second|rps)\b/i.test(String(ctx.userMessage || '')),
+  };
+  if (!ctx.targetApps?.length) return result;
   const provider = resolveProviderForAgent('chatAssistant');
   const classifier = await getOrchestrator('chatAssistant', { workspaceId: ctx.workspaceId, userId: ctx.userId, model: resolveModelForAgent('chatAssistant', provider) });
   const verdict = await classifier.generateObject<{ kind?: string }>({
@@ -151,7 +158,7 @@ async function validateTestScope(args: Record<string, unknown>, ctx: ToolContext
   if (verdict.object?.kind !== 'test_scope') {
     throw new Error('This request changes a selected target, so test-scope preparation is not applicable. Search the authenticated OpenAPI operations and stage the documented write with GET verification.');
   }
-  return { scope: String(args.scope || ctx.userMessage || ''), targetUrl: String(args.targetUrl || '') };
+  return result;
 }
 
 /** Always-on rules only. Task workflows load from selected repository skills. */

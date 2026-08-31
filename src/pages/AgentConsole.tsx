@@ -2272,7 +2272,9 @@ export default function AgentConsole() {
       }
       const requirement = [...finalActions].reverse().find((action) => action.tool === 'draft_requirement')?.result;
       const generatedCases = [...finalActions].reverse().find((action) => action.tool === 'create_cases')?.result?.cases;
-      const liveTest = [...finalActions].reverse().find((action) => action.tool === 'prepare_test_scope');
+      const liveTest = [...finalActions].reverse().find((action) =>
+        action.tool === 'prepare_test_scope' && action.result?.startReviewedGeneration !== false,
+      );
       const targetResult = selectTargetActionResult(finalActions);
       if (liveTest) {
         const scopePrompt = String(liveTest.result?.scope || liveTest.arguments?.scope || text);
