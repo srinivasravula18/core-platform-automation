@@ -30,6 +30,11 @@ async function deletedParentsOf(type: string, id: string, deleted: DeletedItem[]
   return deleted.filter((item) => (item.type === 'plans' || item.type === 'suites') && parentIds.has(item.id));
 }
 
+async function scopedDeletedItem(req: Request, type: string, id: string) {
+  const items = scopeFilter(await RecycleBin.list(), reqScope(req));
+  return { items, item: items.find((entry) => entry.type === type && entry.id === id) };
+}
+
 export function registerRecycleBinRoutes(app: Express) {
   app.get('/api/recycle-bin', async (req: Request, res: Response) => {
     if (!isPostgresEnabled()) {
@@ -54,13 +59,12 @@ export function registerRecycleBinRoutes(app: Express) {
   app.get('/api/recycle-bin/:type/:id/restore-scope', async (req: Request, res: Response) => {
     const { type, id } = req.params;
     if (!RECYCLE_ENTITIES[type]) return res.status(400).json({ error: 'Unknown item type.' });
-    const mine = scopeFilter(await RecycleBin.list(), reqScope(req));
-    const item = mine.find((entry) => entry.type === type && entry.id === id);
+    const { items, item } = await scopedDeletedItem(req, type, id);
     if (!item) return res.status(404).json({ error: 'That item is not in the recycle bin.' });
-    const related = item.batchId ? mine.filter((entry) => entry.batchId === item.batchId && !(entry.type === type && entry.id === id)) : [];
+    const related = item.batchId ? items.filter((entry) => entry.batchId === item.batchId && !(entry.type === type && entry.id === id)) : [];
     // Restoring a child whose parent is still deleted leaves it unreachable in the tree — surface
     // those parents so the user can bring them back too instead of hunting for a "missing" item.
-    const missingParents = await deletedParentsOf(type, id, mine);
+    const missingParents = await deletedParentsOf(type, id, items);
     res.json({ item, related, missingParents, batchId: item.batchId || '' });
   });
 
@@ -86,8 +90,7 @@ export function registerRecycleBinRoutes(app: Express) {
     const { type, id } = req.params;
     const meta = RECYCLE_ENTITIES[type];
     if (!meta) return res.status(400).json({ error: 'Unknown item type.' });
-    const mine = scopeFilter(await RecycleBin.list(), reqScope(req));
-    const item = mine.find((entry) => entry.type === type && entry.id === id);
+    const { item } = await scopedDeletedItem(req, type, id);
     if (!item) return res.status(404).json({ error: 'That item is not in the recycle bin.' });
 
     const actor = reqScope(req);

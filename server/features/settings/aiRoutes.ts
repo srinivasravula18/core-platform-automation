@@ -39,6 +39,21 @@ function usageWorkspace(req: any): string {
 const AGENT_NAMES: AgentName[] = CANONICAL_AGENTS;
 const PROVIDERS = [CODEX] as ProviderName[];
 
+function promptDetails(agent: AgentName) {
+  const effective = getEffectivePrompt(agent);
+  const active = getActivePrompt(agent);
+  return {
+    agent,
+    source: effective.source,
+    version: active?.version,
+    activeBody: effective.body,
+    defaultBody: getDefaultPrompt(agent),
+    versions: listPrompts()
+      .filter((prompt) => prompt.agent === agent)
+      .map(({ id, version, isActive, createdAt, createdBy, notes, body }) => ({ id, version, isActive, createdAt, createdBy, notes, body })),
+  };
+}
+
 function ensureProviderSettings() {
   const stored = db.settings.providerSettings?.[CODEX] || {};
   db.settings.providerSettings = {
@@ -255,36 +270,13 @@ export function registerSettingsRoutes(app: Express) {
   /* ---------- prompts ---------- */
 
   app.get('/api/ai/prompts', (_req, res) => {
-    const out = AGENT_NAMES.map((agent) => {
-      const effective = getEffectivePrompt(agent);
-      const active = getActivePrompt(agent);
-      const versions = listPrompts().filter((p) => p.agent === agent);
-      return {
-        agent,
-        source: effective.source,
-        version: active?.version,
-        activeBody: effective.body,
-        defaultBody: getDefaultPrompt(agent),
-        versions: versions.map((v) => ({ id: v.id, version: v.version, isActive: v.isActive, createdAt: v.createdAt, createdBy: v.createdBy, notes: v.notes, body: v.body })),
-      };
-    });
-    res.json({ agents: out });
+    res.json({ agents: AGENT_NAMES.map(promptDetails) });
   });
 
   app.get('/api/ai/prompts/:agent', (req, res) => {
     const agent = req.params.agent as AgentName;
     if (!AGENT_PROMPTS[agent]) return res.status(404).json({ error: `Unknown agent: ${agent}` });
-    const effective = getEffectivePrompt(agent);
-    const active = getActivePrompt(agent);
-    const versions = listPrompts().filter((p) => p.agent === agent);
-    res.json({
-      agent,
-      source: effective.source,
-      version: active?.version,
-      activeBody: effective.body,
-      defaultBody: getDefaultPrompt(agent),
-      versions: versions.map((v) => ({ id: v.id, version: v.version, isActive: v.isActive, createdAt: v.createdAt, createdBy: v.createdBy, notes: v.notes, body: v.body })),
-    });
+    res.json(promptDetails(agent));
   });
 
   app.put('/api/ai/prompts/:agent', (req, res) => {

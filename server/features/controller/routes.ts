@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Express, NextFunction, Response } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
 import { runSupervisor } from '../../ai/supervisor';
 import { ownerMismatch, reqScope } from '../../shared/scope';
@@ -27,6 +27,16 @@ function conversationWorkspace(workspaceId: unknown, scope?: { projectId?: strin
 
 function hasTargetContext(apps: unknown, scope: { appId?: string | null }): boolean {
   return Boolean(scope.appId) || (Array.isArray(apps) && apps.some((app: any) => typeof app?.baseUrl === 'string' && app.baseUrl.trim()));
+}
+
+function forwardControllerError(err: any, res: Response, next: NextFunction) {
+  if (err?.status) return res.status(err.status).json({ error: err.message });
+  next(err);
+}
+
+async function ownedConversation(conversationId: string, req: any) {
+  const conversation = await ChatConversations.get(conversationId).catch(() => null);
+  return conversation && !ownerMismatch(conversation, reqScope(req)) ? conversation : null;
 }
 
 async function persistMessage(
@@ -193,10 +203,7 @@ export function registerControllerRoutes(app: Express) {
       });
       res.json(result);
     } catch (err: any) {
-      if (err?.status) {
-        return res.status(err.status).json({ error: err.message });
-      }
-      next(err);
+      forwardControllerError(err, res, next);
     }
   });
 
@@ -219,10 +226,7 @@ export function registerControllerRoutes(app: Express) {
       });
       res.json(plan);
     } catch (err: any) {
-      if (err?.status) {
-        return res.status(err.status).json({ error: err.message });
-      }
-      next(err);
+      forwardControllerError(err, res, next);
     }
   });
 
@@ -285,8 +289,7 @@ export function registerControllerRoutes(app: Express) {
         })),
       });
     } catch (err: any) {
-      if (err?.status) return res.status(err.status).json({ error: err.message });
-      next(err);
+      forwardControllerError(err, res, next);
     }
   });
 
@@ -467,8 +470,7 @@ export function registerControllerRoutes(app: Express) {
   app.get('/api/controller/activity/for-conversation/:conversationId', async (req, res, next) => {
     try {
       const conversationId = String(req.params.conversationId || '');
-      const conversation = await ChatConversations.get(conversationId).catch(() => null);
-      if (!conversation || ownerMismatch(conversation, reqScope(req))) {
+      if (!(await ownedConversation(conversationId, req))) {
         return res.status(404).json({ error: 'Conversation not found' });
       }
       res.json(await listTurnActivity(conversationId, Number(req.query.since) || 0));
@@ -478,8 +480,7 @@ export function registerControllerRoutes(app: Express) {
   app.delete('/api/controller/activity/:conversationId/:requestId', async (req, res, next) => {
     try {
       const conversationId = String(req.params.conversationId || '');
-      const conversation = await ChatConversations.get(conversationId).catch(() => null);
-      if (!conversation || ownerMismatch(conversation, reqScope(req))) {
+      if (!(await ownedConversation(conversationId, req))) {
         return res.status(404).json({ error: 'Conversation not found' });
       }
       const cancelled = await cancelTurnActivity(conversationId, String(req.params.requestId || ''));
@@ -515,10 +516,7 @@ export function registerControllerRoutes(app: Express) {
       const result = await executePlan(req.params.id, { approveAll: !!approveAll });
       res.json(result);
     } catch (err: any) {
-      if (err?.status) {
-        return res.status(err.status).json({ error: err.message });
-      }
-      next(err);
+      forwardControllerError(err, res, next);
     }
   });
 
@@ -559,10 +557,7 @@ export function registerControllerRoutes(app: Express) {
       const text = await explainIntent(topic, { workspaceId, userId: scope.userId || userId, projectId: scope.projectId, appId: scope.appId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps });
       res.json({ topic, answer: text });
     } catch (err: any) {
-      if (err?.status) {
-        return res.status(err.status).json({ error: err.message });
-      }
-      next(err);
+      forwardControllerError(err, res, next);
     }
   });
 

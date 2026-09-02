@@ -3,6 +3,9 @@ import { listKnowledge, upsertKnowledge, deleteKnowledge, getKnowledgePack } fro
 import { refreshKnowledgeFromSource } from './knowledgeRefresh';
 import { reqScope } from '../../shared/scope';
 
+const hasRequiredKnowledgeFields = (body: any): boolean =>
+  Boolean(String(body?.content || '').trim() && String(body?.name || '').trim());
+
 export function registerKnowledgeRoutes(app: Express) {
   // Each profile only sees/edits its own knowledge packs.
   const ownsPack = (req: any, id: string): boolean => {
@@ -30,7 +33,7 @@ export function registerKnowledgeRoutes(app: Express) {
   app.put('/api/knowledge/:id', (req, res) => {
     try {
       const body = req.body || {};
-      if (!String(body.content || '').trim() || !String(body.name || '').trim()) {
+      if (!hasRequiredKnowledgeFields(body)) {
         return res.status(400).json({ error: 'name and content are required.' });
       }
       const scope = reqScope(req);
@@ -48,7 +51,7 @@ export function registerKnowledgeRoutes(app: Express) {
   app.post('/api/knowledge', (req, res) => {
     try {
       const body = req.body || {};
-      if (!String(body.content || '').trim() || !String(body.name || '').trim()) {
+      if (!hasRequiredKnowledgeFields(body)) {
         return res.status(400).json({ error: 'name and content are required.' });
       }
       const pack = upsertKnowledge({ ...body, ownerId: reqScope(req).userId || '' });

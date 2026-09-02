@@ -62,6 +62,19 @@ async function applicationContextPromptForScope(scope: ReturnType<typeof reqScop
   return built.promptText;
 }
 
+function requirementAgentContext(req: any, scope: ReturnType<typeof reqScope>, surface: ResolvedSurfaceScope, applicationContextPrompt: string) {
+  return {
+    workspaceId: req.body?.workspaceId || 'default',
+    userId: scope.userId,
+    role: scope.role,
+    repoPath: surface.repoPath,
+    projectId: scope.projectId,
+    appId: scope.appId || '',
+    surface,
+    applicationContextPrompt,
+  };
+}
+
 export function registerRequirementRoutes(app: Express) {
   app.post('/api/requirements/draft/stream', async (req, res) => {
     const query = String(req.body?.query || '').trim();
@@ -90,14 +103,7 @@ export function registerRequirementRoutes(app: Express) {
         conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
       ]);
       const result = await draftRequirement(query, {
-        workspaceId: req.body?.workspaceId || 'default',
-        userId: scope.userId,
-        role: scope.role,
-        repoPath: surface.repoPath,
-        projectId: scope.projectId,
-        appId: scope.appId || '',
-        surface,
-        applicationContextPrompt,
+        ...requirementAgentContext(req, scope, surface, applicationContextPrompt),
         conversationContextPrompt,
         requirementsOnly: true,
         images: parsedAttachments.images,
@@ -122,7 +128,7 @@ export function registerRequirementRoutes(app: Express) {
         applicationContextPromptForScope(scope, surface, query).catch(() => ''),
         conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
       ]);
-      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, conversationContextPrompt, requirementsOnly: true });
+      const result = await draftRequirement(query, { ...requirementAgentContext(req, scope, surface, applicationContextPrompt), conversationContextPrompt, requirementsOnly: true });
       res.json(result);
     } catch (error: any) {
       res.status(routeErrorStatus(error)).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
@@ -148,7 +154,7 @@ export function registerRequirementRoutes(app: Express) {
       const requirementsOnly = req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only';
       const surface = surfaceForScope(scope);
       const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
-      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, requirementsOnly });
+      const result = await discoverRequirement(query, { ...requirementAgentContext(req, scope, surface, applicationContextPrompt), requirementsOnly });
       res.json(result);
     } catch (error: any) {
       res.status(routeErrorStatus(error)).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
@@ -168,14 +174,7 @@ export function registerRequirementRoutes(app: Express) {
       const surface = surfaceForScope(scope);
       const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
       const result = await discoverRequirement(query, {
-        workspaceId: req.body?.workspaceId || 'default',
-        userId: scope.userId,
-        role: scope.role,
-        repoPath: surface.repoPath,
-        projectId: scope.projectId,
-        appId: scope.appId || '',
-        surface,
-        applicationContextPrompt,
+        ...requirementAgentContext(req, scope, surface, applicationContextPrompt),
         requirementsOnly: req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only',
         onProgress: (text) => send({ type: 'step', text }),
       });
