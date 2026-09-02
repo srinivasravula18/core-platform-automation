@@ -815,11 +815,15 @@ export async function cancelGraphRun(runId: string): Promise<void> {
 }
 
 /** Checkpointer-backed state read — returns the thread's values snapshot, or null when no checkpoint exists. */
+async function graphRunSnapshot(runId: string) {
+  const entry = registry.get(runId);
+  const graph = entry?.graph ?? buildTestRunGraph({}, { checkpointer: await getWorkflowCheckpointer() });
+  return graph.getState({ configurable: { thread_id: runId } });
+}
+
 export async function getGraphRunState(runId: string): Promise<WorkflowState | null> {
   try {
-    const entry = registry.get(runId);
-    const graph = entry?.graph ?? buildTestRunGraph({}, { checkpointer: await getWorkflowCheckpointer() });
-    const snapshot = await graph.getState({ configurable: { thread_id: runId } });
+    const snapshot = await graphRunSnapshot(runId);
     const values = snapshot?.values as WorkflowState | undefined;
     return values && values.runId ? values : null;
   } catch {
@@ -832,9 +836,7 @@ export async function getGraphRunState(runId: string): Promise<WorkflowState | n
  * the review node re-runs on resume). Survives process restarts via the checkpointer rebuild. */
 export async function getPendingReview(runId: string): Promise<{ correlationId: string; kind?: string; digest?: string } | null> {
   try {
-    const entry = registry.get(runId);
-    const graph = entry?.graph ?? buildTestRunGraph({}, { checkpointer: await getWorkflowCheckpointer() });
-    const snapshot = await graph.getState({ configurable: { thread_id: runId } });
+    const snapshot = await graphRunSnapshot(runId);
     const pending = firstPendingInterrupt(snapshot) as { correlationId?: string; kind?: string; digest?: string } | null;
     return pending && typeof pending.correlationId === 'string' ? (pending as { correlationId: string; kind?: string; digest?: string }) : null;
   } catch {

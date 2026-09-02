@@ -12,7 +12,6 @@ import { createHash } from 'crypto';
 import { StateGraph, START, END, type BaseCheckpointSaver } from '@langchain/langgraph';
 import { authorTestCases, authorAbstractPlan } from '../nodes/authoring';
 import { runCompilationNode } from '../nodes/compilation';
-import type { MissionContext } from '../../mission/missionContext';
 import type { TestPlan } from '../../compiler/testPlan';
 import { readArtifacts, stashArtifacts } from '../artifactStash';
 import { renderMetadataForPrompt } from '../../../../ai/tools/targetData';
@@ -20,12 +19,12 @@ import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from
 import {
   WorkflowStateAnnotation,
   type CasePlanResult,
-  type MissionRef,
   type UsageRecord,
   type WorkflowCase,
   type WorkflowState,
   type WorkflowStateUpdate,
 } from '../state';
+import { missionContextFromRef } from '../missionContext';
 
 /** Plan authoring fan-out bound (plan performance target) — at most this many concurrent model calls. */
 const PLAN_CONCURRENCY = 3;
@@ -43,21 +42,6 @@ export interface BuildTestAuthoringGraphOptions {
 /** Same inline sha1 idiom as grounding.ts — state stores this digest of the plan, never the plan itself. */
 function digestOfPlan(plan: TestPlan): string {
   return createHash('sha1').update(JSON.stringify(plan)).digest('hex');
-}
-
-/** Rebuilds a MissionContext from state's frozen MissionRef verbatim — no URL/scope re-derivation; names fall back to ids since the ref stores only ids. */
-function missionContextFromRef(ref: MissionRef | null): MissionContext | null {
-  if (!ref) return null;
-  return Object.freeze({
-    platform: ref.platform,
-    platformType: ref.platformType,
-    runtimeSurface: ref.runtimeSurface,
-    application: ref.applicationId ? { id: ref.applicationId, name: ref.applicationId } : null,
-    module: ref.moduleId ? { id: ref.moduleId, name: ref.moduleId } : null,
-    tab: ref.tabId ? { id: ref.tabId, name: ref.tabId } : null,
-    targetUrl: ref.targetUrl,
-    executionScope: ref.executionScope,
-  });
 }
 
 /** Router after author_cases: zero authored cases (no-evidence invariant / refusal path) ends the graph. */

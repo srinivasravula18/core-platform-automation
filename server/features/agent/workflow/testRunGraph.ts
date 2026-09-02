@@ -48,7 +48,6 @@ import {
   WorkflowStateAnnotation,
   type CasePlanResult,
   type CredentialRef,
-  type MissionRef,
   type UsageRecord,
   type WorkflowCase,
   type WorkflowCompilation,
@@ -57,7 +56,7 @@ import {
   type WorkflowStateUpdate,
   type WorkflowStatus,
 } from './state';
-import type { MissionContext } from '../mission/missionContext';
+import { missionContextFromRef } from './missionContext';
 
 // Re-exported so runtime/tests import every router from one place.
 export { routeAfterDiscoverAndGround, MAX_REDISCOVERY_ATTEMPTS };
@@ -125,19 +124,7 @@ function executionUpdate(partial: Partial<WorkflowExecution>): WorkflowExecution
   return partial as WorkflowExecution;
 }
 
-/** Rehydrates the compiler's MissionContext from the checkpointed MissionRef (ids stand in for display names). */
-export function missionContextFromRef(ref: MissionRef): MissionContext {
-  return {
-    platform: ref.platform,
-    platformType: ref.platformType,
-    runtimeSurface: ref.runtimeSurface,
-    application: ref.applicationId ? { id: ref.applicationId, name: ref.applicationId } : null,
-    module: ref.moduleId ? { id: ref.moduleId, name: ref.moduleId } : null,
-    tab: ref.tabId ? { id: ref.tabId, name: ref.tabId } : null,
-    targetUrl: ref.targetUrl,
-    executionScope: ref.executionScope,
-  };
-}
+export { missionContextFromRef } from './missionContext';
 
 /** Deterministic digest of the cases under review — the resumed re-run must rebuild the identical correlation id. */
 export function casesReviewDigest(cases: WorkflowCase[]): string {
@@ -265,6 +252,16 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
   const executionNode = deps.executionNode ?? runExecutionNode;
   // No resolver injected → run credential-less (the runtime wires the real per-run resolver).
   const resolveCredential = deps.resolveCredential ?? (async () => undefined);
+  const prepareAuthState = async (state: WorkflowState) => {
+    const credential = await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
+    if (!credential?.username || !credential.password || !state.mission?.targetUrl) return {};
+    try {
+      const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential, state.request.conversationId);
+      return { storageStatePath: auth.storageStatePath, sessionStorageState: auth.sessionStorageState };
+    } catch {
+      return {};
+    }
+  };
 
   const loadContext = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
     // Resolved just-in-time, used immediately, never returned — checkpoints stay secret-free.
@@ -622,18 +619,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const scriptSetDigest = sha1((state.compilation?.scripts ?? []).map((s) => s.digest).sort());
     // Compiled specs never log in themselves (MissionRunner expects an injected authenticated session):
     // resolve the credential just-in-time and prepare storage/session state with the proven pipeline login.
-    let storageStatePath: string | undefined;
-    let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
     // Auth prep belongs to REAL execution only — an injected execution seam (tests) owns its own setup.
     // Reuses the run's ONE cached login (workflow/authSession) — no fresh login for execution.
-    const credential = deps.executionNode ? undefined : await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
-    if (credential?.username && credential?.password && state.mission?.targetUrl) {
-      try {
-        const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential, state.request.conversationId);
-        storageStatePath = auth.storageStatePath;
-        sessionStorageState = auth.sessionStorageState;
-      } catch { /* execution proceeds unauthenticated; failures will name the real cause */ }
-    }
+    const { storageStatePath, sessionStorageState } = deps.executionNode ? {} : await prepareAuthState(state);
     const result = await executionNode({
       runId: state.runId,
       scripts,
@@ -707,16 +695,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         const code = caseId ? (arts.compiledSources ?? {})[caseId] : undefined;
         if (!caseId || !code) return null;
         flakeProbesLeft -= 1;
-        let storageStatePath: string | undefined;
-        let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
-        const credential = await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
-        if (credential?.username && credential?.password && state.mission?.targetUrl) {
-          try {
-            const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential, state.request.conversationId);
-            storageStatePath = auth.storageStatePath;
-            sessionStorageState = auth.sessionStorageState;
-          } catch { /* probe proceeds unauthenticated; a login-failure re-run simply reads 'failed' */ }
-        }
+        const { storageStatePath, sessionStorageState } = await prepareAuthState(state);
         const result = await executePlaywrightScripts({
           scripts: [{ filename: specFilenameFromTitle(caseTitle, caseId), title: caseTitle, code }],
           baseUrl: state.mission?.targetUrl,
