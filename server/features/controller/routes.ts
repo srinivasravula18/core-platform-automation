@@ -7,6 +7,7 @@ import { redactSecrets } from '../../ai/memory/artifactMemory';
 import { ChatConversations } from '../../db/repository';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { quickUrlHealthAnswer, urlHealthTool } from '../../agent-core/registry/urlHealthTool';
+import { prepareSse } from '../../shared/sse';
 import { capabilityDiscoveryWebSearchMode, shouldPrepareTestScope, shouldUseConversationalFastPath } from '../../agent-runtime/goals/router';
 import {
   beginTurnActivity,
@@ -128,21 +129,6 @@ import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../
  * flushed through even a misconfigured proxy. ~4KB per event is negligible here.
  */
 const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
-
-function prepareStreamingResponse(res: any) {
-  // text/event-stream discourages buffering in production proxies/CDNs even though
-  // the client still consumes raw chunks with fetch().getReader().
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Surrogate-Control', 'no-store');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Connection', 'keep-alive');
-  res.socket?.setNoDelay?.(true);
-  res.flushHeaders?.();
-  // Prime the proxy buffer so the FIRST real event isn't held back either.
-  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
-}
 
 function flushStream(res: any) {
   try { res.flush?.(); } catch { /* compression flush is best-effort */ }
@@ -337,7 +323,7 @@ export function registerControllerRoutes(app: Express) {
     }
     const { requestId } = activity;
     res.setHeader('X-Agent-Request-Id', requestId);
-    prepareStreamingResponse(res);
+    prepareSse(res);
     let connected = true;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     const detachObserver = () => {
@@ -549,7 +535,7 @@ export function registerControllerRoutes(app: Express) {
     if (!topic || typeof topic !== 'string') {
       return res.status(400).json({ error: 'topic is required' });
     }
-    prepareStreamingResponse(res);
+    prepareSse(res);
     try {
       const scope = reqScope(req);
       res.write('\n');

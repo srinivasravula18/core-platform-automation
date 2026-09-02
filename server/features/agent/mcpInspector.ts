@@ -17,6 +17,7 @@ import { getToolCapableOrchestrator } from '../../ai/orchestrator';
 import { startMcpSession, closeMcpSession, type McpSession } from '../../ai/tools/mcpClient';
 import { createAuthStorageState } from '../evidence/evidenceService';
 import { normalizeTargetUrl } from '../../shared/url';
+import { parseEmbeddedJson } from '../../shared/embeddedJson';
 import type { AgentTool, ToolContext } from '../../ai/tools/types';
 
 // The inspector only needs to read and interact — never close the browser, upload files,
@@ -94,41 +95,6 @@ async function snapshotStructured(session: McpSession): Promise<any> {
   const evalTool = session.tools.find((t) => t.spec.name === 'browser_evaluate')
     // browser_evaluate was filtered out of the loop tools; call it directly on the client instead.
     || null;
-  const tryParseEmbeddedJson = (raw: string) => {
-    const text = String(raw || '').trim();
-    if (!text) return null;
-    const starts: number[] = [];
-    for (let i = 0; i < text.length; i += 1) {
-      const ch = text[i];
-      if (ch === '{' || ch === '[') starts.push(i);
-    }
-    for (const start of starts) {
-      const open = text[start];
-      const close = open === '{' ? '}' : ']';
-      let depth = 0;
-      let inString = false;
-      let escaped = false;
-      for (let i = start; i < text.length; i += 1) {
-        const ch = text[i];
-        if (inString) {
-          if (escaped) escaped = false;
-          else if (ch === '\\') escaped = true;
-          else if (ch === '"') inString = false;
-          continue;
-        }
-        if (ch === '"') { inString = true; continue; }
-        if (ch === open) depth += 1;
-        else if (ch === close) {
-          depth -= 1;
-          if (depth === 0) {
-            const candidate = text.slice(start, i + 1);
-            try { return JSON.parse(candidate); } catch { break; }
-          }
-        }
-      }
-    }
-    return null;
-  };
   const fn = `() => {
     const q = (sel) => Array.from(document.querySelectorAll(sel));
     const text = (e) => (e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim();
@@ -148,7 +114,7 @@ async function snapshotStructured(session: McpSession): Promise<any> {
     const res: any = await session.client.callTool({ name: 'browser_evaluate', arguments: { function: fn } });
     const parts = Array.isArray(res?.content) ? res.content : [];
     const raw = parts.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n');
-    const parsed = tryParseEmbeddedJson(raw);
+    const parsed = parseEmbeddedJson(raw);
     return parsed || { url: '', title: '', headings: [], tables: [], forms: [], bodyText: raw.slice(0, 1500) };
   } catch {
     return { url: '', title: '', headings: [], tables: [], forms: [], bodyText: '' };

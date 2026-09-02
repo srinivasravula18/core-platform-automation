@@ -159,8 +159,7 @@ async function snapshot(page: Page, evidence: Evidence[], notes: string[] = []):
   return cleaned;
 }
 
-async function waitForUiReady(page: Page, timeout = 20000): Promise<void> {
-  await page.waitForFunction(() => {
+function uiReadinessState(mode: 'busy' | 'ready'): boolean {
     const visible = (el: Element) => {
       const r = el.getBoundingClientRect();
       const s = getComputedStyle(el);
@@ -191,44 +190,10 @@ async function waitForUiReady(page: Page, timeout = 20000): Promise<void> {
       '[class*="animate-spin" i]',
     ].join(',');
     const text = document.body?.innerText || '';
-    return /\b(loading|loading records|loading data|please wait|fetching|syncing|refreshing|processing|preparing)\b/i.test(text)
-      || Array.from(document.querySelectorAll(busySelector)).some(visible);
-  }, null, { timeout: 750 }).catch(() => undefined);
-  await page.getByText(/loading|loading records|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout }).catch(() => undefined);
-  await page.waitForFunction(() => {
-    const visible = (el: Element) => {
-      const r = el.getBoundingClientRect();
-      const s = getComputedStyle(el);
-      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-    };
-    const busySelector = [
-      '[aria-busy="true"]',
-      '[aria-disabled="true"][data-loading]',
-      '[role="progressbar"]',
-      '[data-loading="true"]',
-      '[data-state="loading"]',
-      '[data-status="loading"]',
-      '[data-pending="true"]',
-      '[data-fetching="true"]',
-      '[data-busy="true"]',
-      '[data-skeleton]',
-      '[data-testid*="loading" i]',
-      '[data-testid*="loader" i]',
-      '[data-testid*="spinner" i]',
-      '[data-testid*="skeleton" i]',
-      '[class*="loading" i]',
-      '[class*="loader" i]',
-      '[class*="spinner" i]',
-      '[class*="skeleton" i]',
-      '[class*="progress" i]',
-      '[class*="pending" i]',
-      '[class*="busy" i]',
-      '[class*="animate-spin" i]',
-    ].join(',');
+    const loading = /\b(loading|loading records|loading data|please wait|fetching|syncing|refreshing|processing|preparing)\b/i.test(text);
     const busy = Array.from(document.querySelectorAll(busySelector)).some(visible);
-    if (busy) return false;
-    const text = document.body?.innerText || '';
-    if (/\b(loading|loading records|loading data|please wait|fetching|syncing|refreshing|processing|preparing)\b/i.test(text)) return false;
+    if (mode === 'busy') return loading || busy;
+    if (busy || loading) return false;
     const readySelector = [
       'main',
       'form',
@@ -281,7 +246,12 @@ async function waitForUiReady(page: Page, timeout = 20000): Promise<void> {
       return false;
     }
     return now - state.since >= 800;
-  }, null, { timeout }).catch(() => undefined);
+}
+
+async function waitForUiReady(page: Page, timeout = 20000): Promise<void> {
+  await page.waitForFunction(uiReadinessState, 'busy', { timeout: 750 }).catch(() => undefined);
+  await page.getByText(/loading|loading records|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout }).catch(() => undefined);
+  await page.waitForFunction(uiReadinessState, 'ready', { timeout }).catch(() => undefined);
   await page.waitForLoadState('domcontentloaded').catch(() => undefined);
 }
 

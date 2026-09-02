@@ -4,6 +4,7 @@ import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
 import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/targetData';
 import { collectMcpDomFacts } from './mcpDomFacts';
+import { withTimeout } from '../../ai/tools/mcpClient';
 import { recordEvidence } from './evidence/registry';
 import { PROVENANCE, mapSelectorEvidenceType, type Provenance, type EvidenceConfidence } from './evidence/provenance';
 import { integrateGraphsIntoRun } from './graph/discoveryAdapter';
@@ -59,22 +60,6 @@ export function domOpenPathForPrompt(prompt: string): string[] | undefined {
 
 function mcpDomFactsEnabled(): boolean {
   return String(process.env.ENABLE_MCP_DOM_FACTS || '').trim().toLowerCase() === 'true';
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 }
 
 export async function runMetadataFetchPhase(input: {

@@ -1,9 +1,10 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { startMcpSession, closeMcpSession, type McpSession } from '../../ai/tools/mcpClient';
+import { startMcpSession, closeMcpSession, withTimeout, type McpSession } from '../../ai/tools/mcpClient';
 import { createAuthStorageState } from '../evidence/evidenceService';
 import { normalizeTargetUrl } from '../../shared/url';
+import { parseEmbeddedJson } from '../../shared/embeddedJson';
 
 type McpDomFact = {
   kind: 'button' | 'link' | 'input' | 'select' | 'textarea' | 'tab' | 'menuitem' | 'checkbox' | 'radio' | 'text';
@@ -27,22 +28,6 @@ type McpDomFacts = {
   accessibilitySnapshot: string;
   coverage: { actionables: number; assertions: number; tables: number };
 };
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 function intentTerms(goal: string): string[] {
   const seen = new Set<string>();
@@ -96,38 +81,9 @@ function textFromMcp(res: any): string {
 }
 
 function tryParseEmbeddedJson(raw: string): any {
-  const text = String(raw || '').trim();
-  if (!text) return {};
-  const starts: number[] = [];
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === '{' || ch === '[') starts.push(i);
-  }
-  for (const start of starts) {
-    const open = text[start];
-    const close = open === '{' ? '}' : ']';
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i += 1) {
-      const ch = text[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === open) depth += 1;
-      else if (ch === close) {
-        depth -= 1;
-        if (depth === 0) {
-          const candidate = text.slice(start, i + 1);
-          try { return JSON.parse(candidate); } catch { break; }
-        }
-      }
-    }
-  }
+  if (!String(raw || '').trim()) return {};
+  const parsed = parseEmbeddedJson(raw);
+  if (parsed !== null) return parsed;
   throw new Error('No valid JSON object/array found in MCP response text.');
 }
 
