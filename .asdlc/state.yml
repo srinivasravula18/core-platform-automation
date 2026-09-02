@@ -1,0 +1,7 @@
+schema_version: 1
+playbook_version: 3.1.1
+status: PARTIAL
+mode: legacy
+config_revision: 1
+baseline_revision: 1
+last_audit: 2026-09-02

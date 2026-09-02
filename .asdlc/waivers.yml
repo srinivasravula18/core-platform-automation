@@ -1,0 +1,2 @@
+# Suppressions require a finding fingerprint, human approval reference, and expiry.
+waivers: []

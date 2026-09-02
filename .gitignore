@@ -87,3 +87,6 @@ agent/browsers/*
 /*.webp
 /*.yml
 /*.yaml
+
+.asdlc/reports/
+.asdlc/badge.json

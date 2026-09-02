@@ -1,0 +1,45 @@
+mode: legacy
+gates:
+  duplication:
+    enabled: true
+  boundaries:
+    enabled: true
+  patterns:
+    enabled: false
+  registry:
+    enabled: true
+  contracts:
+    enabled: false
+source_dirs:
+  - src
+  - server
+  - apps/api/src
+  - agent/src
+  - mcp-servers/core-platform-db
+  - scripts
+min_tokens: 60
+exclude:
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/.next/**"
+  - "**/coverage/**"
+  - "**/vendor/**"
+  - "**/*.min.*"
+  - "**/generated/**"
+  - "**/migrations/**"
+  - "**/*.lock"
+  - "**/package-lock.json"
+  - "**/.asdlc/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/__tests__/**"
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*.stories.*"
+  - "**/__mocks__/**"
+  - "**/fixtures/**"
+registry_path: docs/BUSINESS_RULES.md
+architecture_path: docs/ARCHITECTURE.md
+contracts_command: null
+semgrep_rules_dir: .asdlc/semgrep
