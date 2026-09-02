@@ -40,6 +40,18 @@ function normalizeProviderSettings(settings: any) {
   return { providerSettings, defaultProvider: 'codex' as ProviderName, agentProviderMap: {} as Record<string, ProviderName>, agentModelMap };
 }
 
+function applyLoadedSettings(settings: any) {
+  db.settings = {
+    ...db.settings,
+    ...settings,
+    siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
+    ...normalizeProviderSettings(settings),
+    dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
+    costCaps: (settings.costCaps && typeof settings.costCaps === 'object') ? { ...db.settings.costCaps, ...settings.costCaps } : db.settings.costCaps,
+    autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
+  };
+}
+
 export const db: any = {
   folders: [] as any[],
   plans: [] as any[],
@@ -382,16 +394,7 @@ export async function loadPersistedSettings() {
         }
       }
       const settings = Object.fromEntries(rows.map((row: any) => [row.key, row.value]));
-      const normalizedAiSettings = normalizeProviderSettings(settings);
-      db.settings = {
-        ...db.settings,
-        ...settings,
-        siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
-        ...normalizedAiSettings,
-        dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
-        costCaps: (settings.costCaps && typeof settings.costCaps === 'object') ? { ...db.settings.costCaps, ...settings.costCaps } : db.settings.costCaps,
-        autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
-      };
+      applyLoadedSettings(settings);
     } catch {
       // Settings table may be empty on first boot.
     }
@@ -400,16 +403,7 @@ export async function loadPersistedSettings() {
   try {
     const raw = await fs.readFile(settingsFilePath, 'utf-8');
     const settings = JSON.parse(raw);
-    const normalizedAiSettings = normalizeProviderSettings(settings);
-    db.settings = {
-      ...db.settings,
-      ...settings,
-      siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
-      ...normalizedAiSettings,
-      dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
-      costCaps: (settings.costCaps && typeof settings.costCaps === 'object') ? { ...db.settings.costCaps, ...settings.costCaps } : db.settings.costCaps,
-      autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
-    };
+    applyLoadedSettings(settings);
   } catch {
     // Missing settings file is valid on first run.
   }

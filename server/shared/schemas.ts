@@ -1,20 +1,5 @@
 import { z } from 'zod';
-
-function stringifyField(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => stringifyField(item)).filter(Boolean).join('; ');
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).map((item) => stringifyField(item)).filter(Boolean).join('; ');
-  return value === undefined || value === null ? '' : String(value);
-}
-
-function scriptFilename(value: string, fallback: string): string {
-  const slug = String(value || fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return `${slug || fallback}.spec.ts`;
-}
+import { slugifyScriptFilename, stringifyField } from '../ai/providers/structuredOutput';
 
 function fallbackScript(title: string): string {
   return `import { test, expect } from '@playwright/test';\n\ntest('${title.replace(/'/g, "\\'")}', async ({ page }) => {\n  await page.goto('/');\n  // Add your assertions here\n});`;
@@ -46,7 +31,7 @@ export const testCasesSchema = z.object({
 const playwrightScriptItemSchema = z.preprocess((value) => {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : { code: value };
   const title = stringifyField(raw.test_case_title || raw.title || raw.name || raw.testName || raw.test_name || raw.caseTitle || raw.case_title) || 'Generated Playwright script';
-  const filename = stringifyField(raw.filename || raw.file || raw.path) || scriptFilename(title, 'generated-playwright-script');
+  const filename = stringifyField(raw.filename || raw.file || raw.path) || slugifyScriptFilename(title, 'generated-playwright-script');
   const code = stringifyField(raw.code || raw.script || raw.source || raw.content || raw.playwright || raw.test || raw.body) || fallbackScript(title);
   return { ...raw, test_case_title: title, filename, code };
 }, z.object({

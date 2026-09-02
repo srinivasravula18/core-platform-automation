@@ -190,6 +190,25 @@ export class AgentOrchestrator {
     return pipeline;
   }
 
+  private traceSingleShot(system: string, prompt: string, context: string, output: unknown, usage: ProviderUsage | undefined, requestId: string) {
+    void logExecutionTrace({
+      stepNumber: 1,
+      agentName: this.agent,
+      toolInvoked: null,
+      toolInputs: null,
+      toolOutputs: output,
+      contextReceived: context,
+      contextPassed: output,
+      tokenUsage: usage ? { promptTokens: usage.inputTokens ?? 0, completionTokens: usage.outputTokens ?? 0 } : null,
+      informationTruncated: false,
+      evidenceDiscarded: false,
+      assumptionsMade: 'Not explicitly provided by model',
+      whyNextToolSelected: 'Single-shot generation',
+      finalPromptSent: serializePrompt(system, [{ role: 'user', content: prompt }]),
+      runId: requestId,
+    }).catch(console.error);
+  }
+
   async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; images?: ProviderImage[] }) {
     const pipeline = this.guardrail(opts.userMessage || opts.prompt, opts.hasHistory);
     if (pipeline.policyVerdict.kind === 'respond') {
@@ -213,38 +232,8 @@ export class AgentOrchestrator {
       const retrySystem = `${system}\n\nIMPORTANT: Your previous reply was not usable — it was not a single valid JSON object matching the required schema (it was malformed, truncated, or off-schema). Reply with ONLY one complete, valid JSON object that exactly matches the schema — all required fields present, correct types, properly closed braces/brackets, no prose, no markdown, no code fences.`;
       result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, images: opts.images });
     }
-    await recordUsage({
-      workspaceId: this.workspaceId,
-      userId: this.userId,
-      agent: this.agent,
-      provider: this.provider.name,
-      model: result.model,
-      inputTokens: result.usage?.inputTokens ?? 0,
-      outputTokens: result.usage?.outputTokens ?? 0,
-      cacheReadTokens: result.usage?.cacheReadTokens ?? 0,
-      cacheWriteTokens: result.usage?.cacheWriteTokens ?? 0,
-      costUsd: result.usage?.costUsd ?? 0,
-      requestId: pipeline.requestId,
-    });
-    
-    // --- Trace Execution (generateObject) ---
-    logExecutionTrace({
-      stepNumber: 1,
-      agentName: this.agent,
-      toolInvoked: null,
-      toolInputs: null,
-      toolOutputs: result.object,
-      contextReceived: opts.userMessage || opts.prompt,
-      contextPassed: result.object,
-      tokenUsage: result.usage ? { promptTokens: result.usage.inputTokens ?? 0, completionTokens: result.usage.outputTokens ?? 0 } : null,
-      informationTruncated: false,
-      evidenceDiscarded: false,
-      assumptionsMade: "Not explicitly provided by model",
-      whyNextToolSelected: "Single-shot generation",
-      finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.prompt }]),
-      runId: pipeline.requestId
-    }).catch(console.error);
-    // ----------------------------------------
+    await this.bookUsage(result.usage, result.model, pipeline.requestId);
+    this.traceSingleShot(system, opts.prompt, opts.userMessage || opts.prompt, result.object, result.usage, pipeline.requestId);
     
     return { object: result.object, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
@@ -264,38 +253,9 @@ export class AgentOrchestrator {
       effort: this.effort,
       signal: opts.signal,
     });
-    await recordUsage({
-      workspaceId: this.workspaceId,
-      userId: this.userId,
-      agent: this.agent,
-      provider: this.provider.name,
-      model: result.model,
-      inputTokens: result.usage?.inputTokens ?? 0,
-      outputTokens: result.usage?.outputTokens ?? 0,
-      cacheReadTokens: result.usage?.cacheReadTokens ?? 0,
-      cacheWriteTokens: result.usage?.cacheWriteTokens ?? 0,
-      costUsd: result.usage?.costUsd ?? 0,
-      requestId: pipeline.requestId,
-    });
-    
-    // --- Trace Execution (generateText) ---
-    logExecutionTrace({
-      stepNumber: 1,
-      agentName: this.agent,
-      toolInvoked: null,
-      toolInputs: null,
-      toolOutputs: result.text,
-      contextReceived: opts.userMessage || opts.prompt,
-      contextPassed: result.text,
-      tokenUsage: result.usage ? { promptTokens: result.usage.inputTokens ?? 0, completionTokens: result.usage.outputTokens ?? 0 } : null,
-      informationTruncated: false,
-      evidenceDiscarded: false,
-      assumptionsMade: "Not explicitly provided by model",
-      whyNextToolSelected: "Single-shot generation",
-      finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.prompt }]),
-      runId: opts.meta?.requestId || pipeline.requestId
-    }).catch(console.error);
-    // ----------------------------------------
+    const requestId = opts.meta?.requestId || pipeline.requestId;
+    await this.bookUsage(result.usage, result.model, requestId);
+    this.traceSingleShot(system, opts.prompt, opts.userMessage || opts.prompt, result.text, result.usage, requestId);
 
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }

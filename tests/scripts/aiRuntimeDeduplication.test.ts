@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { codexMcpServers } from '../../server/ai/codex/mcpConfig';
+import { slugifyScriptFilename, stringifyField } from '../../server/ai/providers/structuredOutput';
+import { playwrightScriptsSchema } from '../../server/shared/schemas';
 
 test('Codex transports receive one identical scoped MCP table', () => {
   assert.deepEqual(codexMcpServers({
@@ -29,4 +31,14 @@ test('empty optional MCP fields are omitted without changing timeout defaults', 
       tool_timeout_sec: 300,
     },
   });
+});
+
+test('legacy script schemas reuse structured-output string normalization', () => {
+  assert.equal(stringifyField(['first', { nested: 'second' }]), 'first; second');
+  const title = 'Account permissions';
+  assert.equal(slugifyScriptFilename(title, 'generated'), 'account-permissions.spec.ts');
+  assert.equal(
+    playwrightScriptsSchema.parse([{ title, code: 'test("ok", () => {})' }]).scripts[0].filename,
+    slugifyScriptFilename(title, 'generated-playwright-script'),
+  );
 });
