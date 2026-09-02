@@ -20,6 +20,7 @@
 import { Plans, Suites, Cases, Runs, Defects, Reports, Inbox, Requirements, RequirementLinks, isPgEnabled } from './repository';
 import { isPostgresEnabled, query, queryOne, uid } from './pool';
 import { Activity } from './repository';
+import { encryptSecret } from '../shared/secretBox';
 
 export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: string }> {
   if (!isPostgresEnabled()) return { seeded: false, reason: 'postgres disabled' };
@@ -53,22 +54,13 @@ export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: stri
      ON CONFLICT (id) DO NOTHING`,
     [websiteId],
   );
-  // password is "demo" (encrypted with the dev key)
-  const crypto = await import('crypto');
-  const encKey = crypto.scryptSync('testflowai-dev-key-do-not-use-in-prod', 'testflowai-salt', 32);
-  const encrypt = (plain: string) => {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', encKey, iv);
-    const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return `${iv.toString('base64')}.${enc.toString('base64')}.${tag.toString('base64')}`;
-  };
+  // Seeded credentials use the same versioned storage format as user-created credentials.
   await query(
     `INSERT INTO website_users (id, website_id, label, username, password_enc, role, notes) VALUES
      ($1, $2, 'Admin', 'admin@demo.com', $3, 'admin', 'Full access'),
      ($4, $2, 'Standard', 'shopper@demo.com', $5, 'standard', 'Regular shopper')
      ON CONFLICT (id) DO NOTHING`,
-    ['USR-DEMO-ADMIN', websiteId, encrypt('admin123'), 'USR-DEMO-SHOPPER', encrypt('shopper123')],
+    ['USR-DEMO-ADMIN', websiteId, encryptSecret('admin123'), 'USR-DEMO-SHOPPER', encryptSecret('shopper123')],
   );
 
   /* ---------- plan ---------- */

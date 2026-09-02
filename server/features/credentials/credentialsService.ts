@@ -23,8 +23,9 @@
  * service falls back to a deterministic dev key and logs a warning at startup.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'crypto';
+import { createHash } from 'crypto';
 import { db } from '../../shared/storage';
+import { decryptSecret, encryptSecret } from '../../shared/secretBox';
 import type { AgentRunCredentials } from './types';
 import { getUserById } from '../auth/userStore';
 import { effectiveGrantsForUser, isAllowed, UNRESTRICTED, type EffectiveGrants } from '../auth/groupStore';
@@ -34,64 +35,7 @@ import { effectiveGrantsForUser, isAllowed, UNRESTRICTED, type EffectiveGrants }
 // .env.local and silently falls back to the empty dev key — which then FAILS to decrypt passwords
 // that were encrypted with the real key ("No credentials resolved"). First use happens at request
 // time, after env is loaded, so the real key is picked up.
-let cachedEncKey: Buffer | null = null;
-
-function isProductionRuntime(): boolean {
-  const mode = (process.env.DEPLOYMENT_MODE || '').toLowerCase();
-  if (mode) return mode === 'production';
-  return String(process.env.NODE_ENV || '').toLowerCase() === 'production';
-}
-
-// TEMPORARY built-in key, used ONLY when CRED_ENC_KEY is not set in the environment.
-// TODO: move this value into the deployment's env/secret store as CRED_ENC_KEY and delete
-// this constant. IMPORTANT: when migrating, set CRED_ENC_KEY to THIS EXACT value — any other
-// value cannot decrypt passwords that were saved while this fallback was active (they would
-// all need to be re-entered in Settings → Credentials).
-const BUILT_IN_ENC_KEY = '680c8f5b27b19f4d01e18065bffb2b365bf90e95cc4051ba6c168f41cf64ad10';
-
-function encKey(): Buffer {
-  if (cachedEncKey) return cachedEncKey;
-  const raw = process.env.CRED_ENC_KEY || BUILT_IN_ENC_KEY;
-  if (raw) {
-    cachedEncKey = scryptSync(raw, process.env.CRED_ENC_SALT || '', 32);
-    return cachedEncKey;
-  }
-  // In production, refuse to fall back to a derivable key: "encrypting" credentials under an
-  // empty-derived key is effectively storing them in the clear. Fail loud, not silent.
-  if (isProductionRuntime()) {
-    throw new Error('CRED_ENC_KEY must be set in production — refusing to encrypt/decrypt credentials with a derivable dev key.');
-  }
-  if (!process.env.CRED_DEV_KEY_WARNING_SHOWN) {
-    console.warn('[credentials] CRED_ENC_KEY is not set — using a derived dev key (NOT for production).');
-    process.env.CRED_DEV_KEY_WARNING_SHOWN = '1';
-  }
-  cachedEncKey = scryptSync(process.env.CRED_ENC_FALLBACK_KEY || '', process.env.CRED_ENC_SALT || '', 32);
-  return cachedEncKey;
-}
-
-function encrypt(plain: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', encKey(), iv);
-  const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('base64')}.${enc.toString('base64')}.${tag.toString('base64')}`;
-}
-
-function decrypt(payload: string): string {
-  const [ivB64, encB64, tagB64] = payload.split('.');
-  if (!ivB64 || !encB64 || !tagB64) throw new Error('Invalid encrypted payload');
-  const iv = Buffer.from(ivB64, 'base64');
-  const enc = Buffer.from(encB64, 'base64');
-  const tag = Buffer.from(tagB64, 'base64');
-  const decipher = createDecipheriv('aes-256-gcm', encKey(), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
-}
-
-// Shared with other features that must store a secret at rest (see server/features/vitals/connection.ts)
-// so there is exactly one place where the encryption key and payload format are decided.
-export const encryptSecret = encrypt;
-export const decryptSecret = decrypt;
+export { decryptSecret, encryptSecret };
 
 export interface Website {
   id: string;
@@ -312,7 +256,7 @@ export function createUser(opts: {
     websiteId: opts.websiteId,
     label: opts.label,
     username: opts.username,
-    passwordEnc: encrypt(opts.password),
+    passwordEnc: encryptSecret(opts.password),
     role: opts.role,
     customRole: opts.customRole,
     notes: opts.notes || '',
@@ -331,7 +275,7 @@ export function updateUser(id: string, patch: Partial<{ label: string; username:
   if (!u) return null;
   if (patch.label !== undefined) u.label = patch.label;
   if (patch.username !== undefined) u.username = patch.username;
-  if (patch.password !== undefined && patch.password.length > 0) u.passwordEnc = encrypt(patch.password);
+  if (patch.password !== undefined && patch.password.length > 0) u.passwordEnc = encryptSecret(patch.password);
   if (patch.role !== undefined) u.role = patch.role;
   if (patch.customRole !== undefined) u.customRole = patch.customRole;
   if (patch.notes !== undefined) u.notes = patch.notes;
@@ -353,7 +297,7 @@ export function deleteUser(id: string): boolean {
 export function revealPassword(userId: string): string {
   const u = getUser(userId);
   if (!u) throw new Error(`User ${userId} not found`);
-  return decrypt(u.passwordEnc);
+  return decryptSecret(u.passwordEnc);
 }
 
 export interface ResolveOptions {
@@ -510,7 +454,7 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
 function toResolved(u: WebsiteUser, w: Website, source: ResolvedCredential['source']): ResolvedCredential {
   let password = '';
   try {
-    password = decrypt(u.passwordEnc);
+    password = decryptSecret(u.passwordEnc);
   } catch {
     // The stored ciphertext can't be decrypted with the current CRED_ENC_KEY — the key changed or
     // the data was copied from another environment. Surface it loudly and name the site/user: a
