@@ -346,13 +346,16 @@ export interface CorePlatformMetadataMap {
  * flags. Mirrors pipelineDelta's legacy `metadataForPrompt` so graph-mode authoring grounds on the SAME
  * backend object/field truth the legacy path always had (RC-0: the graph engine previously dropped this map).
  */
-export function renderMetadataForPrompt(map?: CorePlatformMetadataMap | null): string {
+export function renderMetadataForPrompt(
+  map?: CorePlatformMetadataMap | null,
+  heading = 'BACKEND OBJECT/FIELD METADATA (authoritative required/readonly truth for this app — align cases with it; a field marked :required must be filled before save):',
+): string {
   if (!map?.objects?.length) return '';
   const lines = map.objects.slice(0, 12).map((obj) => {
     const fields = obj.fields.slice(0, 30).map((f) => `${f.api_name}:${f.label}${f.required ? ':required' : ''}${f.readonly ? ':readonly' : ''}`).join(', ');
     return `- ${obj.api_name} (${obj.label}): ${fields}`;
   });
-  return `BACKEND OBJECT/FIELD METADATA (authoritative required/readonly truth for this app — align cases with it; a field marked :required must be filled before save):\n${lines.join('\n')}`;
+  return `${heading}\n${lines.join('\n')}`;
 }
 
 const metadataMapCache = new Map<string, { at: number; value: CorePlatformMetadataMap }>();

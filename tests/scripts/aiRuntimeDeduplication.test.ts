@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { codexMcpServers } from '../../server/ai/codex/mcpConfig';
 import { slugifyScriptFilename, stringifyField } from '../../server/ai/providers/structuredOutput';
+import { renderMetadataForPrompt } from '../../server/ai/tools/targetData';
 import { playwrightScriptsSchema } from '../../server/shared/schemas';
 
 test('Codex transports receive one identical scoped MCP table', () => {
@@ -41,4 +42,21 @@ test('legacy script schemas reuse structured-output string normalization', () =>
     playwrightScriptsSchema.parse([{ title, code: 'test("ok", () => {})' }]).scripts[0].filename,
     slugifyScriptFilename(title, 'generated-playwright-script'),
   );
+});
+
+test('metadata prompt rendering supports legacy and graph headings from one formatter', () => {
+  const metadata = {
+    objects: [{
+      api_name: 'account', label: 'Account', fields: [{
+        api_name: 'name', label: 'Name', type: 'string', required: true, readonly: false,
+        permission_sensitive: false, appears_in_layouts: [], appears_in_list_views: [], appears_in_forms: [],
+      }],
+      list_views: [], layouts: [], forms: [],
+    }],
+    total_fields: 1,
+    permission_sensitive_count: 0,
+  };
+
+  assert.match(renderMetadataForPrompt(metadata), /^BACKEND OBJECT\/FIELD METADATA/);
+  assert.equal(renderMetadataForPrompt(metadata, 'Legacy heading:').split('\n')[0], 'Legacy heading:');
 });

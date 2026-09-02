@@ -86,6 +86,15 @@ const COLLECTIONS: Record<string, Lister> = {
   settings: safeSettings,
 };
 
+function itemsInScope(items: any[], ctx: ToolContext): any[] {
+  return items.filter((item) => {
+    if (ctx.userId && item?.ownerId && item.ownerId !== ctx.userId) return false;
+    if (ctx.projectId && item?.projectId && item.projectId !== ctx.projectId) return false;
+    if (ctx.appId && item?.appId && item.appId !== ctx.appId) return false;
+    return true;
+  });
+}
+
 /** Scripts executed by agent runs are persisted on the run, even when no standalone script row exists. */
 export function scriptsFromAgentRuns(runs: any[]): any[] {
   return (Array.isArray(runs) ? runs : []).flatMap((run: any) => {
@@ -171,12 +180,7 @@ export const queryWorkspaceTool: AgentTool = {
       items = [...items, ...scriptsFromAgentRuns(await AgentRuns.list())];
     }
     // Respect the active owner/project/app scope when records carry those fields.
-    items = items.filter((it) => {
-      if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
-      if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
-      if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
-      return true;
-    });
+    items = itemsInScope(items, ctx);
 
     // Full-text haystack per kind so CONTENT questions resolve against real detail — a case's steps, a run's
     // pass/fail outcome, a defect's repro/expected/actual, a script's code — not just the title. This is what
@@ -424,12 +428,7 @@ export const findUntestedEdgesTool: AgentTool = {
     let existingCaseTitles: string[] = [];
     try {
       let items = await (Cases as Lister).list();
-      items = items.filter((it) => {
-        if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
-        if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
-        if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
-        return true;
-      });
+      items = itemsInScope(items, ctx);
       existingCaseTitles = items.map((it: any) => String(it?.title || it?.name || '')).filter(Boolean);
     } catch { /* best-effort: an empty list just means everything is a candidate gap */ }
     const result = await findUntestedEdges({
@@ -473,12 +472,7 @@ export const analyzeFeatureCoverageTool: AgentTool = {
     let existingCases: any[] = [];
     try {
       let items = await (Cases as Lister).list();
-      items = items.filter((it) => {
-        if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
-        if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
-        if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
-        return true;
-      });
+      items = itemsInScope(items, ctx);
       existingCases = items.map((it: any) => ({ title: it?.title || it?.name, description: it?.description, tags: it?.tags, steps: it?.steps }));
     } catch { /* no cases → everything is a gap, which the audit will report honestly */ }
     const report = await analyzeFeatureCoverage({

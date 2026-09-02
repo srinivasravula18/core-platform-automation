@@ -33,6 +33,14 @@ interface AppConn { baseUrl: string; username: string; password: string }
 const tokenCache = new Map<string, string>();
 const operationCache = new WeakMap<ToolContext, Promise<any[]>>();
 
+function objectToolArgs(args: Record<string, unknown>, appError = 'app_id is required') {
+  const appId = String(args.app_id || '').trim();
+  const apiName = String(args.object_api_name || '').trim();
+  if (!appId) return { error: appError } as const;
+  if (!apiName) return { error: 'object_api_name is required' } as const;
+  return { appId, apiName } as const;
+}
+
 async function resolveConnection(ctx?: ToolContext): Promise<AppConn> {
   const target = ctx?.targetApps?.find((item) => item?.id);
   if (target?.id) {
@@ -383,10 +391,9 @@ export const querySampleRecordsTool: AgentTool = {
   },
   async execute(args, ctx) {
     try {
-      const appId = String(args.app_id || '').trim();
-      const apiName = String(args.object_api_name || '').trim();
-      if (!appId) return { error: 'app_id is required — get it from search_relevant_objects' };
-      if (!apiName) return { error: 'object_api_name is required' };
+      const parsed = objectToolArgs(args, 'app_id is required — get it from search_relevant_objects');
+      if ('error' in parsed) return parsed;
+      const { appId, apiName } = parsed;
       const pageSize = Math.min(Math.max(1, Number(args.page_size ?? 5)), 50);
 
       const body: Record<string, unknown> = {
@@ -426,10 +433,9 @@ export const countRecordsTool: AgentTool = {
   },
   async execute(args, ctx) {
     try {
-      const appId = String(args.app_id || '').trim();
-      const apiName = String(args.object_api_name || '').trim();
-      if (!appId) return { error: 'app_id is required' };
-      if (!apiName) return { error: 'object_api_name is required' };
+      const parsed = objectToolArgs(args);
+      if ('error' in parsed) return parsed;
+      const { appId, apiName } = parsed;
 
       const body: Record<string, unknown> = {
         pagination: { page_size: 1 },
@@ -468,10 +474,9 @@ export const createRecordTool: AgentTool = {
   },
   async execute(args, ctx) {
     try {
-      const appId = String(args.app_id || '').trim();
-      const apiName = String(args.object_api_name || '').trim();
-      if (!appId) return { error: 'app_id is required' };
-      if (!apiName) return { error: 'object_api_name is required' };
+      const parsed = objectToolArgs(args);
+      if ('error' in parsed) return parsed;
+      const { appId, apiName } = parsed;
       if (!args.values || typeof args.values !== 'object') return { error: 'values must be an object of field api_name → value' };
 
       const data = await cpRequestPost(

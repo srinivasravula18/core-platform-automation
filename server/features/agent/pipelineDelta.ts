@@ -2,7 +2,7 @@ import { inspectApplicationFlow } from './inspectionService';
 import { exploreAndVerifyPage } from './domExplorer';
 import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
-import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/targetData';
+import { fetchCorePlatformMetadataMap, renderMetadataForPrompt, type CorePlatformMetadataMap } from '../../ai/tools/targetData';
 import { collectMcpDomFacts } from './mcpDomFacts';
 import { withTimeout } from '../../ai/tools/mcpClient';
 import { recordEvidence } from './evidence/registry';
@@ -332,14 +332,8 @@ export async function runMultiContextInspectionPhase(input: {
   return inspections;
 }
 
-function metadataForPrompt(map?: CorePlatformMetadataMap | null): string {
-  if (!map?.objects?.length) return '';
-  const lines = map.objects.slice(0, 12).map((obj) => {
-    const fields = obj.fields.slice(0, 30).map((f) => `${f.api_name}:${f.label}${f.required ? ':required' : ''}${f.readonly ? ':readonly' : ''}`).join(', ');
-    return `- ${obj.api_name} (${obj.label}): ${fields}`;
-  });
-  return `Metadata fields expected to drive this UI:\n${lines.join('\n')}`;
-}
+const metadataForPrompt = (map?: CorePlatformMetadataMap | null): string =>
+  renderMetadataForPrompt(map, 'Metadata fields expected to drive this UI:');
 
 function fieldsFromInspection(ctx: any) {
   const fields: any[] = [];
