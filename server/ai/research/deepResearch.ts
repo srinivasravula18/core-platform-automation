@@ -17,6 +17,7 @@
  */
 import { z } from 'zod';
 import { getOrchestrator } from '../orchestrator';
+import { featureIntentTerms } from './searchTerms';
 
 const SEARCH_STOPWORDS = new Set([
   'what', 'which', 'how', 'many', 'much', 'does', 'the', 'are', 'and', 'for', 'from',
@@ -46,32 +47,12 @@ function phraseVariants(value: string): string[] {
   return Array.from(variants).filter((term) => term.length >= 2);
 }
 
-function intentExpansionTerms(words: string[]): string[] {
-  const tokenSet = new Set(words);
-  const terms = new Set<string>();
-  const hasAny = (...items: string[]) => items.some((item) => tokenSet.has(item));
-  if (hasAny('test', 'tests', 'case', 'cases', 'qa', 'coverage', 'scenario', 'scenarios', 'regression')) {
-    [
-      'validation', 'required', 'permission', 'permissions', 'role', 'roles', 'empty state',
-      'error state', 'edge case', 'create', 'new', 'delete', 'bulk', 'export', 'inline edit',
-    ].forEach((term) => terms.add(term));
-  }
-  if (hasAny('list', 'lists', 'table', 'tables', 'grid', 'grids', 'view', 'views')) {
-    [
-      'list view', 'list-view', 'list_view', 'list_views', 'table', 'grid', 'columns',
-      'column', 'field', 'fields', 'filter', 'filters', 'sort', 'sorting', 'search',
-      'pagination', 'toolbar', 'row actions', 'selected count', 'empty state',
-    ].forEach((term) => terms.add(term));
-  }
-  return Array.from(terms);
-}
-
 function questionTerms(question: string): string[] {
   const phrases = Array.from(String(question || '').matchAll(/["'`]([^"'`]{2,80})["'`]/g))
     .map((m) => m[1]);
   const words = searchTokens(question);
   const adjacent = words.slice(0, -1).map((word, index) => `${word} ${words[index + 1]}`);
-  const all = [...phrases, ...adjacent, ...words, ...intentExpansionTerms(words)].flatMap(phraseVariants);
+  const all = [...phrases, ...adjacent, ...words, ...featureIntentTerms(words, true)].flatMap(phraseVariants);
   return Array.from(new Set(all)).slice(0, 36);
 }
 

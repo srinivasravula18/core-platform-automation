@@ -34,6 +34,7 @@ import {
 } from './agent-runtime/responseCache';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
+import { featureIntentTerms } from './research/searchTerms';
 import { draftRequirement } from '../features/requirements/requirementService';
 import { expandByReferences } from './exploration/referenceGraph';
 import { urlHealthTool } from '../agent-core/registry/urlHealthTool';
@@ -203,8 +204,6 @@ function keywordsFor(q: string): string[] {
 function expandFeatureTerms(question: string): string[] {
   const words = keywordsFor(question);
   const extra = new Set<string>(words);
-  const wordSet = new Set(words);
-  const hasAny = (...items: string[]) => items.some((item) => wordSet.has(item));
   for (let i = 0; i < words.length - 1; i++) {
     const pair = [words[i], words[i + 1]];
     extra.add(pair.join(' '));
@@ -216,19 +215,7 @@ function expandFeatureTerms(question: string): string[] {
     if (word.endsWith('s') && word.length > 3) extra.add(word.slice(0, -1));
     else extra.add(`${word}s`);
   }
-  if (hasAny('test', 'tests', 'case', 'cases', 'qa', 'coverage', 'scenario', 'scenarios', 'regression')) {
-    [
-      'validation', 'required', 'permission', 'permissions', 'role', 'roles', 'empty state',
-      'error state', 'edge case', 'create', 'new', 'delete', 'bulk', 'export', 'inline edit',
-    ].forEach((term) => extra.add(term));
-  }
-  if (hasAny('list', 'lists', 'table', 'tables', 'grid', 'grids', 'view', 'views')) {
-    [
-      'list view', 'list-view', 'list_view', 'list_views', 'table', 'grid', 'columns',
-      'column', 'field', 'fields', 'filter', 'filters', 'sort', 'sorting', 'search',
-      'pagination', 'toolbar', 'row actions', 'selected count',
-    ].forEach((term) => extra.add(term));
-  }
+  featureIntentTerms(words).forEach((term) => extra.add(term));
   return Array.from(new Set(extra));
 }
 
