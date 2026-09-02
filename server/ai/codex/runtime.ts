@@ -12,6 +12,7 @@
 import { getAppServerClient, type CodexAccountInfo, type CodexModelInfo } from './appServerClient';
 import { streamSdkTurn } from './sdkClient';
 import { estimateCost, type ProviderUsage } from '../providers/types';
+import { codexMcpServers } from './mcpConfig';
 
 /** Runtime-reported value (for example low/medium/high/xhigh); kept open for future models. */
 export type CodexEffort = string;
@@ -169,22 +170,6 @@ export function isKnownCodexModel(id: string): boolean {
   return seenModelIds.has(id);
 }
 
-/** Codex config block for scoped MCP servers, in the CLI's `mcp_servers.<name>` shape. */
-function mcpServerConfig(servers?: Record<string, CodexMcpServer>): Record<string, unknown> | null {
-  if (!servers || !Object.keys(servers).length) return null;
-  const out: Record<string, unknown> = {};
-  for (const [name, server] of Object.entries(servers)) {
-    out[name] = {
-      url: server.url,
-      ...(server.bearerTokenEnvVar ? { bearer_token_env_var: server.bearerTokenEnvVar } : {}),
-      ...(server.allowedTools?.length ? { enabled_tools: server.allowedTools } : {}),
-      startup_timeout_sec: 30,
-      tool_timeout_sec: 300,
-    };
-  }
-  return out;
-}
-
 export class CodexRuntime {
   private config: CodexRuntimeConfig;
   /** Live turns keyed by cancel key, so Stop maps to a real interrupt. */
@@ -216,7 +201,7 @@ export class CodexRuntime {
   }
 
   private async threadParams(opts: CodexRunOptions) {
-    const mcp = mcpServerConfig(opts.mcpServers);
+    const mcp = codexMcpServers(opts.mcpServers);
     const model = await this.accountModel(opts.model);
     return {
       ...(model ? { model } : {}),
@@ -227,7 +212,7 @@ export class CodexRuntime {
       // Always send the table, even empty: Codex merges the user's own ~/.codex/config.toml, so a
       // developer's global server (a Playwright one drives a REAL browser window) would otherwise be
       // inherited by every agent turn. Sending it explicitly makes our scoped set the only one.
-      config: { mcp_servers: mcp ?? {}, web_search: opts.webSearchMode ?? 'disabled' },
+      config: { mcp_servers: mcp, web_search: opts.webSearchMode ?? 'disabled' },
       ...(opts.system ? { developerInstructions: opts.system } : {}),
     };
   }

@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import type { Input, ThreadEvent } from '@openai/codex-sdk';
 import { cleanCodexEnv } from './appServerClient';
 import type { CodexEffort, CodexMcpServer, CodexRunOptions, CodexRuntimeConfig } from './runtime';
+import { codexMcpServers } from './mcpConfig';
 
 const require = createRequire(join(process.cwd(), 'package.json'));
 const targets: Record<string, [string, string]> = {
@@ -49,18 +50,7 @@ type CodexConfigValue = string | number | boolean | CodexConfigValue[] | { [k: s
  * by every agent turn this app runs. Sending the table explicitly makes our scoped set the only one.
  */
 function mcpConfig(servers?: Record<string, CodexMcpServer>): Record<string, CodexConfigValue> {
-  const out: Record<string, CodexConfigValue> = {};
-  if (!servers) return { mcp_servers: out };
-  for (const [name, server] of Object.entries(servers)) {
-    out[name] = {
-      url: server.url,
-      ...(server.bearerTokenEnvVar ? { bearer_token_env_var: server.bearerTokenEnvVar } : {}),
-      ...(server.allowedTools?.length ? { enabled_tools: server.allowedTools } : {}),
-      startup_timeout_sec: 30,
-      tool_timeout_sec: 300,
-    };
-  }
-  return { mcp_servers: out };
+  return { mcp_servers: codexMcpServers(servers) as Record<string, CodexConfigValue> };
 }
 
 export async function* streamSdkTurn(

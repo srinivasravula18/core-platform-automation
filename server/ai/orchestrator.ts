@@ -172,23 +172,28 @@ export class AgentOrchestrator {
     return pipeline.systemPrompt;
   }
 
-  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; images?: ProviderImage[] }) {
+  private guardrail(input: string, hasHistory?: boolean): PipelineResult {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
-      userMessage: opts.userMessage || opts.prompt,
+      userMessage: input,
       workspaceId: this.workspaceId,
       userId: this.userId,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
-      hasHistory: opts.hasHistory,
+      hasHistory,
     } as PipelineInput);
+    if (pipeline.policyVerdict.kind === 'reject') {
+      const error: any = new Error(pipeline.policyVerdict.error);
+      error.status = pipeline.policyVerdict.code;
+      throw error;
+    }
+    return pipeline;
+  }
+
+  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; images?: ProviderImage[] }) {
+    const pipeline = this.guardrail(opts.userMessage || opts.prompt, opts.hasHistory);
     if (pipeline.policyVerdict.kind === 'respond') {
       return { shortCircuit: pipeline.policyVerdict.reply, object: undefined, usage: undefined, model: '', latencyMs: 0 };
-    }
-    if (pipeline.policyVerdict.kind === 'reject') {
-      const err: any = new Error(pipeline.policyVerdict.error);
-      err.status = pipeline.policyVerdict.code;
-      throw err;
     }
     const system = await this.assembleSystem(pipeline);
     // GLOBAL resilience: a provider can occasionally return off-schema JSON (esp. smaller /
@@ -246,22 +251,9 @@ export class AgentOrchestrator {
 
   // meta: prepared-invocation trace correlation (Conversational Runtime) — no routing logic here.
   async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; signal?: AbortSignal; meta?: { requestId?: string; capability?: string; manifestId?: string } }) {
-    const pipeline = runGuardrailPipeline({
-      agent: this.agent as any,
-      userMessage: opts.userMessage || opts.prompt,
-      workspaceId: this.workspaceId,
-      userId: this.userId,
-      providerName: this.provider.name,
-      modelName: (this.provider as any).defaultModel,
-      hasHistory: opts.hasHistory,
-    } as PipelineInput);
+    const pipeline = this.guardrail(opts.userMessage || opts.prompt, opts.hasHistory);
     if (pipeline.policyVerdict.kind === 'respond') {
       return { shortCircuit: pipeline.policyVerdict.reply, text: '', usage: undefined, model: '', latencyMs: 0 };
-    }
-    if (pipeline.policyVerdict.kind === 'reject') {
-      const err: any = new Error(pipeline.policyVerdict.error);
-      err.status = pipeline.policyVerdict.code;
-      throw err;
     }
     const system = await this.assembleSystem(pipeline);
     const result = await this.provider.generateText({
@@ -309,23 +301,10 @@ export class AgentOrchestrator {
   }
 
   async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; signal?: AbortSignal }): AsyncIterable<string> {
-    const pipeline = runGuardrailPipeline({
-      agent: this.agent as any,
-      userMessage: opts.userMessage || opts.prompt,
-      workspaceId: this.workspaceId,
-      userId: this.userId,
-      providerName: this.provider.name,
-      modelName: (this.provider as any).defaultModel,
-      hasHistory: opts.hasHistory,
-    } as PipelineInput);
+    const pipeline = this.guardrail(opts.userMessage || opts.prompt, opts.hasHistory);
     if (pipeline.policyVerdict.kind === 'respond') {
       yield pipeline.policyVerdict.reply;
       return;
-    }
-    if (pipeline.policyVerdict.kind === 'reject') {
-      const err: any = new Error(pipeline.policyVerdict.error);
-      err.status = pipeline.policyVerdict.code;
-      throw err;
     }
     const system = await this.assembleSystem(pipeline);
     if (!this.provider.generateTextStream) {
@@ -388,20 +367,7 @@ export class AgentOrchestrator {
   async runToolLoop(opts: RunToolLoopOptions): Promise<AgentRunResult> {
     const runtime = (this.provider as CodexProvider).codex;
     if (!runtime) throw new Error('The active runtime does not support tool loops.');
-    const pipeline = runGuardrailPipeline({
-      agent: this.agent as any,
-      userMessage: opts.guardrailInput || opts.task,
-      workspaceId: this.workspaceId,
-      userId: this.userId,
-      providerName: this.provider.name,
-      modelName: (this.provider as any).defaultModel,
-      hasHistory: true, // a tool loop is an ongoing task, never a bare one-liner to short-circuit
-    } as PipelineInput);
-    if (pipeline.policyVerdict.kind === 'reject') {
-      const err: any = new Error(pipeline.policyVerdict.error);
-      err.status = pipeline.policyVerdict.code;
-      throw err;
-    }
+    const pipeline = this.guardrail(opts.guardrailInput || opts.task, true);
     const task = sanitizedTaskForToolLoop(opts.task, opts.guardrailInput, pipeline.sanitizedInput);
     const system = opts.system || (await this.assembleSystem(pipeline));
     const ctx = opts.toolContext || {};

@@ -477,6 +477,32 @@ async function resolveConnToken(conn: CatalogConn, url: string): Promise<string 
   }
 }
 
+async function resolveCatalogClient(conn: CatalogConn, resolvedUrl?: string) {
+  const url = resolvedUrl || await resolveServiceBase(conn);
+  if (!url) return null;
+  const token = await resolveConnToken(conn, url);
+  if (!token) return null;
+  const contract = await resolveAppApiContract(url, token);
+  const path = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) =>
+    contract[role] ? fillApiPath(contract[role]!, vars) : '';
+  const request = async (method: 'GET' | 'POST', requestPath: string, body?: unknown) => {
+    const res = await timedFetch(`${url}${requestPath}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  };
+  return {
+    url,
+    contract,
+    path,
+    get: (requestPath: string) => request('GET', requestPath),
+    post: (requestPath: string, body: unknown) => request('POST', requestPath, body),
+  };
+}
+
 /**
  * API path: list objects per app through the access-enforced App Service — using THIS app's
  * own baseUrl + credentials (multi-tenant), falling back to the global env only for a single
@@ -484,24 +510,15 @@ async function resolveConnToken(conn: CatalogConn, url: string): Promise<string 
  */
 async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = await resolveServiceBase(conn);
-    if (!url) return [];
-    const token = await resolveConnToken(conn || {}, url);
-    if (!token) return [];
-    const contract = await resolveAppApiContract(url, token);
-    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
-    const authGet = async (path: string) => {
-      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
-    const apps = items(await authGet(cpath('listApps'))) as any[];
+    const client = await resolveCatalogClient(conn || {});
+    if (!client) return [];
+    const apps = items(await client.get(client.path('listApps'))) as any[];
     const out: Array<{ app: string; api_name: string; label: string }> = [];
     for (const app of Array.isArray(apps) ? apps : []) {
       const appId = app?.id;
       if (!appId) continue;
       try {
-        const objs = items(await authGet(cpath('listObjects', { appId: String(appId) }))) as any[];
+        const objs = items(await client.get(client.path('listObjects', { appId: String(appId) }))) as any[];
         for (const o of Array.isArray(objs) ? objs : []) {
           if (o?.api_name) out.push({ app: String(app.api_name || app.id), api_name: String(o.api_name), label: String(o.label || o.api_name) });
         }
@@ -522,15 +539,9 @@ export async function fetchCorePlatformApps(
   conn: CatalogConn,
 ): Promise<Array<{ id: string; label: string; api_name: string; app_prefix: string; parent_app_id: string | null }>> {
   try {
-    const url = await resolveServiceBase(conn);
-    if (!url) return [];
-    const token = await resolveConnToken(conn, url);
-    if (!token) return [];
-    const contract = await resolveAppApiContract(url, token);
-    if (!contract.listApps) return [];
-    const res = await timedFetch(`${url}${contract.listApps}`, { headers: { authorization: `Bearer ${token}` } });
-    if (!res.ok) return [];
-    const apps = items(await res.json()) as any[];
+    const client = await resolveCatalogClient(conn);
+    if (!client?.contract.listApps) return [];
+    const apps = items(await client.get(client.contract.listApps)) as any[];
     return (Array.isArray(apps) ? apps : [])
       .map((a) => ({
         id: String(a?.id || ''),
@@ -555,16 +566,11 @@ export async function fetchCorePlatformAppTabs(
   appId: string,
 ): Promise<Array<{ id: string; label: string; object_api_name: string }>> {
   try {
-    const url = await resolveServiceBase(conn);
     const app = String(appId || '').trim();
-    if (!url || !app) return [];
-    const token = await resolveConnToken(conn, url);
-    if (!token) return [];
-    const contract = await resolveAppApiContract(url, token);
-    if (!contract.listTabs) return [];
-    const res = await timedFetch(`${url}${fillApiPath(contract.listTabs, { appId: app })}`, { headers: { authorization: `Bearer ${token}` } });
-    if (!res.ok) return [];
-    const tabs = items(await res.json()) as any[];
+    if (!app) return [];
+    const client = await resolveCatalogClient(conn);
+    if (!client?.contract.listTabs) return [];
+    const tabs = items(await client.get(client.path('listTabs', { appId: app }))) as any[];
     return (Array.isArray(tabs) ? tabs : [])
       .map((t) => ({
         id: String(t?.id || ''),
@@ -650,15 +656,10 @@ async function fetchCorePlatformMetadataMapInner(conn: CatalogConn, appId: strin
     const cached = metadataMapCache.get(cacheKey);
     if (cached && Date.now() - cached.at < METADATA_MAP_CACHE_MS) return cached.value;
 
-    const token = await resolveConnToken(conn || {}, url);
-    if (!token) return null;
-    const contract = await resolveAppApiContract(url, token);
-    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
-    const authGet = async (path: string) => {
-      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
+    const client = await resolveCatalogClient(conn || {}, url);
+    if (!client) return null;
+    const cpath = client.path;
+    const authGet = client.get;
     const tryGet = async (path: string) => {
       if (!path) return null;
       try { return await authGet(path); } catch { return null; }
@@ -772,22 +773,11 @@ async function fetchCorePlatformMetadataMapInner(conn: CatalogConn, appId: strin
  */
 export async function fetchTestDataPack(conn: CatalogConn, hintText: string, objectHints: string[] = []): Promise<string> {
   try {
-    const url = await resolveServiceBase(conn);
-    if (!url) return '';
-    const token = await resolveConnToken(conn || {}, url);
-    if (!token) return '';
-    const contract = await resolveAppApiContract(url, token);
-    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
-    const authGet = async (path: string) => {
-      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
-    const authPost = async (path: string, body: unknown) => {
-      const res = await timedFetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
+    const client = await resolveCatalogClient(conn || {});
+    if (!client) return '';
+    const cpath = client.path;
+    const authGet = client.get;
+    const authPost = client.post;
     const text = String(hintText || '').toLowerCase();
     const explicit = new Set(objectHints.map((s) => String(s || '').toLowerCase().trim()).filter(Boolean));
     const apps = items(await authGet(cpath('listApps'))) as any[];
@@ -863,23 +853,13 @@ const UNIQUE_FIELD_RE = /(^|_)(name|code|email|number|no|id|title|key|slug)$|uni
  */
 export async function fetchObjectSchema(conn: CatalogConn, appId: string, objectHints: string[] = []): Promise<ObjectSchema[]> {
   try {
-    const url = await resolveServiceBase(conn);
     const app = String(appId || '').trim();
-    if (!url || !app) return [];
-    const token = await resolveConnToken(conn || {}, url);
-    if (!token) return [];
-    const contract = await resolveAppApiContract(url, token);
-    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
-    const authGet = async (path: string) => {
-      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
-    const authPost = async (path: string, body: unknown) => {
-      const res = await timedFetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    };
+    if (!app) return [];
+    const client = await resolveCatalogClient(conn || {});
+    if (!client) return [];
+    const cpath = client.path;
+    const authGet = client.get;
+    const authPost = client.post;
     const objs = items(await authGet(cpath('listObjects', { appId: app }))) as any[];
     const names = (Array.isArray(objs) ? objs : []).map((o) => String(o?.api_name || '')).filter(Boolean);
     // Resolve the RIGHT object the user is creating — not just an exact string equality (which misses the
