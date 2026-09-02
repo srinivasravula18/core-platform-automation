@@ -11,7 +11,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { readConnection } from './connection';
 import { openVitalsSession, vitalsQuery } from './db';
-import { runMetricQuery, resolutionWithData } from './metricsQuery';
+import { matcherSchema, runMetricQuery, resolutionWithData } from './metricsQuery';
 import { notify, type NotificationPayload } from './notifier';
 
 const generateId = (prefix: string) => {
@@ -20,12 +20,6 @@ const generateId = (prefix: string) => {
   for (let index = 0; index < 7; index += 1) suffix += chars[Math.floor(Math.random() * chars.length)];
   return `${prefix}${suffix}`;
 };
-
-const matcherSchema = z.object({
-  label: z.string().min(1).max(64),
-  op: z.enum(['eq', 'neq', 're']).default('eq'),
-  value: z.string().max(400),
-});
 
 export const ruleSchema = z.object({
   title: z.string().min(1).max(200),

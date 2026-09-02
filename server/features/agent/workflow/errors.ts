@@ -55,7 +55,7 @@ export interface WorkflowError {
   timestamp?: string;
 }
 
-const workflowErrorSchema = z.object({
+export const workflowErrorSchema = z.object({
   class: z.enum(Object.values(WORKFLOW_ERROR_CLASSES) as [WorkflowErrorClass, ...WorkflowErrorClass[]]),
   message: z.string(),
   retryable: z.boolean(),

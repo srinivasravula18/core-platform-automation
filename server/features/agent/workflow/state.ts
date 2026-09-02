@@ -20,7 +20,7 @@ import {
   type AgentExecutionPlan, type AgentTask, type AgentUsage, type ArtifactLineage, type FactRef,
   type HumanReviewObservation, type RegistrySnapshot,
 } from '../../../agent-core/orchestration/contracts';
-import { WORKFLOW_ERROR_CLASSES, type WorkflowError, type WorkflowErrorClass } from './errors';
+import { workflowErrorSchema, type WorkflowError } from './errors';
 import { COVERAGE_KINDS, type CoverageItem, type CoveragePlan } from '../compiler/coveragePlan';
 import type { RiskFactor, RiskScore } from '../graph/riskAnalysis';
 
@@ -450,17 +450,6 @@ export type WorkflowStateUpdate = typeof WorkflowStateAnnotation.Update;
 // ---------------------------------------------------------------------------------------------
 // Zod validation — for rehydrated checkpoints crossing the trust boundary (Section 17.1).
 // ---------------------------------------------------------------------------------------------
-
-/** Local mirror of errors.ts's private schema (that module doesn't export it) — kept in exact lockstep with WorkflowError. */
-const workflowErrorSchema = z.object({
-  class: z.enum(Object.values(WORKFLOW_ERROR_CLASSES) as [WorkflowErrorClass, ...WorkflowErrorClass[]]),
-  message: z.string(),
-  retryable: z.boolean(),
-  maxAttempts: z.number().int().nonnegative(),
-  details: z.record(z.string(), z.unknown()).optional(),
-  nodeName: z.string().optional(),
-  timestamp: z.string().optional(),
-}) satisfies z.ZodType<WorkflowError>;
 
 const credentialRefSchema = z.object({ websiteId: z.string(), role: z.string() });
 

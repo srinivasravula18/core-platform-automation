@@ -113,23 +113,27 @@ const notFound = (res: Response, message: string) => {
   res.status(404).json({ error: 'not_found', message });
 };
 
+const credentialControlSchema = z.object({
+  kind: z.literal('credential'),
+  websiteId: z.string().min(1).max(120),
+  loginId: z.string().max(120).optional(),
+  baseUrlOverride: z.string().url().max(500).optional(),
+});
+
+const inlineControlSchema = z.object({
+  kind: z.literal('inline'),
+  baseUrl: z.string().url().max(500),
+  username: z.string().min(1).max(200),
+  password: z.string().max(500),
+});
+
 const connectionSchema = z.object({
   databaseUrl: z.string().max(2_000).nullable().optional(),
   control: z
     .union([
       // Preferred: point at a login already stored under Settings → Credentials.
-      z.object({
-        kind: z.literal('credential'),
-        websiteId: z.string().min(1).max(120),
-        loginId: z.string().max(120).optional(),
-        baseUrlOverride: z.string().url().max(500).optional(),
-      }),
-      z.object({
-        kind: z.literal('inline'),
-        baseUrl: z.string().url().max(500),
-        username: z.string().min(1).max(200),
-        password: z.string().max(500).optional(),
-      }),
+      credentialControlSchema,
+      inlineControlSchema.partial({ password: true }),
     ])
     .nullable()
     .optional(),
@@ -147,18 +151,8 @@ const probeSchema = z.object({
   databaseUrl: z.string().max(2_000).optional(),
   control: z
     .union([
-      z.object({
-        kind: z.literal('credential'),
-        websiteId: z.string().min(1).max(120),
-        loginId: z.string().max(120).optional(),
-        baseUrlOverride: z.string().url().max(500).optional(),
-      }),
-      z.object({
-        kind: z.literal('inline'),
-        baseUrl: z.string().url().max(500),
-        username: z.string().min(1).max(200),
-        password: z.string().max(500),
-      }),
+      credentialControlSchema,
+      inlineControlSchema,
     ])
     .optional(),
 });

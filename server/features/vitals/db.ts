@@ -78,6 +78,16 @@ const describeMissingStore = (database: string | null, found: number) =>
     ? `Connected to "${database}", but it holds no observability tables. Point Vitals at the database the monitored product writes telemetry to — the one its App Service migrates.`
     : `Connected to "${database}", but its obs schema is incomplete (${found} of ${EXPECTED_OBS_TABLES} expected tables). Run the monitored product's migrations against it, or point Vitals at the database that has them.`;
 
+const missingStoreStatus = (database: string | null, found: number): VitalsStatus => ({
+  configured: true,
+  reachable: true,
+  message: describeMissingStore(database, found),
+  database,
+  schemaPresent: false,
+  oldestSampleAt: null,
+  newestSampleAt: null,
+});
+
 /** What the console shows instead of nine empty pages when the store cannot be read. */
 export async function status(): Promise<VitalsStatus> {
   if (!(await isConfigured())) {
@@ -99,15 +109,7 @@ export async function status(): Promise<VitalsStatus> {
                   and table_name in ('metric_sample_10s','metric_sample_1m','metric_sample_1h','issue','trace','dashboard','annotation','alert_rule'))::int as tables_present`,
     );
     if (!info || info.tables_present < EXPECTED_OBS_TABLES) {
-      return {
-        configured: true,
-        reachable: true,
-        message: describeMissingStore(info?.database ?? null, info?.tables_present ?? 0),
-        database: info?.database ?? null,
-        schemaPresent: false,
-        oldestSampleAt: null,
-        newestSampleAt: null,
-      };
+      return missingStoreStatus(info?.database ?? null, info?.tables_present ?? 0);
     }
     const [span] = await vitalsQuery<{ oldest: Date | null; newest: Date | null }>(
       `select min(bucket_at) as oldest, max(bucket_at) as newest from obs.metric_sample_1h`,
@@ -149,15 +151,7 @@ export async function probeDatabase(databaseUrl: string): Promise<VitalsStatus> 
     );
     const info = rows[0];
     if (!info || info.tables_present < EXPECTED_OBS_TABLES) {
-      return {
-        configured: true,
-        reachable: true,
-        message: describeMissingStore(info?.database ?? null, info?.tables_present ?? 0),
-        database: info?.database ?? null,
-        schemaPresent: false,
-        oldestSampleAt: null,
-        newestSampleAt: null,
-      };
+      return missingStoreStatus(info?.database ?? null, info?.tables_present ?? 0);
     }
     const span = await probe.query<{ oldest: Date | null; newest: Date | null }>(
       `select min(bucket_at) as oldest, max(bucket_at) as newest from obs.metric_sample_1h`,
