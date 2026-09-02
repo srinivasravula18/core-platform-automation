@@ -9,15 +9,10 @@ import { runSelectorRegistryPhase, renderSelectorRegistryForPrompt } from '../se
 import { getRunRegistry } from '../server/features/agent/evidence/registry';
 import { recordEvidence } from '../server/features/agent/evidence/registry';
 import { PROVENANCE } from '../server/features/agent/evidence/provenance';
+import { readProbeCredentials } from './probeCredentials';
 
 // All deployment-specific config comes from the environment — nothing hardcoded.
-const TARGET_URL = process.env.TARGET_URL || '';
-const USER = process.env.PROBE_USER || '';
-const PASS = process.env.PROBE_PASS || '';
-if (!TARGET_URL || !USER || !PASS) {
-  console.error('Set TARGET_URL, PROBE_USER, PROBE_PASS in the environment before running.');
-  process.exit(1);
-}
+const { targetUrl: TARGET_URL, username: USER, password: PASS } = readProbeCredentials();
 
 async function main() {
   console.log(`TARGET_URL = ${TARGET_URL}  user=${USER}\n`);

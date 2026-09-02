@@ -46,8 +46,11 @@ test('legacy script schemas reuse structured-output string normalization', () =>
 
 test('metadata prompt rendering supports legacy and graph headings from one formatter', () => {
   const metadata = {
+    app_id: 'app-1',
+    fetched_at: '2026-09-02T00:00:00.000Z',
+    schema_version: '1',
     objects: [{
-      api_name: 'account', label: 'Account', fields: [{
+      object_id: 'object-1', api_name: 'account', label: 'Account', fields: [{
         api_name: 'name', label: 'Name', type: 'string', required: true, readonly: false,
         permission_sensitive: false, appears_in_layouts: [], appears_in_list_views: [], appears_in_forms: [],
       }],

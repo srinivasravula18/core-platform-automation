@@ -278,6 +278,16 @@ async function handleTool(name: string, args: any): Promise<any> {
 
 /* ─── Tool definitions ────────────────────────────────────────────────────── */
 
+const objectInputSchema = (properties: Record<string, unknown> = {}, extraRequired: string[] = []) => ({
+  type: 'object' as const,
+  properties: {
+    app_id: { type: 'string', description: 'App UUID.' },
+    object_api_name: { type: 'string', description: 'The api_name of the object.' },
+    ...properties,
+  },
+  required: ['app_id', 'object_api_name', ...extraRequired],
+});
+
 const TOOLS = [
   {
     name: 'list_objects',
@@ -323,28 +333,12 @@ const TOOLS = [
   {
     name: 'count_records',
     description: 'Return the exact access-enforced count of records in a Core Platform object, with optional filters.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        app_id: { type: 'string', description: 'App UUID.' },
-        object_api_name: { type: 'string', description: 'The api_name of the object.' },
-        filters: { type: 'object', description: 'Optional filter tree.' },
-      },
-      required: ['app_id', 'object_api_name'],
-    },
+    inputSchema: objectInputSchema({ filters: { type: 'object', description: 'Optional filter tree.' } }),
   },
   {
     name: 'create_record',
     description: 'Create a record in a Core Platform object. Subject to user permissions and field validations enforced by App Service.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        app_id: { type: 'string', description: 'App UUID.' },
-        object_api_name: { type: 'string', description: 'The api_name of the object to create a record in.' },
-        values: { type: 'object', description: 'Field api_name → value map for the new record.' },
-      },
-      required: ['app_id', 'object_api_name', 'values'],
-    },
+    inputSchema: objectInputSchema({ values: { type: 'object', description: 'Field api_name → value map for the new record.' } }, ['values']),
   },
   {
     name: 'call_api',

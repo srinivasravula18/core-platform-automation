@@ -7,15 +7,10 @@
  *   PROBE_USER=<user> PROBE_PASS=<password> npx tsx scripts/probe-capture-zero.ts
  */
 import { launchChromiumWithRetry } from '../server/shared/browser';
+import { readProbeCredentials } from './probeCredentials';
 
 // All deployment-specific config comes from the environment — nothing hardcoded.
-const TARGET_URL = process.env.TARGET_URL || '';
-const USER = process.env.PROBE_USER || '';
-const PASS = process.env.PROBE_PASS || '';
-if (!TARGET_URL || !USER || !PASS) {
-  console.error('Set TARGET_URL, PROBE_USER, PROBE_PASS in the environment before running.');
-  process.exit(1);
-}
+const { targetUrl: TARGET_URL, username: USER, password: PASS } = readProbeCredentials();
 const line = () => console.log('─'.repeat(72));
 
 async function main() {
