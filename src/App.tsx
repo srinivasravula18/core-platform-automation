@@ -465,6 +465,8 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
               <Link
                 role="menuitem"
                 to="/documentation"
+                target="_blank"
+                rel="noopener noreferrer"
                 onClick={() => setProfileOpen(false)}
                 className="mt-1 flex items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
               >
