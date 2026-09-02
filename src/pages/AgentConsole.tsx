@@ -579,7 +579,10 @@ const AppAskCard = memo(function AppAskCard({
   const [tab, setTab] = useState('');
   const selected = turn.apps.find((a) => a.id === appId) || null;
   const isAdmin = turn.platform === 'ADMIN';
-  const label = isAdmin
+  const isPlatform = turn.apps.some((a) => Boolean(a.baseUrl));
+  const label = isPlatform
+    ? `Which platform should I test for ${turn.surface}?`
+    : isAdmin
     ? `Which admin navigation should I test in ${turn.surface}?`
     : `Which app should I test in ${turn.surface}?${turn.apps.some((a) => a.tabs.length) ? ' Optionally pick a tab to focus on.' : ''}`;
   // Group options into optgroups when the server sends groups (the admin side-nav sections).
@@ -596,7 +599,7 @@ const AppAskCard = memo(function AppAskCard({
             <select
               value={appId}
               onChange={(e) => { setAppId(e.target.value); setTab(''); }}
-              aria-label={isAdmin ? 'Admin navigation' : 'Application'}
+              aria-label={isPlatform ? 'Test platform' : isAdmin ? 'Admin navigation' : 'Application'}
               className="min-w-0 max-w-[260px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             >
               {groups.length
@@ -1841,8 +1844,8 @@ export default function AgentConsole() {
   //   with the explicit target (RUNTIME: applicationId/Name; ADMIN: moduleId/Name).
   const proceedAppAsk = useCallback(async (turn: AppAskTurn, choice: { appId: string; appName: string; tab?: string }) => {
     const base = turn.runArgs as any;
-    // A no-target ask offers real base URLs. Carry the picked one back as app_url, or the run start
-    // would re-ask forever — the choice alone never told the server WHICH url to run against.
+    // A no-target ask offers platforms from Settings. Carry the picked URL back as app_url; it is
+    // not an application choice — the server discovers the real apps inside that platform next.
     const pickedUrl = turn.apps.find((a) => a.id === choice.appId)?.baseUrl || '';
     if (pickedUrl) base.app_url = pickedUrl;
     const focus = turn.platform === 'ADMIN'
@@ -1851,7 +1854,7 @@ export default function AgentConsole() {
         ? ' — across all apps'
         : ` — target the ${choice.appName} app${choice.tab ? `, focus on the ${choice.tab} tab` : ''}`;
     // Remember the choice for the WHOLE request chain (understanding → review card → run start).
-    if (choice.appId && choice.appId !== '__all_apps__') {
+    if (!pickedUrl && choice.appId && choice.appId !== '__all_apps__') {
       targetChoiceRef.current = turn.platform === 'ADMIN'
         ? { moduleId: choice.appId, moduleName: choice.appName }
         : { applicationId: choice.appId, applicationName: choice.appName };
@@ -1878,7 +1881,9 @@ export default function AgentConsole() {
     replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: `Starting the run for ${choice.appName}${choice.tab ? ` · ${choice.tab}` : ''}...` });
     const prompt = choice.tab ? `${base.prompt} — focus on the ${choice.tab} tab` : base.prompt;
     try {
-      if (turn.platform === 'ADMIN') {
+      if (pickedUrl) {
+        await startDeepRun({ ...base, thinkingId: turn.id, prompt });
+      } else if (turn.platform === 'ADMIN') {
         await startDeepRun({ ...base, thinkingId: turn.id, prompt, moduleId: choice.appId, moduleName: choice.appName });
       } else {
         await startDeepRun({ ...base, thinkingId: turn.id, prompt, applicationId: choice.appId, applicationName: choice.appName });

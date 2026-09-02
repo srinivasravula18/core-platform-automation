@@ -336,7 +336,7 @@ function authNote(hasStoredCredentials?: boolean): string {
 function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string {
   const countLine = input.requestedCaseCount > 0
     ? `Generate exactly ${input.requestedCaseCount} test case(s).`
-    : 'Generate at least 5 distinct test cases, and more when the evidenced behavior supports them. Cover a distinct evidenced behavior per case (happy path, each validation rule, negative paths, observed disabled/empty/permission states); never pad with duplicates or invented behavior.';
+    : 'Generate as many distinct grounded test cases as the evidence supports. Aim for at least 5 when possible, but never pad with duplicates or invented behavior.';
   const avoid = input.avoidCaseTitles?.length
     ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
     : '';
@@ -430,9 +430,6 @@ function validateCases(wire: unknown): { value: AuthoredTestCase[] | null; issue
 export function caseCountIssues(cases: unknown[], requestedCaseCount: number): string[] {
   if (requestedCaseCount > 0 && cases.length !== requestedCaseCount) {
     return [`Expected exactly ${requestedCaseCount} test case(s), but received ${cases.length}.`];
-  }
-  if (requestedCaseCount === 0 && cases.length < 5) {
-    return [`Auto mode requires at least 5 distinct grounded test cases, but received ${cases.length}.`];
   }
   return [];
 }

@@ -137,6 +137,10 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
     ? { line: `Failed — ${String(discoveryError.message).slice(0, 160)}`, status: 'failed' }
     : { line: 'Skipped — discovery did not complete.', status: undefined };
   const authSkip = discoveryError?.class === 'AUTH_FAILURE' ? inspectorSkip : { line: 'Skipped — discovery did not complete.', status: undefined };
+  const authoringError = [...(state.errors ?? [])].reverse().find((e) => e?.nodeName === 'generate_cases' || e?.nodeName === 'author_cases');
+  const authoringSkip = authoringError
+    ? { line: `Failed — ${String(authoringError.message).slice(0, 160)}`, status: 'failed' }
+    : { line: 'Skipped — the run stopped before case authoring (see the evidence gate reasons).', status: undefined };
   const chips: Array<{ agent: string; stages: string[]; done: boolean; runningLine: string; skipLine: string; skipStatus?: string }> = [
     { agent: 'MetadataFetch', stages: ['load_context'], done: Boolean(state.context?.metadata),
       runningLine: 'Fetching application metadata…', skipLine: 'Skipped — no application metadata available for this mission (normal for Admin-platform runs).' },
@@ -147,7 +151,7 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
     { agent: 'SelectorRegistry', stages: ['discover_and_ground'], done: discoveryDone,
       runningLine: 'Verifying selector uniqueness/visibility…', skipLine: 'Skipped — no verified selector registry was built.' },
     { agent: 'TestGenerationAgent', stages: ['author_cases'], done: (state.cases?.length ?? 0) > 0,
-      runningLine: 'Authoring test cases from verified evidence — the longest step (roughly 1-2 minutes at the selected model).', skipLine: 'Skipped — the run stopped before case authoring (see the evidence gate reasons).' },
+      runningLine: 'Authoring test cases from verified evidence — the longest step (roughly 1-2 minutes at the selected model).', skipLine: authoringSkip.line, skipStatus: authoringSkip.status },
     { agent: 'PlaywrightAgent', stages: ['author_plans', 'compile_and_validate'], done: compileRan || Object.keys(state.plansByCase ?? {}).length > 0,
       runningLine: 'Writing per-case plans and compiling scripts…', skipLine: 'Skipped — the run stopped before script authoring.' },
     { agent: 'SelectorVerifier', stages: ['compile_and_validate'], done: compileRan,

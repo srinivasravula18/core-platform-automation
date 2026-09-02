@@ -5833,7 +5833,7 @@ Rules:
     if (!resolvedTargetUrl) {
       return res.json(namedHits.length > 1
         ? targetPicker(`You named a target with ${namedHits.length} configured URLs — which one?`, '', namedHits)
-        : targetPicker('Which target should I test? Pick one and I will run against it.'));
+        : targetPicker('Which platform should I test? Pick one and I will discover its apps.'));
     }
     // Pre-flight the target. Discovery would otherwise spend a minute failing and report
     // "requires a resolved mission with targetUrl", which blames the wrong thing — the URL is fine,
