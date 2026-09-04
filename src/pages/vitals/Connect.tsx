@@ -9,7 +9,7 @@
  * when a new one is typed.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Database, PlayCircle, RefreshCw, ShieldCheck, Terminal } from 'lucide-react';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
 import { cn } from '@/src/lib/utils';
@@ -18,6 +18,27 @@ import { vitals, type ConnectionResponse, type ControlStatus, type CredentialOpt
 import { formatDateTime } from '@/src/lib/vitals/format';
 
 type ProbeState = { store: VitalsStatus | null; control: ControlStatus | null } | null;
+
+function ConnectionActions({ busy, savingKey, saveLabel, onTest, onSave, children }: {
+  busy: string;
+  savingKey: string;
+  saveLabel: string;
+  onTest: () => void;
+  onSave: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <button type="button" onClick={onTest} disabled={busy !== ''} className={buttonClass('secondary')}>
+        {busy === 'test' ? 'Testing…' : 'Test connection'}
+      </button>
+      <button type="button" onClick={onSave} disabled={busy !== ''} className={buttonClass('primary')}>
+        {busy === savingKey ? 'Saving…' : saveLabel}
+      </button>
+      {children}
+    </div>
+  );
+}
 
 const sourceNote = (source: 'stored' | 'environment' | 'none') =>
   source === 'environment' ? 'Currently coming from an environment variable. Saving here takes over.' : undefined;
@@ -218,14 +239,7 @@ export default function VitalsConnect() {
               />
             </Field>
             {probe?.store && <Verdict ok={probe.store.reachable && probe.store.schemaPresent} message={probe.store.message} />}
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => void testCandidate()} disabled={busy !== ''} className={buttonClass('secondary')}>
-                {busy === 'test' ? 'Testing…' : 'Test connection'}
-              </button>
-              <button type="button" onClick={() => void saveStore()} disabled={busy !== ''} className={buttonClass('primary')}>
-                {busy === 'store' ? 'Saving…' : 'Save store'}
-              </button>
-            </div>
+            <ConnectionActions busy={busy} savingKey="store" saveLabel="Save store" onTest={() => void testCandidate()} onSave={() => void saveStore()} />
           </div>
         </Card>
 
@@ -339,19 +353,13 @@ export default function VitalsConnect() {
               </>
             )}
             {probe?.control && <Verdict ok={probe.control.reachable} message={probe.control.message} />}
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => void testCandidate()} disabled={busy !== ''} className={buttonClass('secondary')}>
-                {busy === 'test' ? 'Testing…' : 'Test connection'}
-              </button>
-              <button type="button" onClick={() => void saveControl()} disabled={busy !== ''} className={buttonClass('primary')}>
-                {busy === 'control' ? 'Saving…' : 'Save control plane'}
-              </button>
+            <ConnectionActions busy={busy} savingKey="control" saveLabel="Save control plane" onTest={() => void testCandidate()} onSave={() => void saveControl()}>
               {connection?.control.configured && (
                 <button type="button" onClick={() => void disconnectControl()} disabled={busy !== ''} className={buttonClass('danger')}>
                   Disconnect
                 </button>
               )}
-            </div>
+            </ConnectionActions>
           </div>
         </Card>
 

@@ -75,6 +75,13 @@ function requirementAgentContext(req: any, scope: ReturnType<typeof reqScope>, s
   };
 }
 
+async function resolveRequirementContext(req: any, query: string) {
+  const scope = reqScope(req);
+  const surface = surfaceForScope(scope);
+  const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
+  return { scope, surface, applicationContextPrompt };
+}
+
 export function registerRequirementRoutes(app: Express) {
   app.post('/api/requirements/draft/stream', async (req, res) => {
     const query = String(req.body?.query || '').trim();
@@ -89,19 +96,17 @@ export function registerRequirementRoutes(app: Express) {
     }, 10000);
 
     try {
-      const scope = reqScope(req);
+      const [{ scope, surface, applicationContextPrompt }, conversationContextPrompt] = await Promise.all([
+        resolveRequirementContext(req, query),
+        conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
+      ]);
       let index = 0;
       const onProgress = (text: string) => {
         send({ type: 'step', index: index++, text });
       };
       onProgress('Starting requirement drafting agent...');
-      const surface = surfaceForScope(scope);
       if (surface.source === 'fingerprint') onProgress(`Resolved the chosen URL to code root(s): ${surface.scopePaths.join(', ')}.`);
       else if (surface.source === 'unscoped' && surface.baseUrl) onProgress('Could not localize the surface from the URL — grounding across the whole repository.');
-      const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
-        applicationContextPromptForScope(scope, surface, query).catch(() => ''),
-        conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
-      ]);
       const result = await draftRequirement(query, {
         ...requirementAgentContext(req, scope, surface, applicationContextPrompt),
         conversationContextPrompt,
@@ -122,10 +127,8 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
-      const scope = reqScope(req);
-      const surface = surfaceForScope(scope);
-      const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
-        applicationContextPromptForScope(scope, surface, query).catch(() => ''),
+      const [{ scope, surface, applicationContextPrompt }, conversationContextPrompt] = await Promise.all([
+        resolveRequirementContext(req, query),
         conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
       ]);
       const result = await draftRequirement(query, { ...requirementAgentContext(req, scope, surface, applicationContextPrompt), conversationContextPrompt, requirementsOnly: true });
@@ -150,10 +153,8 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
-      const scope = reqScope(req);
+      const { scope, surface, applicationContextPrompt } = await resolveRequirementContext(req, query);
       const requirementsOnly = req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only';
-      const surface = surfaceForScope(scope);
-      const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
       const result = await discoverRequirement(query, { ...requirementAgentContext(req, scope, surface, applicationContextPrompt), requirementsOnly });
       res.json(result);
     } catch (error: any) {
@@ -170,9 +171,7 @@ export function registerRequirementRoutes(app: Express) {
     const heartbeat = setInterval(() => send({ type: 'heartbeat', at: Date.now() }), 10000);
 
     try {
-      const scope = reqScope(req);
-      const surface = surfaceForScope(scope);
-      const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
+      const { scope, surface, applicationContextPrompt } = await resolveRequirementContext(req, query);
       const result = await discoverRequirement(query, {
         ...requirementAgentContext(req, scope, surface, applicationContextPrompt),
         requirementsOnly: req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only',

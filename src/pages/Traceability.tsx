@@ -5,15 +5,9 @@ import ExportMenu from '../components/ExportMenu';
 import EditableCaseCard from '../components/EditableCaseCard';
 import { normalizeTestCaseTypes } from '@/core/shared/testCaseTypes';
 import { useUrlState } from '@/src/lib/useUrlState';
-import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
-
-const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
-  covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
-  partial: { label: 'Partial', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  'gaps-proposed': { label: 'Gaps Proposed', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-400' },
-  none: { label: 'No Coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
-  unknown: { label: 'Unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
-};
+import { nextSort, sortRows, SortableHeaders, type SortState } from '@/src/components/DataTable/sortable';
+import { COVERAGE_BADGE } from '@/src/lib/coverageBadge';
+import { fetchRequirementsList } from '@/src/lib/requirementsApi';
 
 // #13 — render a requirement's structured fields (business rules, admin/keystone behavior) as
 // headings + bullets rather than a single dense paragraph. Falls back to nothing if unstructured.
@@ -58,9 +52,8 @@ export default function Traceability() {
   const [sort, setSort] = useState<SortState>({ key: 'requirement', direction: 'ascending' });
 
   const fetchRequirements = useCallback(() => {
-    fetch('/api/requirements')
-      .then((r) => r.json())
-      .then((data) => { setRequirements(Array.isArray(data) ? data : []); setLoading(false); })
+    fetchRequirementsList()
+      .then((data) => { setRequirements(data); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
 
@@ -224,11 +217,13 @@ export default function Traceability() {
             <table className="w-full min-w-[720px] text-left text-sm">
               <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
                 <tr>
-                  <SortableHeader label="Requirement" column="requirement" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5" />
-                  <SortableHeader label="Coverage" column="coverage" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-2.5" />
-                  <SortableHeader label="Linked Case" column="case" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="px-4 py-2.5" />
-                  <SortableHeader label="Priority" column="priority" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-24 px-4 py-2.5" />
-                  <SortableHeader label="Case Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-28 px-4 py-2.5" />
+                  <SortableHeaders sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} columns={[
+                    { label: 'Requirement', column: 'requirement', className: 'px-4 py-2.5' },
+                    { label: 'Coverage', column: 'coverage', className: 'w-32 px-4 py-2.5' },
+                    { label: 'Linked Case', column: 'case', className: 'px-4 py-2.5' },
+                    { label: 'Priority', column: 'priority', className: 'w-24 px-4 py-2.5' },
+                    { label: 'Case Status', column: 'status', className: 'w-28 px-4 py-2.5' },
+                  ]} />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Sparkles, Loader2, Target, ArrowRight, Trash2, TestTube2 } from 'lucide-react';
+import { Sparkles, Loader2, Target, ArrowRight, Trash2, TestTube2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -13,19 +13,15 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
+import { BulkDeleteButton } from '@/src/components/BulkDeleteButton';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { readSseJson } from '@/src/lib/sse';
-import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
+import { nextSort, sortRows, type SortState } from '@/src/components/DataTable/sortable';
+import { COVERAGE_BADGE } from '@/src/lib/coverageBadge';
+import { fetchRequirementsList } from '@/src/lib/requirementsApi';
+import { ListSearchInput, SelectableTableHead } from '@/src/components/ListControls';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
-
-const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
-  covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
-  partial: { label: 'Partial', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  'gaps-proposed': { label: 'Gaps Proposed', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-400' },
-  none: { label: 'No Coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
-  unknown: { label: 'Unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
-};
 
 export default function Requirements() {
   const [requirements, setRequirements] = useState<any[]>([]);
@@ -47,9 +43,8 @@ export default function Requirements() {
   const inputClass = 'w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]';
 
   const fetchRequirements = () => {
-    fetch('/api/requirements')
-      .then((r) => r.json())
-      .then((data) => { setRequirements(Array.isArray(data) ? data : []); setLoading(false); })
+    fetchRequirementsList()
+      .then((data) => { setRequirements(data); setLoading(false); })
       .catch(() => setLoading(false));
   };
 
@@ -221,42 +216,25 @@ export default function Requirements() {
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex items-center gap-3 flex-shrink-0">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search requirements…"
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
-            />
-          </div>
+          <ListSearchInput value={searchTerm} onChange={setSearchTerm} placeholder="Search requirements…" />
           <TimeSortSelect value={timeSort} onChange={setTimeSort} />
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           {bulk.selectedCount > 0 && can('requirements:delete') && (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
-            </button>
+            <BulkDeleteButton count={bulk.selectedCount} busy={bulk.busy} onDelete={bulk.deleteSelected} className="ml-auto" />
           )}
         </div>
 
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
-              <tr className="text-[var(--text-muted)]">
-                <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(sortedRequirements.map((r) => r.id))} onChange={() => bulk.toggleAll(sortedRequirements.map((r) => r.id))} />
-                </th>
-                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
-                <SortableHeader label="Title" column="title" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
-                <SortableHeader label="Feature Query" column="query" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
-                <SortableHeader label="Coverage" column="coverage" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-36" />
-                <SortableHeader label="Cases" column="cases" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
-                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-28" />
-                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
-                <th className="font-medium py-3 px-4 w-16 text-right">Actions</th>
-              </tr>
-            </thead>
+            <SelectableTableHead allSelected={bulk.allSelected(sortedRequirements.map((item) => item.id))} onToggleAll={() => bulk.toggleAll(sortedRequirements.map((item) => item.id))} sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} columns={[
+                  { label: 'ID', column: 'id', className: 'font-medium py-3 px-4 w-28' },
+                  { label: 'Title', column: 'title', className: 'font-medium py-3 px-4' },
+                  { label: 'Feature Query', column: 'query', className: 'font-medium py-3 px-4' },
+                  { label: 'Coverage', column: 'coverage', className: 'font-medium py-3 px-4 w-36' },
+                  { label: 'Cases', column: 'cases', className: 'font-medium py-3 px-4 w-44' },
+                  { label: 'Status', column: 'status', className: 'font-medium py-3 px-4 w-28' },
+                  { label: 'Updated', column: 'updated', className: 'font-medium py-3 px-4 w-32' },
+                ]} actionsClassName="w-16 px-4 py-3 text-right font-medium" />
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
               {!loading && filtered.length === 0 && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Create one with the agent above.</td></tr>)}

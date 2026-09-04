@@ -111,6 +111,8 @@ const SEED_FIELDS = [
   // authoring node with GOAL + DOM only, so it authored generic cases that ignored the agreed scope.
   'approvedUnderstanding', 'priorGrounding', 'conversationMemory',
   'requestedModel', 'requestedEffort', 'caseCountPrompt',
+  // Bounded machine-integration identity only; tokens and credentials are never stored here.
+  'integrationMetadata',
 ] as const;
 
 const MAX_PROJECTED_MESSAGES = 20;
@@ -284,6 +286,12 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
       }
       return seed?.execution_result ?? null;
     })(),
+    // Bounded classification only: integrations need retryability without receiving raw error details.
+    workflow_error_classes: (state.errors ?? []).slice(-10).map((error) => ({
+      errorClass: error.class,
+      nodeName: error.nodeName,
+      retryable: error.retryable,
+    })),
     // Release-intelligence report (AGENT_ANALYST) — set on the seed by the runAnalyst terminal hook.
     analyst_report: seed?.analyst_report ?? null,
     all_generated_cases: seed?.all_generated_cases,

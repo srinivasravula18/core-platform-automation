@@ -30,9 +30,8 @@ export function allCasesHaveRunTags(cases: any[], caseIds: string[]): boolean {
   return matched.length === selected.size && matched.every((testCase) => normalizeTags(Array.isArray(testCase.tags) ? testCase.tags : []).length > 0);
 }
 
-export function casesForPlan(cases: any[], suites: any[], planId: string): any[] {
-  if (!planId) return cases;
-  const suiteIds = new Set(suites.filter((suite) => suitePlanIds(suite).includes(planId)).map((suite) => suite.id));
+function descendantSuiteIds(suites: any[], roots: Iterable<string>): Set<string> {
+  const suiteIds = new Set(roots);
   let changed = true;
   while (changed) {
     changed = false;
@@ -43,23 +42,19 @@ export function casesForPlan(cases: any[], suites: any[], planId: string): any[]
       }
     }
   }
+  return suiteIds;
+}
+
+export function casesForPlan(cases: any[], suites: any[], planId: string): any[] {
+  if (!planId) return cases;
+  const suiteIds = descendantSuiteIds(suites, suites.filter((suite) => suitePlanIds(suite).includes(planId)).map((suite) => suite.id));
   return cases.filter((testCase) =>
     casePlanIds(testCase).includes(planId) || caseSuiteIds(testCase).some((id) => suiteIds.has(id)),
   );
 }
 
 export function casesForSuite(cases: any[], suites: any[], suiteId: string): any[] {
-  const suiteIds = new Set([suiteId]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const suite of suites) {
-      if (!suiteIds.has(suite.id) && suiteParentIds(suite).some((id) => suiteIds.has(id))) {
-        suiteIds.add(suite.id);
-        changed = true;
-      }
-    }
-  }
+  const suiteIds = descendantSuiteIds(suites, [suiteId]);
   return cases.filter((testCase) => caseSuiteIds(testCase).some((id) => suiteIds.has(id)));
 }
 

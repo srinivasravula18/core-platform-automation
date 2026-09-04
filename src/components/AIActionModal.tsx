@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react';
-import { Mic, Send, Bot, Loader2, Sparkles, Check, X, RefreshCw } from 'lucide-react';
+import { useState } from 'react';
+import { Send, Bot, Loader2, Sparkles, Check, X, RefreshCw } from 'lucide-react';
 import { Modal } from './Modal';
-import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { useSpeechInput } from '@/src/lib/useSpeechToText';
+import { SpeechInputButton } from '@/src/components/SpeechInputButton';
 import { showAlert } from '@/src/lib/dialog';
 import { FolderSelect } from './FolderSelect';
 import { RequiredMark } from './RequiredMark';
@@ -23,10 +24,6 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   const [folderId, setFolderId] = useState('');
   const requiresFolder = taskType !== 'defect' && can('folders:read');
 
-  const appendSpeechTranscript = useCallback((transcript: string) => {
-    setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
-  }, []);
-
   const {
     error: speechError,
     interimTranscript,
@@ -34,7 +31,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
     isSupported: isSpeechSupported,
     stopListening,
     toggleListening,
-  } = useSpeechToText({ onTranscript: appendSpeechTranscript });
+  } = useSpeechInput(setInput);
 
   const handleGenerate = async () => {
     if (!input.trim() || isGenerating) return;
@@ -105,14 +102,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
                 disabled={isGenerating}
               />
               <div className="absolute right-1.5 flex items-center gap-1">
-                <button 
-                  onClick={toggleListening} 
-                  disabled={isGenerating || !isSpeechSupported}
-                  title={isSpeechSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input is not supported in this browser'}
-                  className={`p-1.5 flex items-center justify-center rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-primary)]'}`}
-                >
-                  <Mic className="w-4 h-4" />
-                </button>
+                <SpeechInputButton listening={isListening} supported={isSpeechSupported} disabled={isGenerating} onToggle={toggleListening} />
                 <button 
                   onClick={handleGenerate} 
                   disabled={isGenerating || !input.trim()}

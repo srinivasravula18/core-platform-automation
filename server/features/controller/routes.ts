@@ -176,6 +176,24 @@ async function sendFinalReply(
   send({ type: 'final', reply: full, ...extra });
 }
 
+function planningInput(req: any) {
+  const { userMessage, pageContext, workspaceId, userId, history, apps } = req.body || {};
+  const scope = reqScope(req);
+  return { userMessage, pageContext, workspaceId, userId: scope.userId || userId, projectId: scope.projectId, appId: scope.appId, history, apps };
+}
+
+function supervisorInput(req: any) {
+  const scope = reqScope(req);
+  const body = req.body || {};
+  return { ...body, scope, effectiveUserId: scope.userId || body.userId };
+}
+
+function rejectMissingUserMessage(res: any, userMessage: unknown) {
+  if (typeof userMessage === 'string' && userMessage) return false;
+  res.status(400).json({ error: 'userMessage is required' });
+  return true;
+}
+
 export function registerControllerRoutes(app: Express) {
   app.get('/api/controller/intents', (req, res) => {
     res.json({
@@ -186,21 +204,9 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/classify', async (req, res, next) => {
     try {
-      const { userMessage, pageContext, workspaceId, userId, history, apps } = req.body || {};
-      const scope = reqScope(req);
-      if (!userMessage || typeof userMessage !== 'string') {
-        return res.status(400).json({ error: 'userMessage is required' });
-      }
-      const result = await classifyIntent({
-        userMessage,
-        pageContext,
-        workspaceId,
-        userId: scope.userId || userId,
-        projectId: scope.projectId,
-        appId: scope.appId,
-        history,
-        apps,
-      });
+      const input = planningInput(req);
+      if (rejectMissingUserMessage(res, input.userMessage)) return;
+      const result = await classifyIntent(input);
       res.json(result);
     } catch (err: any) {
       forwardControllerError(err, res, next);
@@ -209,21 +215,9 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/plan', async (req, res, next) => {
     try {
-      const { userMessage, pageContext, workspaceId, userId, history, apps } = req.body || {};
-      const scope = reqScope(req);
-      if (!userMessage || typeof userMessage !== 'string') {
-        return res.status(400).json({ error: 'userMessage is required' });
-      }
-      const plan = await buildPlan({
-        userMessage,
-        pageContext,
-        workspaceId,
-        userId: scope.userId || userId,
-        projectId: scope.projectId,
-        appId: scope.appId,
-        history,
-        apps,
-      });
+      const input = planningInput(req);
+      if (rejectMissingUserMessage(res, input.userMessage)) return;
+      const plan = await buildPlan(input);
       res.json(plan);
     } catch (err: any) {
       forwardControllerError(err, res, next);
@@ -234,12 +228,8 @@ export function registerControllerRoutes(app: Express) {
   // The model chooses + executes capabilities in a loop until the goal is met.
   app.post('/api/controller/supervise', async (req, res, next) => {
     try {
-      const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps, model, effort } = req.body || {};
-      const scope = reqScope(req);
-      const effectiveUserId = scope.userId || userId;
-      if (!userMessage || typeof userMessage !== 'string') {
-        return res.status(400).json({ error: 'userMessage is required' });
-      }
+      const { userMessage, workspaceId, conversationId, history, pageContext, apps, model, effort, scope, effectiveUserId } = supervisorInput(req);
+      if (rejectMissingUserMessage(res, userMessage)) return;
       // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
       const quick = await deterministicReply(userMessage, history, conversationId, scope, apps);
       if (quick) {
@@ -297,12 +287,8 @@ export function registerControllerRoutes(app: Express) {
   // so the chat can show LIVE activity ("Searching the codebase for …", "Reading …"),
   // then a final line with the answer. Mirrors the /explain/stream pattern.
   app.post('/api/controller/supervise/stream', async (req, res) => {
-    const { userMessage, workspaceId, userId, conversationId, requestId: requestedRequestId, history, pageContext, apps, model, effort } = req.body || {};
-    const scope = reqScope(req);
-    const effectiveUserId = scope.userId || userId;
-    if (!userMessage || typeof userMessage !== 'string') {
-      return res.status(400).json({ error: 'userMessage is required' });
-    }
+    const { userMessage, workspaceId, conversationId, requestId: requestedRequestId, history, pageContext, apps, model, effort, scope, effectiveUserId } = supervisorInput(req);
+    if (rejectMissingUserMessage(res, userMessage)) return;
     if (typeof conversationId !== 'string' || !conversationId.trim()) {
       return res.status(400).json({ error: 'conversationId is required' });
     }

@@ -410,15 +410,18 @@ export function syncGitAgentMain() {
   return { ok: true, before, after, pulled, blockedReason };
 }
 
-export function scanGitAgentChanges(baseRef = 'auto') {
+function resolveGitAgentBaseRef(baseRef: string) {
   if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
     throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
   }
-
   const state = readGitAgentState();
-  const resolvedBaseRef = String(baseRef || '').trim() && baseRef !== 'auto'
+  return String(baseRef || '').trim() && baseRef !== 'auto'
     ? String(baseRef).trim()
     : state.baselineCommit || 'HEAD~1';
+}
+
+export function scanGitAgentChanges(baseRef = 'auto') {
+  const resolvedBaseRef = resolveGitAgentBaseRef(baseRef);
   const repoStatus = getGitRepoStatus();
   const headCommit = gitOutputOrEmpty(gitAgentTargetRepo, ['rev-parse', 'HEAD']);
 
@@ -760,13 +763,7 @@ export function readRepoFile(relPath: string, maxBytes = 6000, repoPath?: string
  * code-change analysis so it reasons over real content, not just file names.
  */
 export function getGitAgentDiff(baseRef = 'auto', maxChars = 16000): string {
-  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
-    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
-  }
-  const state = readGitAgentState();
-  const resolvedBaseRef = String(baseRef || '').trim() && baseRef !== 'auto'
-    ? String(baseRef).trim()
-    : state.baselineCommit || 'HEAD~1';
+  const resolvedBaseRef = resolveGitAgentBaseRef(baseRef);
   let committed = '';
   try {
     committed = gitOutputOrEmpty(gitAgentTargetRepo, ['diff', '--unified=3', `${resolvedBaseRef}...HEAD`]);

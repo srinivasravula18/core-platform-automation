@@ -546,7 +546,7 @@ async function captureSemanticSnapshot(page: any, rootSelector?: string): Promis
   return { outline, elements };
 }
 
-export async function exploreAppElements(opts: {
+export type ExploreOptions = {
   targetUrl: string;
   credentials?: { username: string; password: string };
   loginUrl?: string;
@@ -555,7 +555,9 @@ export async function exploreAppElements(opts: {
   maxElements?: number;
   /** API/service origin for token login when it differs from the UI origin. */
   apiBase?: string;
-}): Promise<ExploreResult> {
+};
+
+export async function exploreAppElements(opts: ExploreOptions): Promise<ExploreResult> {
   const warnings: string[] = [];
   const browser = await launchChromiumWithRetry({ headless: true });
   const login = opts.credentials
@@ -796,15 +798,7 @@ function toVerifiedElement(
   };
 }
 
-export async function exploreAndVerifyPage(opts: {
-  targetUrl: string;
-  credentials?: { username: string; password: string };
-  loginUrl?: string;
-  open?: string[];
-  interactions?: { action: 'click' | 'hover' | 'type' | 'scroll' | 'wait'; selector?: string; value?: string; ms?: number }[];
-  apiBase?: string;
-  maxElements?: number;
-}): Promise<VerifiedPage> {
+export async function exploreAndVerifyPage(opts: ExploreOptions): Promise<VerifiedPage> {
   const extracted = await exploreAppElements({
     targetUrl: opts.targetUrl,
     credentials: opts.credentials,

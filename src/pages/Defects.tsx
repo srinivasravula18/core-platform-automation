@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight, Paperclip, X } from 'lucide-react';
+import { Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight, Paperclip, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -9,14 +9,17 @@ import DefectReport, { hasRichReport } from '../components/DefectReport';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
+import { useCloseOnOutsidePointer } from '@/src/lib/useCloseOnOutsidePointer';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
+import { BulkDeleteButton } from '@/src/components/BulkDeleteButton';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
-import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
+import { nextSort, sortRows, type SortState } from '@/src/components/DataTable/sortable';
+import { FilterToggleButton, ListSearchInput, SelectableTableHead } from '@/src/components/ListControls';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 
 // A defect's failure snapshot lives in its `evidence` (captured at the failing run). Pull the first usable image URL.
@@ -80,14 +83,7 @@ export default function Defects() {
     }).catch(console.error);
   }, []);
 
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isFilterOpen]);
+  useCloseOnOutsidePointer(filterRef, isFilterOpen, setIsFilterOpen);
 
   const openNewModal = () => {
     setSelectedDefectId(null);
@@ -379,28 +375,11 @@ export default function Defects() {
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input 
-              type="text" 
-              value={searchTerm}
-              onChange={(e) => {
-                const v = e.target.value;
-                setSearchTerm(v);
-                if (aiSearch.isAiQuery(v)) aiSearch.run(v, defects.map((d) => ({ id: d.id, title: d.title, status: d.status, severity: d.severity, description: d.description, assignedTo: d.assignedTo })));
-                else aiSearch.reset();
-              }}
-              placeholder="Search defects…  or @ai find smartly"
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]"
-            />
-          </div>
+          <ListSearchInput value={searchTerm} onChange={(value) => { setSearchTerm(value); if (aiSearch.isAiQuery(value)) aiSearch.run(value, defects.map((defect) => ({ id: defect.id, title: defect.title, status: defect.status, severity: defect.severity, description: defect.description, assignedTo: defect.assignedTo }))); else aiSearch.reset(); }} placeholder="Search defects…  or @ai find smartly" className="focus:border-red-500" />
           <TimeSortSelect value={timeSort} onChange={setTimeSort} />
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div ref={filterRef} className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> Filters
-              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
-            </button>
+            <FilterToggleButton open={isFilterOpen} count={activeFilterCount} onToggle={() => setIsFilterOpen(!isFilterOpen)} />
             {isFilterOpen && (
               <div className="absolute left-0 top-10 z-30 w-72 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ severities: [], statuses: [], assignees: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button></div>
@@ -413,27 +392,19 @@ export default function Defects() {
             )}
           </div>
           {bulk.selectedCount > 0 && can('defects:delete') && (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
-            </button>
+            <BulkDeleteButton count={bulk.selectedCount} busy={bulk.busy} onDelete={bulk.deleteSelected} className="ml-auto" />
           )}
         </div>
 
         <div className="flex-1 overflow-auto">
           <table className="w-full table-fixed text-left text-sm whitespace-nowrap">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
-              <tr className="text-[var(--text-muted)]">
-                <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(sortedDefects.map((d) => d.id))} onChange={() => bulk.toggleAll(sortedDefects.map((d) => d.id))} />
-                </th>
-                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-44" />
-                <SortableHeader label="Title" column="title" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4" />
-                <SortableHeader label="Severity" column="severity" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
-                <SortableHeader label="Status" column="status" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
-                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="font-medium py-3 px-4 w-32" />
-                <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
-              </tr>
-            </thead>
+            <SelectableTableHead allSelected={bulk.allSelected(sortedDefects.map((item) => item.id))} onToggleAll={() => bulk.toggleAll(sortedDefects.map((item) => item.id))} sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} columns={[
+                  { label: 'ID', column: 'id', className: 'font-medium py-3 px-4 w-44' },
+                  { label: 'Title', column: 'title', className: 'font-medium py-3 px-4' },
+                  { label: 'Severity', column: 'severity', className: 'font-medium py-3 px-4 w-32' },
+                  { label: 'Status', column: 'status', className: 'font-medium py-3 px-4 w-32' },
+                  { label: 'Updated', column: 'updated', className: 'font-medium py-3 px-4 w-32' },
+                ]} actionsClassName="w-24 px-4 py-3 text-right font-medium" />
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>

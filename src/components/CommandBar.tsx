@@ -32,6 +32,18 @@ interface CommandBarProps {
   onOpenChange: (open: boolean) => void;
 }
 
+async function postJson(path: string, body: unknown, signal: AbortSignal) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+  return data;
+}
+
 export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<'command' | 'ai' | 'plan'>('command');
@@ -109,19 +121,12 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
     };
   }, [isOpen]);
 
-  const executePlan = useCallback(async (planId: string, opts?: { approveAll?: boolean }) => {
+  const requestPlanAction = useCallback(async (path: string, body?: unknown) => {
     const controller = new AbortController();
     requestAbortRef.current?.abort();
     requestAbortRef.current = controller;
     try {
-      const r = await fetch(`/api/controller/plans/${planId}/execute`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts || {}),
-        signal: controller.signal,
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`);
+      const data = await postJson(path, body ?? {}, controller.signal);
       if (requestAbortRef.current !== controller) return;
       setPlan(data);
     } catch (err: any) {
@@ -132,23 +137,11 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
     }
   }, []);
 
-  const cancelPlan = useCallback(async (planId: string) => {
-    const controller = new AbortController();
-    requestAbortRef.current?.abort();
-    requestAbortRef.current = controller;
-    try {
-      const r = await fetch(`/api/controller/plans/${planId}/cancel`, { method: 'POST', signal: controller.signal });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`);
-      if (requestAbortRef.current !== controller) return;
-      setPlan(data);
-    } catch (err: any) {
-      if (err?.name === 'AbortError') return;
-      setError(err.message);
-    } finally {
-      if (requestAbortRef.current === controller) requestAbortRef.current = null;
-    }
-  }, []);
+  const executePlan = useCallback((planId: string, opts?: { approveAll?: boolean }) =>
+    requestPlanAction(`/api/controller/plans/${planId}/execute`, opts || {}), [requestPlanAction]);
+
+  const cancelPlan = useCallback((planId: string) =>
+    requestPlanAction(`/api/controller/plans/${planId}/cancel`), [requestPlanAction]);
 
   const navigateTo = useCallback((href: string) => {
     close();
@@ -170,6 +163,11 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
     setError('');
 
     try {
+      const requestContext = {
+        workspaceId,
+        pageContext: { path: location.pathname },
+        apps: selectedAppUrl ? [{ name: selectedAppName || selectedAppUrl, baseUrl: selectedAppUrl }] : [],
+      };
       if (classifyResult) {
         const navigation = classifyResult.intents.length === 1 && classifyResult.intents[0]?.kind === 'navigate'
           ? classifyResult.intents[0]
@@ -179,52 +177,16 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
           return;
         }
         setMode('plan');
-        const r = await fetch('/api/controller/plan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessage: query,
-            workspaceId,
-            pageContext: { path: location.pathname },
-            apps: selectedAppUrl ? [{ name: selectedAppName || selectedAppUrl, baseUrl: selectedAppUrl }] : [],
-          }),
-          signal: controller.signal,
-        });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`);
+        const data = await postJson('/api/controller/plan', { userMessage: query, ...requestContext }, controller.signal);
         if (requestAbortRef.current === controller) setPlan(data);
       } else {
         setMode('ai');
-        const r = await fetch('/api/controller/classify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessage: query,
-            workspaceId,
-            pageContext: { path: location.pathname },
-            apps: selectedAppUrl ? [{ name: selectedAppName || selectedAppUrl, baseUrl: selectedAppUrl }] : [],
-          }),
-          signal: controller.signal,
-        });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`);
+        const data = await postJson('/api/controller/classify', { userMessage: query, ...requestContext }, controller.signal);
         if (requestAbortRef.current !== controller) return;
         if (!data?.intents?.length) throw new Error(data?.error || 'Could not classify request');
         setClassifyResult(data);
         if (data.intents.every((intent: any) => intent?.kind === 'explain' || intent?.kind === 'unknown')) {
-          const answerResponse = await fetch('/api/controller/explain', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              topic: query,
-              workspaceId,
-              pageContext: { path: location.pathname },
-              apps: selectedAppUrl ? [{ name: selectedAppName || selectedAppUrl, baseUrl: selectedAppUrl }] : [],
-            }),
-            signal: controller.signal,
-          });
-          const answerData = await answerResponse.json();
-          if (!answerResponse.ok) throw new Error(answerData?.error || `Request failed (${answerResponse.status})`);
+          const answerData = await postJson('/api/controller/explain', { topic: query, ...requestContext }, controller.signal);
           if (requestAbortRef.current === controller) setAnswer(answerData?.answer || data.summary);
         }
       }

@@ -5,9 +5,8 @@
 // lives as each group's existing case links; versions live separately in `case_pins`. App-agnostic
 // by construction — no product tag names appear here; everything is learned from row tags at runtime.
 
-// Include (all/any) + exclude (not) — the primitive behind tag-driven composition. Mirrors
-// src/lib/entityLinking.ts:TagQuery so the client and server speak the same shape.
-export interface TagQuery { all?: string[]; any?: string[]; not?: string[] }
+import { isEmptyTagQuery, matchesTagQuery, resolveTagQuery, type TagQuery } from '../../../core/shared/tagQuery';
+export { isEmptyTagQuery, matchesTagQuery, resolveTagQuery, type TagQuery };
 
 // How a suite/plan/run stores its tag-native composition inside the JSONB `definition` column.
 // `dismissed` are case ids the user explicitly chose to ignore, so they stop resurfacing as drift.
@@ -22,10 +21,6 @@ export function normalizeTagQuery(input: any): TagQuery {
   return { all: arr(input?.all), any: arr(input?.any), not: arr(input?.not) };
 }
 
-export function isEmptyTagQuery(q: TagQuery | undefined | null): boolean {
-  return !(q?.all?.length || q?.any?.length || q?.not?.length);
-}
-
 // Read+normalize the composition definition off a stored group row.
 export function readGroupDefinition(group: any): GroupDefinition {
   const def = group?.definition && typeof group.definition === 'object' ? group.definition : {};
@@ -33,22 +28,6 @@ export function readGroupDefinition(group: any): GroupDefinition {
     tagQuery: normalizeTagQuery(def.tagQuery),
     dismissed: Array.isArray(def.dismissed) ? def.dismissed.map(String) : [],
   };
-}
-
-// Does a row satisfy the query? all = must have every tag, any = at least one, not = none.
-// An empty facet is ignored; an all-empty query matches nothing (composition must be explicit).
-export function matchesTagQuery(rowTags: any[], q: TagQuery): boolean {
-  if (isEmptyTagQuery(q)) return false;
-  const tags = (Array.isArray(rowTags) ? rowTags : []).map(tagKey);
-  if (q.all?.length && !q.all.every((t) => tags.includes(t))) return false;
-  if (q.any?.length && !q.any.some((t) => tags.includes(t))) return false;
-  if (q.not?.length && q.not.some((t) => tags.includes(t))) return false;
-  return true;
-}
-
-export function resolveTagQuery<T extends { tags?: any[] }>(items: T[], q: TagQuery): T[] {
-  if (isEmptyTagQuery(q)) return [];
-  return items.filter((it) => matchesTagQuery(it?.tags || [], q));
 }
 
 export interface DriftResult {

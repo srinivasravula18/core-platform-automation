@@ -5,7 +5,7 @@
  */
 
 import type { AgentTool, ToolContext } from './types';
-import { exploreAppElements, resolveBestSelector, verifyResolvedSelectors } from '../../features/agent/domExplorer';
+import { exploreAndVerifyPage, exploreAppElements, verifyResolvedSelectors } from '../../features/agent/domExplorer';
 import { writeBlackboard, readBlackboard, latestBlackboard, listBlackboard } from '../../features/agent/blackboard';
 import { normalizeTargetUrl } from '../../shared/url';
 import { db } from '../../shared/storage';
@@ -78,7 +78,7 @@ export const explorePageTool: AgentTool = {
 
     const creds = assertCredentials(targetUrl, ctx);
 
-    const extracted = await exploreAppElements({
+    const verified = await exploreAndVerifyPage({
       targetUrl,
       credentials: creds ? { username: creds.username, password: creds.password } : undefined,
       loginUrl: creds?.loginUrl,
@@ -86,54 +86,19 @@ export const explorePageTool: AgentTool = {
       interactions,
     });
 
-    if (extracted.warnings.length && extracted.count === 0) return { error: extracted.warnings[0], url: extracted.url, warnings: extracted.warnings };
-
-    const resolved = extracted.elements.map((el) => ({ el, sel: resolveBestSelector(el) }));
-    const toVerify = [...new Set(resolved.filter((r) => r.sel.selector).map((r) => r.sel.selector as string))];
-    const ver = toVerify.length ? await verifyResolvedSelectors({
-      targetUrl,
-      selectors: toVerify,
-      open,
-      login: creds,
-      loginUrl: creds?.loginUrl,
-    }) : { url: extracted.url, results: [] };
-    const verMap = new Map(ver.results.map((r) => [r.selector, r]));
-
-    const elements = resolved.map(({ el, sel }) => {
-      const v = sel.selector ? verMap.get(sel.selector) : undefined;
-      const status = !sel.selector ? 'unresolvable' : v && v.count === 0 ? 'broken' : v && !v.unique ? 'not_unique' : 'verified';
-      return {
-        id: sel.key, tag: el.tag, role: el.role, text: el.text,
-        aria_label: el.ariaLabel, placeholder: el.placeholder, name: el.name,
-        type: el.type, data_field: el.dataField, element_id: el.id, test_id: el.testId,
-        href: el.href,
-        resolved_selector: sel.selector, selector_strategy: sel.strategy,
-        fallback_selector: sel.fallback,
-        unique: v?.unique ?? false, visible: v?.visible ?? el.visible,
-        status,
-        state: { disabled: el.disabled, readonly: el.readonly, required: el.required },
-        reason: sel.reason,
-      };
-    });
-
-    const coverage = {
-      total_extracted: elements.length,
-      verified: elements.filter((e) => e.status === 'verified').length,
-      not_unique: elements.filter((e) => e.status === 'not_unique').length,
-      unresolvable: elements.filter((e) => e.status === 'unresolvable').length,
-      broken: elements.filter((e) => e.status === 'broken').length,
-      loggedIn: Boolean(creds),
-    };
+    if (verified.warnings.length && verified.elements.length === 0) return { error: verified.warnings[0], url: verified.url, warnings: verified.warnings };
+    const elements = verified.elements.map((element) => ({ ...element, name: element.input_name }));
+    const coverage = verified.coverage;
 
     const blackboardId = `${targetUrl}${open?.length ? `#${open.join('>')}` : ''}`;
     writeBlackboard({ id: blackboardId, baseUrl: targetUrl, route, opened: open, elements, coverage });
 
     const result = {
-      url: extracted.url,
+      url: verified.url,
       coverage,
       elements: elements.slice(0, 60),
       blackboard_id: blackboardId,
-      warnings: extracted.warnings,
+      warnings: verified.warnings,
     };
 
     exploreCache.set(cacheKey, { ts: Date.now(), value: result });

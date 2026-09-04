@@ -5,6 +5,7 @@ import { defineAppProfile, resolveAppProfile, type AppProfile } from '../appProf
 import { getToolRegistry, type ToolRegistry } from '../registry/tools';
 import { getBlackboard, type Blackboard } from '../bus/blackboard';
 import { getMemoryStore, type MemoryScope, type MemoryStore } from '../memory/store';
+import { defaultAgentExecutor } from '../registry/runViaBus';
 
 /** The connected app the agent must learn — repo + URL + token come from USER config, never our code. */
 export interface ConnectedApp {
@@ -60,13 +61,6 @@ function scopeOf(app: ConnectedApp): MemoryScope {
   return { projectId: app.projectId ?? undefined, appId: app.appId ?? undefined, ownerId: app.ownerId ?? undefined };
 }
 
-/** Default explorer — the existing multi-provider tool-loop; imported lazily. */
-async function defaultExplore(agent: string, opts: RunToolLoopOptions): Promise<AgentRunResult> {
-  const { getOrchestrator } = await import('../../ai/orchestrator');
-  const orch = await getOrchestrator(agent, { workspaceId: opts.toolContext?.workspaceId, userId: opts.toolContext?.userId });
-  return orch.runToolLoop(opts);
-}
-
 /** Default synthesizer — the existing strict-output seam (provider-neutral); imported lazily. */
 async function defaultSynthesize(agent: string, understanding: string, app: ConnectedApp, overrides?: DiscoverAppProfileInput['overrides'], signal?: AbortSignal): Promise<AppProfile | null> {
   const { generateStrictObject } = await import('../../features/agent/workflow/nodes/authoring');
@@ -118,7 +112,7 @@ export async function discoverAppProfile(input: DiscoverAppProfileInput): Promis
   }
 
   // Explore: the agent LEARNS the connected app with read-only discovery tools.
-  const explore = input.explore ?? ((opts) => defaultExplore(agent, opts));
+  const explore = input.explore ?? ((opts) => defaultAgentExecutor(agent, opts));
   const agentTools = tools.toolsFor(input.toolNames ?? DEFAULT_DISCOVERY_TOOLS);
   const exploration = await explore({
     task: `Learn the connected application and report what you found. Repo: ${input.connectedApp.repoPath || '(none)'}. Live URL: ${input.connectedApp.appUrl || '(none)'}.`,

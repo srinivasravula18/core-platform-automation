@@ -36,7 +36,7 @@ export interface RunRegisteredAgentOutput {
 }
 
 /** The default executor: the real Settings-routed tool-loop for the given agent. Imported lazily. */
-async function defaultExecutor(agent: string, opts: RunToolLoopOptions): Promise<AgentRunResult> {
+export async function defaultAgentExecutor(agent: string, opts: RunToolLoopOptions): Promise<AgentRunResult> {
   const { getOrchestrator } = await import('../../ai/orchestrator');
   const orch = await getOrchestrator(agent, { workspaceId: opts.toolContext?.workspaceId, userId: opts.toolContext?.userId });
   return orch.runToolLoop(opts);
@@ -51,7 +51,7 @@ export async function runRegisteredAgent(input: RunRegisteredAgentInput): Promis
   const tools = input.tools ?? getToolRegistry();
   const bus = input.bus ?? getMessageBus();
   const blackboard = input.blackboard ?? getBlackboard();
-  const executor = input.executor ?? defaultExecutor;
+  const executor = input.executor ?? defaultAgentExecutor;
   const from = input.from ?? 'router';
 
   const def = agents.get(input.agent);
@@ -115,7 +115,7 @@ function toUsage(result: AgentRunResult): AgentUsage {
  * lifecycle belong to the coordinator, so this only runs the model turn and returns the raw answer.
  */
 export function createSpecialistRunner(opts: { executor?: AgentExecutor; tools?: ToolRegistry; toolContext?: ToolContext } = {}): SpecialistRunner {
-  const executor = opts.executor ?? defaultExecutor;
+  const executor = opts.executor ?? defaultAgentExecutor;
   return async ({ task, roster, prompt, system, signal }) => {
     const tools = (opts.tools ?? getToolRegistry()).toolsFor(roster.allowedToolNames);
     const result = await executor(roster.agentKey, {

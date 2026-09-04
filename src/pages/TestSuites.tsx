@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Pencil, Plus, Sparkles, PlayCircle, Loader2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useCloseOnOutsidePointer } from '@/src/lib/useCloseOnOutsidePointer';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import {
@@ -29,7 +30,7 @@ import { EntityLinker } from '@/src/components/EntityLinker';
 import { TagDriftBanner } from '@/src/components/TagDriftBanner';
 import { VersionPinSelect } from '@/src/components/VersionPinSelect';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
-import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
+import { nextSort, sortRows, type SortState } from '@/src/components/DataTable/sortable';
 import { diffSelection, linkSuiteCases, type TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
@@ -38,6 +39,32 @@ import { useAgents } from '@/src/lib/useAutomation';
 import { RunModeModal } from '@/src/components/RunModeModal';
 import { buildLineageIndex } from '@/src/lib/lineageIndex';
 import { LinkedEntitiesPanel } from '@/src/components/LinkedEntitiesPanel';
+import { BulkDeleteButton } from '@/src/components/BulkDeleteButton';
+import { FilterToggleButton, ListSearchInput, SelectableTableHead } from '@/src/components/ListControls';
+
+function SuiteCasesTable({ suite, cases, onChange, compact = false }: { suite: any; cases: any[]; onChange: () => void; compact?: boolean }) {
+  const cell = compact ? 'px-4 py-2' : 'px-4 py-3';
+  return (
+    <table className="w-full text-left text-sm whitespace-nowrap">
+      <thead className={cn(compact && 'sticky top-0', 'bg-[var(--bg-secondary)] text-[var(--text-muted)]')}>
+        <tr>{['ID', 'Title', 'Version', 'Priority', 'Status'].map((label) => <th key={label} className={cn(cell, 'font-medium')}>{label}</th>)}</tr>
+      </thead>
+      <tbody className="divide-y divide-[var(--border)]">
+        {cases.map((testCase) => (
+          <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
+            <td className={cn(cell, 'font-mono text-xs text-[var(--text-muted)]')}>{testCase.id}</td>
+            <td className={cn(cell, 'max-w-md whitespace-normal font-medium')}>{testCase.title}</td>
+            <td className={cell}><VersionPinSelect target="suites" groupId={suite.id} caseId={testCase.id} pinnedRevisionNo={(suite.casePins || []).find((pin: any) => String(pin?.caseId) === String(testCase.id))?.revisionNo ?? null} onChange={onChange} /></td>
+            <td className={cn(cell, 'text-[var(--text-muted)]')}>{testCase.priority || 'Medium'}</td>
+            <td className={cn(cell, 'text-[var(--text-muted)]')}>
+              {compact ? <span className="rounded border border-[var(--border)] px-2 py-0.5 text-xs">{testCase.status || 'Draft'}</span> : (testCase.status || 'Draft')}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 export default function TestSuites() {
   const navigate = useNavigate();
@@ -118,14 +145,7 @@ export default function TestSuites() {
     fetchFolders();
   }, []);
 
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isFilterOpen]);
+  useCloseOnOutsidePointer(filterRef, isFilterOpen, setIsFilterOpen);
 
   const openNewModal = () => {
     setSelectedSuiteId(null);
@@ -311,6 +331,21 @@ export default function TestSuites() {
   };
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
+  const createDriftSuite = async (suite: any, caseIds: string[], drift: { tagQuery: TagQuery }, refresh: () => void | Promise<unknown>) => {
+    try {
+      const res = await fetch('/api/suites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `${suite.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
+      });
+      const rsp = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(rsp.error || 'Failed to create suite.');
+      const newId = rsp.suite?.id || rsp.id;
+      if (newId) await linkSuiteCases(newId, caseIds, []);
+      await refresh();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to create suite.');
+    }
+  };
   const selectedRouteSuite = suites.find((suite) => String(suite.id) === String(routeSuiteId)) || null;
   const planId = searchParams.get('planId');
   const selectedRouteSuiteCases = selectedRouteSuite ? getSuiteCases(selectedRouteSuite.id)
@@ -629,19 +664,7 @@ export default function TestSuites() {
                 target="suites"
                 id={selectedRouteSuite.id}
                 onChanged={() => { fetchSuites(); fetchCases(); }}
-                onCreateNew={async (caseIds, drift) => {
-                  try {
-                    const res = await fetch('/api/suites', {
-                      method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ name: `${selectedRouteSuite.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
-                    });
-                    const rsp = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(rsp.error || 'Failed to create suite.');
-                    const newId = rsp.suite?.id || rsp.id;
-                    if (newId) await linkSuiteCases(newId, caseIds, []);
-                    await fetchSuites();
-                  } catch (e: any) { void showAlert(e.message || 'Failed to create suite.'); }
-                }}
+                onCreateNew={(caseIds, drift) => createDriftSuite(selectedRouteSuite, caseIds, drift, fetchSuites)}
               />
             </div>
             <div className="overflow-hidden rounded-lg border border-[var(--border)]">
@@ -649,22 +672,7 @@ export default function TestSuites() {
               {selectedRouteSuiteCases.length === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">No test cases are linked to this suite.</div>
               ) : (
-                <table className="w-full text-left text-sm whitespace-nowrap">
-                  <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)]">
-                    <tr><th className="px-4 py-3 font-medium">ID</th><th className="px-4 py-3 font-medium">Title</th><th className="px-4 py-3 font-medium">Version</th><th className="px-4 py-3 font-medium">Priority</th><th className="px-4 py-3 font-medium">Status</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-[var(--border)]">
-                    {selectedRouteSuiteCases.map((testCase) => (
-                      <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
-                        <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
-                        <td className="max-w-md whitespace-normal px-4 py-3 font-medium">{testCase.title}</td>
-                        <td className="px-4 py-3"><VersionPinSelect target="suites" groupId={selectedRouteSuite.id} caseId={testCase.id} pinnedRevisionNo={(selectedRouteSuite.casePins || []).find((pin: any) => String(pin?.caseId) === String(testCase.id))?.revisionNo ?? null} onChange={fetchSuites} /></td>
-                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
-                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.status || 'Draft'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <SuiteCasesTable suite={selectedRouteSuite} cases={selectedRouteSuiteCases} onChange={fetchSuites} />
               )}
             </div>
           </div>
@@ -672,26 +680,9 @@ export default function TestSuites() {
       ) : (
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input 
-              type="text" 
-              value={searchTerm}
-              onChange={(e) => {
-                const v = e.target.value;
-                setSearchTerm(v);
-                if (aiSearch.isAiQuery(v)) aiSearch.run(v, suites.map((s) => ({ id: s.id, name: s.name, description: s.description, module: s.module, tags: s.tags, status: s.status, priority: s.priority })));
-                else aiSearch.reset();
-              }}
-              placeholder="Search suites…  or @ai find smartly"
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-            />
-          </div>
+          <ListSearchInput value={searchTerm} onChange={(value) => { setSearchTerm(value); if (aiSearch.isAiQuery(value)) aiSearch.run(value, suites.map((suite) => ({ id: suite.id, name: suite.name, description: suite.description, module: suite.module, tags: suite.tags, status: suite.status, priority: suite.priority }))); else aiSearch.reset(); }} placeholder="Search suites…  or @ai find smartly" />
           <div ref={filterRef} className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> Filters
-              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
-            </button>
+            <FilterToggleButton open={isFilterOpen} count={activeFilterCount} onToggle={() => setIsFilterOpen(!isFilterOpen)} />
             {isFilterOpen && (
               <div className="absolute left-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], priorities: [], modules: [], owners: [], tags: [], planIds: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button></div>
@@ -715,9 +706,7 @@ export default function TestSuites() {
                 {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
               </button>
               {can('suites:delete') && (
-                <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
-                </button>
+                <BulkDeleteButton count={bulk.selectedCount} busy={bulk.busy} onDelete={bulk.deleteSelected} />
               )}
             </div>
           )}
@@ -725,19 +714,13 @@ export default function TestSuites() {
 
         <div className="flex-1 overflow-auto">
           <table className="w-full min-w-[1200px] table-fixed text-left text-sm whitespace-nowrap">
-            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
-              <tr className="text-[var(--text-muted)]">
-                <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(sortedSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(sortedSuites.map((s) => s.id))} />
-                </th>
-                <SortableHeader label="ID" column="id" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-52 px-4 py-3 font-medium" />
-                <SortableHeader label="Name" column="name" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-72 px-4 py-3 font-medium" />
-                <SortableHeader label="Test Plan" column="plans" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-80 px-4 py-3 font-medium" />
-                <SortableHeader label="Tags" column="tags" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-36 px-4 py-3 font-medium" />
-                <SortableHeader label="Updated" column="updated" sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} className="w-32 px-4 py-3 font-medium" />
-                <th className="w-28 px-4 py-3 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
+            <SelectableTableHead allSelected={bulk.allSelected(sortedSuites.map((item) => item.id))} onToggleAll={() => bulk.toggleAll(sortedSuites.map((item) => item.id))} sort={sort} onSort={(key) => setSort((current) => nextSort(current, key))} columns={[
+                  { label: 'ID', column: 'id', className: 'w-52 px-4 py-3 font-medium' },
+                  { label: 'Name', column: 'name', className: 'w-72 px-4 py-3 font-medium' },
+                  { label: 'Test Plan', column: 'plans', className: 'w-80 px-4 py-3 font-medium' },
+                  { label: 'Tags', column: 'tags', className: 'w-36 px-4 py-3 font-medium' },
+                  { label: 'Updated', column: 'updated', className: 'w-32 px-4 py-3 font-medium' },
+                ]} actionsClassName="w-28 px-4 py-3 text-right font-medium" />
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
                 <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
@@ -848,19 +831,7 @@ export default function TestSuites() {
                               target="suites"
                               id={suite.id}
                               onChanged={fetchCases}
-                              onCreateNew={async (caseIds, drift) => {
-                                try {
-                                  const res = await fetch('/api/suites', {
-                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ name: `${suite.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
-                                  });
-                                  const rsp = await res.json().catch(() => ({}));
-                                  if (!res.ok) throw new Error(rsp.error || 'Failed to create suite.');
-                                  const newId = rsp.suite?.id || rsp.id;
-                                  if (newId) await linkSuiteCases(newId, caseIds, []);
-                                  await fetchCases();
-                                } catch (e: any) { void showAlert(e.message || 'Failed to create suite.'); }
-                              }}
+                              onCreateNew={(caseIds, drift) => createDriftSuite(suite, caseIds, drift, fetchCases)}
                             />
                           </div>
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
@@ -880,40 +851,7 @@ export default function TestSuites() {
                               {suiteCases.length === 0 ? (
                                 <div className="px-4 py-3 text-sm text-[var(--text-muted)]">No cases linked to this suite.</div>
                               ) : (
-                                <table className="w-full text-left text-sm whitespace-nowrap">
-                                  <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
-                                    <tr>
-                                      <th className="px-4 py-2 font-medium">ID</th>
-                                      <th className="px-4 py-2 font-medium">Title</th>
-                                      <th className="px-4 py-2 font-medium">Version</th>
-                                      <th className="px-4 py-2 font-medium">Priority</th>
-                                      <th className="px-4 py-2 font-medium">Status</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-[var(--border)]">
-                                    {suiteCases.map((testCase) => (
-                                      <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
-                                        <td className="px-4 py-2 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
-                                        <td className="px-4 py-2 font-medium max-w-md whitespace-normal">{testCase.title}</td>
-                                        <td className="px-4 py-2">
-                                          <VersionPinSelect
-                                            target="suites"
-                                            groupId={suite.id}
-                                            caseId={testCase.id}
-                                            pinnedRevisionNo={(suite.casePins || []).find((p: any) => String(p?.caseId) === String(testCase.id))?.revisionNo ?? null}
-                                            onChange={fetchSuites}
-                                          />
-                                        </td>
-                                        <td className="px-4 py-2 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
-                                        <td className="px-4 py-2">
-                                          <span className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]">
-                                            {testCase.status || 'Draft'}
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
+                                <SuiteCasesTable suite={suite} cases={suiteCases} onChange={fetchSuites} compact />
                               )}
                             </div>
                           </div>

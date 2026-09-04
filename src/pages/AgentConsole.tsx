@@ -3535,13 +3535,13 @@ export default function AgentConsole() {
           />
           <div className="flex items-center justify-between gap-2 px-1">
             <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
-              {/* Apps-under-test multi-select: all selected apps are sent to the agent as
-                  target context, so it never lacks the URL/app data. */}
+              {/* Platform multi-select: configured website credentials identify test platforms;
+                  app discovery happens inside the selected platform. */}
               <div ref={appPickerRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setAppPickerOpen((o) => !o)}
-                  title="Select which saved apps the agent should target (multi-select)"
+                  title="Select which saved platforms the agent should target (multi-select)"
                   className={cn(
                     'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
                     selectedApps.length
@@ -3550,17 +3550,17 @@ export default function AgentConsole() {
                   )}
                 >
                   <AppWindow className="h-3.5 w-3.5" />
-                  {selectedApps.length ? `${selectedApps.length} app${selectedApps.length > 1 ? 's' : ''} selected` : 'Apps to Test'}
+                  {selectedApps.length ? `${selectedApps.length} platform${selectedApps.length > 1 ? 's' : ''} selected` : 'Platforms to Test'}
                   <ChevronDown className="h-3 w-3" />
                 </button>
                 {appPickerOpen && (
                   <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
                     {websites.length === 0 ? (
-                      <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">No saved apps. Add them in Settings → Website Credentials.</div>
+                      <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">No saved platforms. Add them in Settings → Website Credentials.</div>
                     ) : (
                       <>
                         <div className="mb-1 flex items-center justify-between gap-2 border-b border-[var(--border)] px-2 py-1.5">
-                          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Apps to Test</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Platforms to Test</span>
                           <button
                             type="button"
                             onClick={() => setSelectedAppIds(allAppsSelected ? new Set() : new Set(websites.map((w) => w.id)))}

@@ -13,6 +13,7 @@ import { capturePlaywrightEvidence } from '../../features/evidence/evidenceServi
 import { Runs } from '../../db/repository';
 import { listBlackboard } from '../../features/agent/blackboard';
 import { readCodeFileInScope } from '../../features/projects/codeSearch';
+import { requestAccessToken } from './targetAuth';
 
 const str = { type: 'string' };
 
@@ -335,13 +336,7 @@ async function loginForToken(url: string): Promise<string | null> {
   const password = String(process.env.TARGET_PASSWORD || '').trim();
   if (!username || !password) return null;
   try {
-    const res = await fetch(`${url}/auth/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    const json = (await res.json().catch(() => null)) as { access_token?: string } | null;
-    return json?.access_token || null;
+    return await requestAccessToken(url, username, password);
   } catch { return null; }
 }
 

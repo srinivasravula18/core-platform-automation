@@ -29,6 +29,7 @@ import { registerVitalsRoutes, startVitals } from '../../../services/vitals';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
 import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs, resumeScheduleExecutions } from '../../../services/automation';
+import { registerGylinRoutes } from '../../../server/features/gylin/routes';
 
 let processGuardsInstalled = false;
 
@@ -115,6 +116,9 @@ export async function createExpressApp() {
 
   const app = express();
 
+  // The exact M2M route owns its Bearer auth and body parser. It is the only route registered
+  // before human auth; unmatched requests continue into the existing session/RBAC gates below.
+  registerGylinRoutes(app);
   // Case attachments are sent as base64 JSON; 30 MB covers five 4 MB files plus encoding.
   app.use(express.json({ limit: '30mb' }));
   app.use(authContextMiddleware);

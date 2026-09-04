@@ -13,6 +13,7 @@ import { launchChromiumWithRetry } from '../../shared/browser';
 import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
 import { collectPageContext, saveInspectionScreenshot } from './inspectionService';
+import { waitForPageContent } from './inspectionHelpers';
 
 export interface PageObservation {
   url: string;
@@ -134,17 +135,7 @@ export async function observePage(sessionId: string): Promise<PageObservation> {
   // "any a/button exists" check a nav bar satisfies instantly — reading a half-loaded grid was a top cause of
   // shallow, ungrounded inspection. hasContent excludes a/button so a bare nav can't mark the page ready.
   // Best-effort: proceed anyway if it never clears.
-  await s.page.waitForFunction(
-    () => {
-      const body = (document.body && document.body.innerText) || '';
-      const stillLoading = /loading\s+records|\bloading…?\b/i.test(body);
-      const hasGridRows = !!document.querySelector('table tbody tr, [role="grid"] [role="row"], [role="row"] [role="gridcell"]');
-      const hasContent = document.querySelectorAll('table, [role="grid"], form, h1, h2').length > 0;
-      return hasGridRows || (!stillLoading && hasContent);
-    },
-    { timeout: 20000 },
-  ).catch(() => undefined);
-  await s.page.waitForTimeout(700).catch(() => undefined); // brief settle so late rows/toolbar controls mount
+  await waitForPageContent(s.page);
   const ctx = await collectPageContext(s.page);
   s.lastRaw = ctx;
   s.observedPages.push({ stage: `observe-${s.observedPages.length}`, url: ctx.url, actions: ctx.actions, tables: ctx.tables, forms: ctx.forms, headings: ctx.headings });

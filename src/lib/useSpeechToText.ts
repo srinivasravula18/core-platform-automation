@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 
 type SpeechToTextOptions = {
   lang?: string;
@@ -184,4 +184,11 @@ export function useSpeechToText({ lang = 'en-US', onTranscript }: SpeechToTextOp
     stopListening,
     toggleListening,
   };
+}
+
+export function useSpeechInput(setValue: Dispatch<SetStateAction<string>>) {
+  const appendTranscript = useCallback((transcript: string) => {
+    setValue((current) => current + (current.trim() ? ' ' : '') + transcript);
+  }, [setValue]);
+  return useSpeechToText({ onTranscript: appendTranscript });
 }

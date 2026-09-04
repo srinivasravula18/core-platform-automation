@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree, MessageSquareText } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Send, SplitSquareHorizontal, FolderTree, MessageSquareText } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
-import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { useSpeechInput } from '@/src/lib/useSpeechToText';
+import { SpeechInputButton } from '@/src/components/SpeechInputButton';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { showAlert } from '@/src/lib/dialog';
@@ -107,10 +108,6 @@ export default function AgentPanel() {
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
   ]);
 
-  const appendSpeechTranscript = useCallback((transcript: string) => {
-    setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
-  }, []);
-
   const {
     error: speechError,
     interimTranscript,
@@ -118,7 +115,7 @@ export default function AgentPanel() {
     isSupported: isSpeechSupported,
     stopListening,
     toggleListening,
-  } = useSpeechToText({ onTranscript: appendSpeechTranscript });
+  } = useSpeechInput(setInput);
 
   useEffect(() => {
     fetch('/api/folders')
@@ -361,6 +358,19 @@ export default function AgentPanel() {
     return <div className="h-4 w-4 rounded-full bg-red-500" />;
   };
 
+  const updatePlan = async (planId: string, action: 'execute' | 'cancel', body?: unknown) => {
+    try {
+      const r = await fetch(`/api/controller/plans/${planId}/${action}`, {
+        method: 'POST',
+        ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+      });
+      const data = await r.json();
+      setPlans((prev) => prev.map((plan) => (plan.id === planId ? data : plan)));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="app-page-shell app-page-shell-fluid h-full flex flex-col gap-6">
       {(isGenerating || runData) && (
@@ -508,14 +518,7 @@ export default function AgentPanel() {
                 disabled={isGenerating}
               />
               <div className="absolute right-1.5 flex items-center gap-1">
-                <button 
-                  onClick={toggleListening} 
-                  disabled={isGenerating || !isSpeechSupported}
-                  title={isSpeechSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input is not supported in this browser'}
-                  className={`p-1.5 flex items-center justify-center rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-primary)]'}`}
-                >
-                  <Mic className="w-4 h-4" />
-                </button>
+                <SpeechInputButton listening={isListening} supported={isSpeechSupported} disabled={isGenerating} onToggle={toggleListening} />
                 <button 
                   onClick={sendMessage} 
                   disabled={isGenerating || !input.trim()}
@@ -928,28 +931,8 @@ export default function AgentPanel() {
             <div className="h-full">
               <PlanList
                 plans={plans}
-                onExecutePlan={async (planId, opts) => {
-                  try {
-                    const r = await fetch(`/api/controller/plans/${planId}/execute`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify(opts || {}),
-                    });
-                    const data = await r.json();
-                    setPlans((prev) => prev.map((p) => (p.id === planId ? data : p)));
-                  } catch (err) {
-                    console.error(err);
-                  }
-                }}
-                onCancelPlan={async (planId) => {
-                  try {
-                    const r = await fetch(`/api/controller/plans/${planId}/cancel`, { method: 'POST' });
-                    const data = await r.json();
-                    setPlans((prev) => prev.map((p) => (p.id === planId ? data : p)));
-                  } catch (err) {
-                    console.error(err);
-                  }
-                }}
+                onExecutePlan={(planId, opts) => updatePlan(planId, 'execute', opts || {})}
+                onCancelPlan={(planId) => updatePlan(planId, 'cancel')}
               />
             </div>
           )}

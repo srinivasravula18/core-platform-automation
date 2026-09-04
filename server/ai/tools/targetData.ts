@@ -19,6 +19,7 @@ import type { AgentTool, ToolContext } from './types';
 import type { ObjectSchema } from '../../features/agent/testdata/types';
 import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
 import { withEvidence } from './evidenceEnvelope';
+import { requestAccessToken } from './targetAuth';
 
 function baseUrl(): string {
   return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
@@ -122,14 +123,7 @@ function serviceBaseUrl(conn?: CatalogConn): string {
 let cachedToken: string | null = null;
 
 async function loginForToken(url: string, username: string, password: string): Promise<string> {
-  const res = await timedFetch(`${url}/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  const json = (await res.json().catch(() => null)) as { access_token?: string } | null;
-  if (!res.ok || !json?.access_token) throw new Error(`Login failed (${res.status}).`);
-  return json.access_token;
+  return requestAccessToken(url, username, password, timedFetch);
 }
 
 async function resolveToken(url: string, forceRefresh = false): Promise<string> {

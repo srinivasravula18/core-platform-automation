@@ -14,6 +14,7 @@ import { getToolCapableOrchestrator } from '../../ai/orchestrator';
 import { pageTools } from '../../ai/tools/pageTools';
 import type { ToolContext } from '../../ai/tools/types';
 import { openPageSession, closePageSession, sessionArtifacts } from './pageSession';
+import { unionObservedActions } from './inspectionHelpers';
 
 const INSPECTOR_SYSTEM = `You inspect a live web application through two tools: observe_page (read the current page) and act_on_page (click / type / select by element id).
 
@@ -72,20 +73,7 @@ export async function inspectApplicationFlowViaTools(options: {
 
     // Union every interactive control seen across ALL observations (deepest last→first), the
     // same contract the classic inspector provides to the coder/verifier.
-    const seen = new Set<string>();
-    const unionActions: any[] = [];
-    const pushUnion = (a: any) => {
-      if (!a) return;
-      const d = a.dom || a;
-      const key = d?.testId || d?.id || d?.ariaLabel || d?.placeholder || `${a.role || ''}:${a.text || ''}`;
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      unionActions.push(a);
-    };
-    for (const a of last.actions || []) pushUnion(a);
-    for (let i = (art?.observedPages.length || 0) - 1; i >= 0; i -= 1) {
-      for (const a of art?.observedPages[i]?.actions || []) pushUnion(a);
-    }
+    const unionActions = unionObservedActions(last.actions, art?.observedPages);
 
     const assertionTargets = [
       ...(last.headings || []).map((text: string) => ({ type: 'heading', text })),

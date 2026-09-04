@@ -6,6 +6,7 @@ import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/c
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useCloseOnOutsidePointer } from '@/src/lib/useCloseOnOutsidePointer';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
@@ -179,23 +180,8 @@ export default function TestPlans() {
     return () => window.removeEventListener('focus', refreshRelations);
   }, []);
 
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isFilterOpen]);
-
-  useEffect(() => {
-    if (!isDetailFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!detailFilterRef.current?.contains(event.target as Node)) setIsDetailFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isDetailFilterOpen]);
+  useCloseOnOutsidePointer(filterRef, isFilterOpen, setIsFilterOpen);
+  useCloseOnOutsidePointer(detailFilterRef, isDetailFilterOpen, setIsDetailFilterOpen);
 
   useEffect(() => {
     setDetailCaseFilters(emptyTestPlanCaseFilters());

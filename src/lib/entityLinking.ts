@@ -26,28 +26,8 @@ export function diffSelection(initial: string[], next: string[]): { add: string[
   };
 }
 
-/** A tag query: include (any/all) + exclude. The primitive behind tag-driven composition. */
-export interface TagQuery { all?: string[]; any?: string[]; not?: string[] }
-
-// Compare tags ignoring case + the leading @/# marker — kept identical to the server
-// (server/features/resources/tagComposition.ts) so client preview and server resolution agree.
-const tqKey = (t: any): string => String(t || '').trim().toLowerCase().replace(/^[@#]+/, '');
-export function isEmptyTagQuery(q?: TagQuery | null): boolean {
-  return !(q?.all?.length || q?.any?.length || q?.not?.length);
-}
-export function matchesTagQuery(rowTags: any[], q: TagQuery): boolean {
-  if (isEmptyTagQuery(q)) return false;
-  const tags = (Array.isArray(rowTags) ? rowTags : []).map(tqKey);
-  if (q.all?.length && !q.all.map(tqKey).every((t) => tags.includes(t))) return false;
-  if (q.any?.length && !q.any.map(tqKey).some((t) => tags.includes(t))) return false;
-  if (q.not?.length && q.not.map(tqKey).some((t) => tags.includes(t))) return false;
-  return true;
-}
-/** Client-side preview resolver — filter loaded cases by a tag query (mirrors the server). */
-export function resolveTagQuery<T extends { tags?: any[] }>(items: T[], q: TagQuery): T[] {
-  if (isEmptyTagQuery(q)) return [];
-  return items.filter((it) => matchesTagQuery(it?.tags || [], q));
-}
+import type { TagQuery } from '../../core/shared/tagQuery';
+export { isEmptyTagQuery, matchesTagQuery, resolveTagQuery, type TagQuery } from '../../core/shared/tagQuery';
 
 /** One case as returned in a drift payload's preview list. */
 export interface TagDriftCase { id: string; title: string; tags: string[]; priority: string; status: string }

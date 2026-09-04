@@ -53,6 +53,90 @@ export function buildOperationIdentity(input: {
   return { scopeHash: scoped, requestHash, idempotencyKey: hash({ scoped, requestHash, repeatNonce }) };
 }
 
+export async function beginExternalOperationReceipt(input: {
+  namespace: string;
+  externalKey: string;
+  operation: string;
+  request: unknown;
+  ttlMs: number;
+}): Promise<{ acquired: boolean; receipt: OperationReceipt; requestHash: string }> {
+  const idempotencyKey = hash(`${input.namespace}:${input.externalKey}`);
+  const requestHash = hash(input.request);
+  const scopeHash = hash(`external:${input.namespace}`);
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + input.ttlMs).toISOString();
+  if (isPostgresEnabled()) {
+    const renewed: any = await queryOne(
+      `UPDATE agent_operation_receipts SET scope_hash=$2, operation=$3, target_type='external', request_hash=$4,
+       status='running', resource_id=NULL, response=NULL, verification='{"attempt":1}'::jsonb, error=NULL,
+       created_at=now(), completed_at=NULL, expires_at=$5
+       WHERE idempotency_key=$1 AND expires_at <= now() RETURNING *`,
+      [idempotencyKey, scopeHash, input.operation, requestHash, expiresAt],
+    );
+    if (renewed) return { acquired: true, receipt: mapRow(renewed), requestHash };
+    const inserted: any = await queryOne(
+      `INSERT INTO agent_operation_receipts (idempotency_key, scope_hash, operation, target_type, request_hash, status, verification, expires_at)
+       VALUES ($1,$2,$3,'external',$4,'running','{"attempt":1}'::jsonb,$5)
+       ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+      [idempotencyKey, scopeHash, input.operation, requestHash, expiresAt],
+    );
+    if (inserted) return { acquired: true, receipt: mapRow(inserted), requestHash };
+    const existing: any = await queryOne('SELECT * FROM agent_operation_receipts WHERE idempotency_key = $1', [idempotencyKey]);
+    return { acquired: false, receipt: mapRow(existing), requestHash };
+  }
+  const existing = (db.agentOperationReceipts || []).find((row: any) => row.idempotencyKey === idempotencyKey);
+  if (existing && Date.parse(existing.expiresAt) > Date.now()) return { acquired: false, receipt: mapRow(existing), requestHash };
+  if (existing) db.agentOperationReceipts = db.agentOperationReceipts.filter((row: any) => row !== existing);
+  const receipt: OperationReceipt = { idempotencyKey, status: 'running', operation: input.operation, requestHash, verification: { attempt: 1 }, createdAt: now, expiresAt };
+  db.agentOperationReceipts.push(receipt);
+  return { acquired: true, receipt, requestHash };
+}
+
+export async function setOperationReceiptResource(idempotencyKey: string, resourceId: string): Promise<void> {
+  if (isPostgresEnabled()) {
+    await query(`UPDATE agent_operation_receipts SET resource_id=$2 WHERE idempotency_key=$1 AND status='running'`, [idempotencyKey, resourceId]);
+    return;
+  }
+  const row = db.agentOperationReceipts.find((item: any) => item.idempotencyKey === idempotencyKey);
+  if (row?.status === 'running') row.resourceId = resourceId;
+}
+
+export async function clearOperationReceiptResource(idempotencyKey: string, resourceId: string): Promise<void> {
+  if (isPostgresEnabled()) {
+    await query(`UPDATE agent_operation_receipts SET resource_id=NULL WHERE idempotency_key=$1 AND resource_id=$2 AND status='running'`, [idempotencyKey, resourceId]);
+    return;
+  }
+  const row = db.agentOperationReceipts.find((item: any) => item.idempotencyKey === idempotencyKey);
+  if (row?.status === 'running' && row.resourceId === resourceId) row.resourceId = undefined;
+}
+
+export async function restartExternalOperationReceipt(
+  idempotencyKey: string,
+  requestHash: string,
+  ttlMs: number,
+): Promise<{ acquired: boolean; receipt: OperationReceipt; requestHash: string }> {
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  if (isPostgresEnabled()) {
+    const restarted: any = await queryOne(
+      `UPDATE agent_operation_receipts SET status='running', response=NULL,
+       verification=jsonb_build_object('attempt', COALESCE((verification->>'attempt')::int, 1) + 1), error=NULL,
+       created_at=now(), completed_at=NULL, expires_at=$3
+       WHERE idempotency_key=$1 AND request_hash=$2 AND status='failed' AND resource_id IS NULL RETURNING *`,
+      [idempotencyKey, requestHash, expiresAt],
+    );
+    if (restarted) return { acquired: true, receipt: mapRow(restarted), requestHash };
+    const existing: any = await queryOne('SELECT * FROM agent_operation_receipts WHERE idempotency_key=$1', [idempotencyKey]);
+    return { acquired: false, receipt: mapRow(existing), requestHash };
+  }
+  const row = db.agentOperationReceipts.find((item: any) => item.idempotencyKey === idempotencyKey);
+  if (row?.status === 'failed' && !row.resourceId && row.requestHash === requestHash) {
+    const attempt = Number(row.verification?.attempt || 1) + 1;
+    Object.assign(row, { status: 'running', response: undefined, verification: { attempt }, error: undefined, createdAt: new Date().toISOString(), completedAt: undefined, expiresAt });
+    return { acquired: true, receipt: mapRow(row), requestHash };
+  }
+  return { acquired: false, receipt: mapRow(row), requestHash };
+}
+
 function mapRow(row: any): OperationReceipt {
   return {
     idempotencyKey: row.idempotency_key || row.idempotencyKey,
@@ -132,7 +216,7 @@ export async function failOperationReceipt(idempotencyKey: string, error: unknow
 
 function findResourceId(value: any): string {
   if (!value || typeof value !== 'object') return '';
-  for (const key of ['id', 'record_id', 'recordId', 'resource_id', 'resourceId']) {
+  for (const key of ['id', 'runId', 'record_id', 'recordId', 'resource_id', 'resourceId']) {
     if (typeof value[key] === 'string' || typeof value[key] === 'number') return String(value[key]);
   }
   for (const key of ['data', 'item', 'record', 'result']) {

@@ -6,6 +6,7 @@ import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/c
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useCloseOnOutsidePointer } from '@/src/lib/useCloseOnOutsidePointer';
 import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, withoutAutomationJobMeta } from '@/core/shared/testRunStatus';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
@@ -236,23 +237,9 @@ export default function TestRuns() {
     return () => clearInterval(t);
   }, [hasLiveDurations]);
 
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isFilterOpen]);
+  useCloseOnOutsidePointer(filterRef, isFilterOpen, setIsFilterOpen);
   // The run-detail case filter is multi-select, so it stays open until dismissed outside.
-  useEffect(() => {
-    if (!isCaseFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!caseFilterRef.current?.contains(event.target as Node)) setIsCaseFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isCaseFilterOpen]);
+  useCloseOnOutsidePointer(caseFilterRef, isCaseFilterOpen, setIsCaseFilterOpen);
   const activeRuns = runs.filter(isActiveTestRun);
   const closedRuns = runs.filter(isClosedTestRun);
 
@@ -1580,4 +1567,3 @@ export default function TestRuns() {
     </div>
   );
 }
-

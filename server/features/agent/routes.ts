@@ -48,11 +48,11 @@ import {
 // Evidence-Graph Phase 5: deterministic compiler path (flag-gated by AIQA_COMPILER; legacy path is default).
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime — the engine for every run.
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getGraphRunState, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
+import { resumeGraphRun, cancelGraphRun, getGraphRunState, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
 // Agent-native substrate (P2): the console renders the REAL A2A bus + blackboard for a run. Flag-gated.
 import { getMessageBus } from '../../agent-core/bus/messageBus';
 import { getBlackboard } from '../../agent-core/bus/blackboard';
-import { orchestrateRunStart } from '../../agent-core/router/orchestrateRun';
+import { startResolvedRun } from './startService';
 import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
@@ -2035,43 +2035,25 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
   const priorVerifiedElements = Number.isFinite(priorCapturedAt) && Date.now() - priorCapturedAt < 15 * 60 * 1000
     ? (run.session_context?.selector_registry?.verified_selectors || [])
     : [];
-  // P3 (shadow, flag-gated): the orchestrator delegates the run's plan over the bus before the deterministic
-  // graph executes. Fire-and-forget so it never blocks or fails the run — the graph remains the executor.
-  // The graph already owns execution routing. Keep the diagnostic A2A handoff deterministic so a
-  // second model request cannot contend with (and delay) the real case-authoring request.
-  void orchestrateRunStart({
+  await startResolvedRun({
     runId: run.id,
-    goal: run.prompt || '',
-    context: (resolveUnderstanding(run) || '').trim().slice(0, 1200) || undefined,
-    classify: async (input) => ({
-      steps: [{ agent: 'caseWriter', task: input.goal.slice(0, 500) }],
-      rationale: 'The deterministic test-authoring graph owns execution routing.',
-    }),
-  })
-    .catch(() => undefined);
-  // The scope the case writer will actually author from. Logged because an empty value here is
-  // indistinguishable in the output from a weak model: cases silently collapse to GOAL + live DOM.
-  const graphUnderstanding = (resolveUnderstanding(run) || '').trim();
-  console.log(`[graph] run ${String(run.id).slice(0, 8)} understanding=${graphUnderstanding.length} chars${graphUnderstanding ? '' : ' — authoring from the prompt + DOM ONLY'}`);
-  await startGraphRun({
-    runId: run.id,
-    workspaceId: run.projectId || undefined,
     projectId: run.projectId || undefined,
-    requestedBy: run.ownerId || undefined,
-    goal: run.prompt || '',
-    // The chat's code-grounded feature analysis — so the case writer authors from the real behaviors/rules
-    // it found (derivation, validation, payload, edges), not just the one-line prompt + the live DOM catalog.
-    understanding: graphUnderstanding || undefined,
+    appId: run.appId || undefined,
+    ownerId: run.ownerId || undefined,
+    targetUrl: run.app_url || '',
+    prompt: run.prompt || '',
+    understanding: resolveUnderstanding(run),
     conversationId: run.conversationId || undefined,
     requestedCaseCount: Number(gs.requestedCaseCount) || 0,
     reviewPolicy: gs.reviewPolicy === 'auto' ? 'auto' : 'manual',
+    executionPolicy: gs.executionPolicy === 'manual' || gs.executionPolicy === 'skip' ? gs.executionPolicy : 'auto',
     mission: missionRefFromRun(run),
     credential: { username: creds.username, password: creds.password, token: (creds as any).token },
     modelOverrides: { provider: gs.provider || undefined, model: gs.model || undefined, effort: gs.effort || undefined },
-    legacyRunSeed: run,
+    safeMetadata: run,
     seedCases: opts?.seedCases,
     avoidCaseTitles: opts?.avoidCaseTitles,
-    graphDeps: priorVerifiedElements.length ? { priorVerifiedElements } : undefined,
+    priorVerifiedElements,
   });
 }
 
@@ -6378,6 +6360,7 @@ Rules:
     (newRun as any).graph_start = {
       requestedCaseCount,
       reviewPolicy: flowMode === 'review_cases' ? 'manual' : 'auto',
+      executionPolicy: 'auto',
       provider: requestedProvider || '',
       model: requestedModel || '',
       effort: requestedEffort || '',

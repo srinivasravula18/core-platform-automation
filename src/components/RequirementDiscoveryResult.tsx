@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
+import { CoverageGapList, ScenarioStepGrid } from './CoverageDetails';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import {
@@ -145,14 +146,7 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
           </div>
         )}
 
-        {coverage.gaps?.length > 0 && (
-          <div className="mt-2 pl-6">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Gaps</div>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[11px] text-[var(--text-muted)]">
-              {coverage.gaps.map((g: string, i: number) => <li key={i}>{g}</li>)}
-            </ul>
-          </div>
-        )}
+        {coverage.gaps?.length > 0 && <CoverageGapList gaps={coverage.gaps} />}
       </div>
         );
       })()}
@@ -178,14 +172,7 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
                   {openCase === i && scenario && (
                     <div className="border-t border-[var(--border)] p-2">
                       {scenario.rationale && <p className="mb-1.5 text-[11px] text-[var(--text-muted)]">{scenario.rationale}</p>}
-                      <div className="space-y-1">
-                        {(scenario.steps || []).map((s: any, si: number) => (
-                          <div key={si} className="grid grid-cols-2 gap-2 rounded bg-[var(--bg-card)] p-1.5 text-[11px]">
-                            <span className="text-[var(--text-primary)]">{si + 1}. {s.action}</span>
-                            <span className="text-[var(--text-muted)]">{s.expected}</span>
-                          </div>
-                        ))}
-                      </div>
+                      <ScenarioStepGrid steps={scenario.steps || []} />
                     </div>
                   )}
                 </div>

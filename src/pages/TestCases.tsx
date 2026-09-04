@@ -9,6 +9,7 @@ import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useCloseOnOutsidePointer } from '@/src/lib/useCloseOnOutsidePointer';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { createClientRunId, pendingRunState, startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
@@ -311,14 +312,7 @@ export default function TestCases() {
       : { ...current, notInAnyRun, tags });
   }, [searchParams]);
 
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [isFilterOpen]);
+  useCloseOnOutsidePointer(filterRef, isFilterOpen, setIsFilterOpen);
 
   useEffect(() => {
     if (!isCaseModalOpen) return;

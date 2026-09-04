@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
+import { CoverageGapList, ScenarioStepGrid } from './CoverageDetails';
 import {
   GitBranch,
   ShieldCheck,
@@ -136,14 +137,7 @@ export function CodeChangeReview({ analysis }: { analysis: any }) {
           </div>
         )}
 
-        {!coverage.sufficient && coverage.gaps?.length > 0 && (
-          <div className="mt-2 pl-6">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Gaps</div>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[11px] text-[var(--text-muted)]">
-              {coverage.gaps.map((g: string, i: number) => <li key={i}>{g}</li>)}
-            </ul>
-          </div>
-        )}
+        {!coverage.sufficient && coverage.gaps?.length > 0 && <CoverageGapList gaps={coverage.gaps} />}
       </div>
 
       {/* Proposed new tests (only when needed) */}
@@ -165,14 +159,7 @@ export function CodeChangeReview({ analysis }: { analysis: any }) {
                 {openCase === i && (
                   <div className="border-t border-[var(--border)] p-2">
                     {c.rationale && <p className="mb-1.5 text-[11px] text-[var(--text-muted)]">{c.rationale}</p>}
-                    <div className="space-y-1">
-                      {(c.steps || []).map((s: any, si: number) => (
-                        <div key={si} className="grid grid-cols-2 gap-2 rounded bg-[var(--bg-card)] p-1.5 text-[11px]">
-                          <span className="text-[var(--text-primary)]">{si + 1}. {s.action}</span>
-                          <span className="text-[var(--text-muted)]">{s.expected}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <ScenarioStepGrid steps={c.steps || []} />
                   </div>
                 )}
               </div>

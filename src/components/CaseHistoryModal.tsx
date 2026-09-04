@@ -3,6 +3,7 @@ import { Loader2, History, RotateCcw, Check, Pin, X } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { diffCaseRevisions, type RevisionDiffValue } from '@/src/lib/caseRevisionDiff';
+import StepGroupList from '@/src/components/StepGroupList';
 
 /**
  * Test Case Versioning — revision history viewer (Phase A2).
@@ -257,26 +258,7 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
                   </div>
                 </div>
 
-                {!!selected.steps?.length && (
-                  <div className="overflow-hidden rounded-lg border border-[var(--border)]">
-                    <table className="w-full border-collapse text-left text-xs">
-                      <thead>
-                        <tr className="bg-[var(--bg-secondary)] text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                          <th className="w-1/2 border-b border-[var(--border)] px-3 py-2">Test Steps</th>
-                          <th className="w-1/2 border-b border-[var(--border)] px-3 py-2">Expected Result</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selected.steps.map((s, i) => (
-                          <tr key={i} className="align-top">
-                            <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-primary)]"><span className="text-[var(--text-muted)]">{i + 1}.</span> {s.action}</td>
-                            <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {!!selected.steps?.length && <StepGroupList steps={selected.steps} />}
               </div>
             ) : (
               <p className="p-6 text-sm text-[var(--text-muted)]">Select a revision to view its steps.</p>

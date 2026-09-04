@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { unionObservedActions, waitForPageContent } from './inspectionHelpers';
 
 // Tolerant on the enum fields: smaller / non-strict models return status/type values that
 // aren't verbatim members (or omit them), which used to hard-fail validation — the planner
@@ -424,17 +425,7 @@ export async function inspectApplicationFlow(options: {
     // to GUESS selectors. Wait on the POSITIVE signal (a table/grid with rows, or the
     // loading placeholder gone with real content present), with a generous budget instead
     // of a short fixed timeout. Best-effort: proceed anyway if it never clears.
-    await page.waitForFunction(
-      () => {
-        const body = (document.body && document.body.innerText) || '';
-        const stillLoading = /loading\s+records|\bloading…?\b/i.test(body);
-        const hasGridRows = !!document.querySelector('table tbody tr, [role="grid"] [role="row"], [role="row"] [role="gridcell"]');
-        const hasContent = document.querySelectorAll('table, [role="grid"], form, h1, h2').length > 0;
-        return hasGridRows || (!stillLoading && hasContent);
-      },
-      { timeout: 20000 },
-    ).catch(() => undefined);
-    await page.waitForTimeout(700);
+    await waitForPageContent(page);
     lastContext = await collectPageContext(page);
     observedPages.push({ stage: 'post-load', ...compactPageContext(lastContext) });
 
@@ -562,20 +553,7 @@ export async function inspectApplicationFlow(options: {
     // coder to GUESS it and the verifier unable to confirm it. Deepest-drilled steps come FIRST so
     // the controls the case actually targets survive the prompt's array cap. This is the live DOM
     // truth the whole pipeline grounds on, so it must carry every control the app ever showed us.
-    const seenSelKey = new Set<string>();
-    const unionActions: any[] = [];
-    const pushUnion = (a: any) => {
-      if (!a) return;
-      const d = a.dom || a;
-      const key = d?.testId || d?.id || d?.ariaLabel || d?.placeholder || `${a.role || ''}:${a.text || ''}`;
-      if (!key || seenSelKey.has(key)) return;
-      seenSelKey.add(key);
-      unionActions.push(a);
-    };
-    for (const a of lastContext.actions || []) pushUnion(a);
-    for (let i = observedPages.length - 1; i >= 0; i -= 1) {
-      for (const a of observedPages[i]?.actions || []) pushUnion(a);
-    }
+    const unionActions = unionObservedActions(lastContext.actions, observedPages);
 
     return {
       inspectionEngine: 'playwright-headless-dom',
