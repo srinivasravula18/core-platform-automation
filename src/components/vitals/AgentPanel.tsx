@@ -11,12 +11,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Bot, SendHorizontal, X } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { vitals, type AgentCapabilities } from '@/src/lib/vitals/api';
-import type { TimeRange } from '@/src/lib/vitals/hooks';
+import type { TimeRange, VitalsScope } from '@/src/lib/vitals/hooks';
 import { Banner, buttonClass } from './ui';
 
 type Message = { role: 'user' | 'assistant'; content: string; tools?: string[] };
 
-export default function AgentPanel({ range }: { range: TimeRange }) {
+export default function AgentPanel({ range, scope }: { range: TimeRange; scope: VitalsScope }) {
   const [open, setOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -50,7 +50,7 @@ export default function AgentPanel({ range }: { range: TimeRange }) {
     setBusy(true);
     setError('');
     try {
-      const answer = await vitals.askAgent({ message, from: range.from, to: range.to, conversation });
+      const answer = await vitals.askAgent({ message, from: range.from, to: range.to, scope, conversation });
       setMessages((current) => [...current, { role: 'assistant', content: answer.message, tools: answer.toolsUsed }]);
     } catch (cause) {
       setError((cause as Error).message);
@@ -80,7 +80,7 @@ export default function AgentPanel({ range }: { range: TimeRange }) {
             <div>
               <strong className="text-sm text-[var(--text-primary)]">Observability agent</strong>
               <p className="text-xs text-[var(--text-muted)]">
-                Reads {range.from} to {range.to}
+                Reads {scope.kind === 'all' ? 'all metrics' : `${scope.kind} ${scope.value}`} from {range.from} to {range.to}
                 {capabilities?.executionAvailable ? ' · may propose runs' : ' · read-only'}
               </p>
             </div>

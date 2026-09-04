@@ -3,6 +3,7 @@
 import { readConnection } from './connection';
 import { vitalsQuery, vitalsScalar } from './db';
 import { RESOLUTION_TABLE, resolveRange } from './timerange';
+import { metricScopeSql, type MetricScope } from './scope';
 
 export const calculateSlo = (requestCount: number | null, errorRate: number | null, targetPct: number) => {
   if (requestCount === null || errorRate === null) return { availabilityPct: null, burnRate: null, budgetRemainingPct: null };
@@ -20,12 +21,13 @@ export const calculateCapacity = (currentRps: number | null, testedRps: number |
 export const calculateErrorRate = (requests: number | null, errors: number | null) =>
   requests === null ? null : requests > 0 ? ((errors ?? 0) / requests) * 100 : errors ? 100 : null;
 
-const windowStats = async (table: string, fromMs: number, toMs: number) => {
+const windowStats = async (table: string, fromMs: number, toMs: number, scope: MetricScope) => {
   const from = new Date(fromMs);
   const to = new Date(toMs);
   const seconds = Math.max((toMs - fromMs) / 1000, 1);
+  const scoped = metricScopeSql(scope, 4);
   const between = (expression: string, metric: string) =>
-    vitalsScalar(`select ${expression} as value from obs.${table} where metric = $1 and bucket_at between $2 and $3`, [metric, from, to]);
+    vitalsScalar(`select ${expression} as value from obs.${table} where metric = $1 and bucket_at between $2 and $3${scoped.sql}`, [metric, from, to, ...scoped.params]);
 
   const [requests, errors, latencyP95, latencyP50, cpu, memory, eventLoop, poolWaiting] = await Promise.all([
     between('sum(sum_value)::text', 'http.request.count'),
@@ -52,14 +54,14 @@ const windowStats = async (table: string, fromMs: number, toMs: number) => {
   };
 };
 
-export const getOverviewSnapshot = async (from?: string, to?: string) => {
+export const getOverviewSnapshot = async (from?: string, to?: string, scope: MetricScope = { kind: 'all', value: '' }) => {
   const range = resolveRange(from, to);
   const table = RESOLUTION_TABLE[range.resolution];
   const span = range.toMs - range.fromMs;
 
   const [current, previous, issues, slowRoutes, alertRows, capacityRun] = await Promise.all([
-    windowStats(table, range.fromMs, range.toMs),
-    windowStats(table, range.fromMs - span, range.fromMs),
+    windowStats(table, range.fromMs, range.toMs, scope),
+    windowStats(table, range.fromMs - span, range.fromMs, scope),
     vitalsQuery<{ unresolved: string; new_today: string; critical: string; oldest_unresolved: Date | null }>(
       `select count(*) filter (where status = 'unresolved')::text as unresolved,
               count(*) filter (where first_seen > now() - interval '24 hours')::text as new_today,
@@ -70,11 +72,11 @@ export const getOverviewSnapshot = async (from?: string, to?: string) => {
     vitalsQuery<{ route: string; p95: string | null; count: string }>(
       `select coalesce(labels ->> 'route', '(unknown)') as route, max(p95)::text as p95, sum(sample_count)::text as count
          from obs.${table}
-        where metric = 'http.request.duration' and bucket_at between $1 and $2
+        where metric = 'http.request.duration' and bucket_at between $1 and $2${metricScopeSql(scope, 3).sql}
         group by 1
         order by max(p95) desc nulls last
         limit 10`,
-      [new Date(range.fromMs), new Date(range.toMs)],
+      [new Date(range.fromMs), new Date(range.toMs), ...metricScopeSql(scope, 3).params],
     ),
     vitalsQuery<{ state: string; count: string }>(`select state, count(*)::text as count from obs.alert_instance group by state`),
     vitalsQuery<{ profile_label: string; finished_at: Date | null; throughput_rps: string | null }>(

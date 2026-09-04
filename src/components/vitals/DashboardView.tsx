@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { vitals, type Annotation, type DashboardModel, type MetricSeries, type Panel } from '@/src/lib/vitals/api';
-import { usePolled, type TimeRange } from '@/src/lib/vitals/hooks';
+import { scopeMatchers, usePolled, type TimeRange, type VitalsScope } from '@/src/lib/vitals/hooks';
 import { formatValue, type Unit } from '@/src/lib/vitals/format';
 import { ChartLegend, PanelFrame, RankedBarChart, SeriesTable, TimeSeriesChart } from './charts';
 import { EmptyNote, TableFrame, Thead, gridClass, rowClass, tdClass, tdNumClass, thClass, thNumClass } from './ui';
@@ -38,12 +38,14 @@ function PanelRenderer({
   refreshMs,
   live,
   annotations,
+  scope,
 }: {
   panel: Panel;
   range: TimeRange;
   refreshMs: number;
   live: boolean;
   annotations: Annotation[];
+  scope: VitalsScope;
 }) {
   const loadable = usePolled(
     () =>
@@ -53,13 +55,13 @@ function PanelRenderer({
         targets: panel.targets.map((target) => ({
           refId: target.refId,
           metric: target.metric,
-          matchers: target.matchers,
+          matchers: [...(target.matchers ?? []), ...scopeMatchers(scope)],
           groupBy: target.groupBy,
           reducer: target.reducer,
           legend: target.legend,
         })),
       }),
-    [panel.id, range.from, range.to],
+    [panel.id, range.from, range.to, scope.kind, scope.value],
     refreshMs,
     live,
   );
@@ -131,19 +133,21 @@ export default function DashboardView({
   refreshMs,
   live,
   annotations = [],
+  scope,
 }: {
   model: DashboardModel;
   range: TimeRange;
   refreshMs: number;
   live: boolean;
   annotations?: Annotation[];
+  scope: VitalsScope;
 }) {
   return (
     <div className={cn(gridClass, 'content-start')}>
       {[...model.panels]
         .sort((left, right) => left.gridPos.y - right.gridPos.y || left.gridPos.x - right.gridPos.x)
         .map((panel) => (
-          <PanelRenderer key={panel.id} panel={panel} range={range} refreshMs={refreshMs} live={live} annotations={annotations} />
+          <PanelRenderer key={panel.id} panel={panel} range={range} refreshMs={refreshMs} live={live} annotations={annotations} scope={scope} />
         ))}
     </div>
   );

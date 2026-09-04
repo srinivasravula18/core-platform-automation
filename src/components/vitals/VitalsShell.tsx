@@ -10,7 +10,7 @@ import { Database, Pause, Play } from 'lucide-react';
 import AgentPanel from './AgentPanel';
 import { cn } from '@/src/lib/utils';
 import { useVitalsView, type TimeRange } from '@/src/lib/vitals/hooks';
-import { vitals, type VitalsStatus } from '@/src/lib/vitals/api';
+import { vitals, type FleetResponse, type VitalsStatus } from '@/src/lib/vitals/api';
 import { STATUS } from '@/src/lib/vitals/theme';
 import { Banner, Card, PageHeader, StatusDot, buttonClass, inputClass } from './ui';
 
@@ -76,6 +76,30 @@ export function TimeControls({ range, onRangeChange }: { range: TimeRange; onRan
   );
 }
 
+function ScopeControl() {
+  const { scope, setScope } = useVitalsView();
+  const [fleet, setFleet] = useState<FleetResponse | null>(null);
+
+  useEffect(() => { vitals.fleet().then(setFleet).catch(() => setFleet(null)); }, []);
+
+  const options = [
+    ...(fleet?.servers.map((server) => ({ value: `server:${server.name}`, label: `Server · ${server.name}` })) ?? []),
+    ...(fleet?.environments.map((sandbox) => ({ value: `sandbox:${sandbox.name}`, label: `Sandbox · ${sandbox.name}` })) ?? []),
+  ];
+  const value = scope.kind === 'all' ? 'all:' : `${scope.kind}:${scope.value}`;
+
+  return (
+    <select aria-label="Metric scope" title="Filter every Vitals metric panel" value={value}
+      onChange={(event) => {
+        const [kind, ...parts] = event.target.value.split(':');
+        setScope({ kind: kind as 'all' | 'server' | 'sandbox', value: parts.join(':') });
+      }} className={cn(inputClass, 'w-auto max-w-56 py-1.5')}>
+      <option value="all:">Whole fleet</option>
+      {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+  );
+}
+
 export function NotConnected({ message }: { message?: string }) {
   return (
     <Card className="max-w-2xl">
@@ -113,7 +137,7 @@ export default function VitalsShell({
   showAgent?: boolean;
   children: ReactNode;
 }) {
-  const { range, setRange } = useVitalsView();
+  const { range, setRange, scope } = useVitalsView();
   const [store, setStore] = useState<VitalsStatus | null>(null);
   const [checked, setChecked] = useState(false);
 
@@ -134,8 +158,9 @@ export default function VitalsShell({
         subtitle={subtitle}
         actions={
           <>
+            {showTimeControls && !blocked && <ScopeControl />}
             {showTimeControls && !blocked && <TimeControls range={range} onRangeChange={setRange} />}
-            {showAgent && !blocked && <AgentPanel range={range} />}
+            {showAgent && !blocked && <AgentPanel range={range} scope={scope} />}
             {actions}
           </>
         }

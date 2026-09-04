@@ -28,6 +28,8 @@ export type PanelTarget = {
   legend?: string;
 };
 
+export type VitalsMetricScope = { kind: 'all' | 'server' | 'sandbox'; value: string };
+
 export type Panel = {
   id: number;
   type: 'timeseries' | 'stat' | 'bar' | 'table' | 'area';
@@ -516,8 +518,8 @@ export const vitals = {
   queryMetrics: (body: { from?: string; to?: string; maxPoints?: number; targets: PanelTarget[] }) =>
     request<MetricQueryResult>('/metrics/query', { method: 'POST', body: JSON.stringify(body) }),
   metricNames: () => request<{ metrics: { metric: string; labelKeys: string[]; seriesCount: number }[] }>('/metrics/names'),
-  overview: (from: string, to: string) =>
-    request<OverviewResponse>(`/overview?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  overview: (from: string, to: string, scope: VitalsMetricScope) =>
+    request<OverviewResponse>(`/overview?${new URLSearchParams({ from, to, scopeKind: scope.kind, scopeValue: scope.value }).toString()}`),
   annotations: (from: string, to: string) =>
     request<{ annotations: Annotation[] }>(`/annotations?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
 
@@ -608,6 +610,6 @@ export const vitals = {
 
   // ---- agent ----
   agentCapabilities: () => request<AgentCapabilities>('/agent/capabilities'),
-  askAgent: (body: { message: string; from: string; to: string; conversation: { role: 'user' | 'assistant'; content: string }[] }) =>
+  askAgent: (body: { message: string; from: string; to: string; scope: VitalsMetricScope; conversation: { role: 'user' | 'assistant'; content: string }[] }) =>
     request<AgentAnswer>('/agent/respond', { method: 'POST', body: JSON.stringify(body) }),
 };

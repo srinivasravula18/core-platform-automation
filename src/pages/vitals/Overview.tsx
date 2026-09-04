@@ -68,10 +68,10 @@ function Insight({ label, value, sub, onClick }: { label: string; value: string;
 
 export default function VitalsOverview() {
   const navigate = useNavigate();
-  const { range, refreshMs, live } = useVitalsView();
+  const { range, refreshMs, live, scope } = useVitalsView();
   const [detail, setDetail] = useState<DetailKey | null>(null);
 
-  const overview = usePolled(() => vitals.overview(range.from, range.to), [range.from, range.to], refreshMs, live);
+  const overview = usePolled(() => vitals.overview(range.from, range.to, scope), [range.from, range.to, scope.kind, scope.value], refreshMs, live);
   const annotations = usePolled(() => vitals.annotations(range.from, range.to), [range.from, range.to], refreshMs, live);
   // Falls back to the compiled-in layout until somebody edits it, so charts render on a store
   // this console has never written to.
@@ -295,7 +295,7 @@ export default function VitalsOverview() {
       </Modal>
 
       {dashboard.data ? (
-        <DashboardView model={dashboard.data.model} range={range} refreshMs={refreshMs} live={live} annotations={annotations.data?.annotations ?? []} />
+        <DashboardView model={dashboard.data.model} range={range} refreshMs={refreshMs} live={live} annotations={annotations.data?.annotations ?? []} scope={scope} />
       ) : (
         <EmptyNote>{dashboard.error ? dashboard.error : 'Loading dashboard…'}</EmptyNote>
       )}

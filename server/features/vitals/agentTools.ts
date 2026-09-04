@@ -20,6 +20,7 @@ import { getOverviewSnapshot } from './overview';
 import { getRun, listKnownProfiles, listRuns, startRun } from './runs';
 import { listEngagements, getEngagement, listThreatIntelligence } from './security';
 import { getTrace, listTraces, listTransactions, traceListSchema } from './traces';
+import type { MetricScope } from './scope';
 
 /** Ceilings that keep one tool result from swallowing the model's context. */
 const MAX_ARRAY_ITEMS = 50;
@@ -115,7 +116,7 @@ const readSection = async (section: Section, args: { id?: string; status?: strin
  * than accepted from the model so an answer can never quietly describe a different period than the
  * charts on screen.
  */
-export function vitalsAgentTools(range: { from: string; to: string }): AgentTool[] {
+export function vitalsAgentTools(range: { from: string; to: string }, scope: MetricScope = { kind: 'all', value: '' }): AgentTool[] {
   return [
     {
       spec: {
@@ -125,7 +126,7 @@ export function vitalsAgentTools(range: { from: string; to: string }): AgentTool
         parameters: { type: 'object', properties: {}, additionalProperties: false },
       },
       async execute() {
-        return bound(await getOverviewSnapshot(range.from, range.to));
+        return bound(await getOverviewSnapshot(range.from, range.to, scope));
       },
     },
     {

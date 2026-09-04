@@ -12,6 +12,7 @@ import { getToolCapableOrchestrator } from '../../ai/orchestrator';
 import { readConnection } from './connection';
 import { isConfigured } from './db';
 import { vitalsAgentTools } from './agentTools';
+import { metricScopeSchema } from './scope';
 
 export const AGENT_NAME = 'vitalsAnalyst';
 
@@ -19,6 +20,7 @@ export const agentRequestSchema = z.object({
   message: z.string().trim().min(1).max(2_000),
   from: z.string().max(64).default('now-1h'),
   to: z.string().max(64).default('now'),
+  scope: metricScopeSchema.default({ kind: 'all', value: '' }),
   conversation: z
     .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().trim().min(1).max(4_000) }))
     .max(8)
@@ -27,10 +29,11 @@ export const agentRequestSchema = z.object({
 
 export type AgentRequest = z.infer<typeof agentRequestSchema>;
 
-const systemPrompt = (range: { from: string; to: string }, executionAvailable: boolean) =>
+const systemPrompt = (range: { from: string; to: string }, scope: AgentRequest['scope'], executionAvailable: boolean) =>
   [
     'You are the observability analyst for the store this console is connected to.',
     `The person is looking at the window ${range.from} to ${range.to}. Every tool you call reads that same window, so never describe a different period than the charts on screen.`,
+    `Metric scope is ${scope.kind === 'all' ? 'the whole fleet' : `${scope.kind} ${scope.value}`}. Never present scoped metrics as fleet-wide.`,
     'Ground every claim in a tool result. Call get_observability_overview before answering anything about overall health, and inspect_observability_workspace for every other live question — including each section a question spans. If the data is absent, say it is absent; never estimate a number you did not read.',
     'Separate what you observed from what you infer. Give the finding, its likely impact, and the safest next diagnostic step. Present numbers with units and with the comparison against the preceding window where you have one.',
     'You know nothing about this product beyond what the tools return. Do not assume its architecture, its naming, or what a metric implies about its business — read, then describe.',
@@ -88,8 +91,8 @@ export async function askVitalsAgent(
     task: input.message,
     guardrailInput: input.message,
     seedMessages: input.conversation,
-    system: systemPrompt(range, Boolean(control)),
-    tools: vitalsAgentTools(range),
+    system: systemPrompt(range, input.scope, Boolean(control)),
+    tools: vitalsAgentTools(range, input.scope),
     // turnId is what stops a run being previewed and started in one turn; it must change per request.
     toolContext: { userId: identity.userId, workspaceId: identity.workspaceId, turnId: identity.turnId },
     maxSteps: 12,
