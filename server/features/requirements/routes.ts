@@ -209,7 +209,8 @@ export function registerRequirementRoutes(app: Express) {
       }
       res.json(requirements.map((r: any) => {
         const counts = byReq.get(r.id) || { existing: 0, generated: 0 };
-        return { ...r, testCaseTypes: [...(typesByReq.get(r.id) || [])], existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount: counts.existing + counts.generated };
+        const linkedCaseCount = counts.existing + counts.generated;
+        return { ...r, coverageStatus: linkedCaseCount ? r.coverageStatus : 'none', testCaseTypes: [...(typesByReq.get(r.id) || [])], existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount };
       }));
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Failed to list requirements.' });

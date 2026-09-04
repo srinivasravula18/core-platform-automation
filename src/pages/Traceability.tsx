@@ -294,9 +294,9 @@ export default function Traceability() {
                     )}
                     {detail && (
                       <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                        {req.coverageStatus === 'covered'
+                        {linkedCases.length > 0 && req.coverageStatus === 'covered'
                           ? <><ShieldCheck className="h-3.5 w-3.5 text-emerald-400" /> Existing cases cover this requirement.</>
-                          : <><AlertTriangle className="h-3.5 w-3.5 text-amber-400" /> Review the generated cases to complete coverage.</>}
+                          : <><AlertTriangle className="h-3.5 w-3.5 text-amber-400" /> {linkedCases.length ? 'Review the linked cases to complete coverage.' : 'Link or generate test cases to establish coverage.'}</>}
                       </div>
                     )}
                   </div>
