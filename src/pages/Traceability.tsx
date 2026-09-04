@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Sparkles, Loader2, Target, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles, Loader2, Plus, Target, ShieldCheck, AlertTriangle } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import EditableCaseCard from '../components/EditableCaseCard';
 import { normalizeTestCaseTypes } from '@/core/shared/testCaseTypes';
@@ -39,6 +39,47 @@ function RequirementContent({ req }: { req: any }) {
       {dataNotes && <ReqSection title="Data Population"><span className="whitespace-pre-wrap">{dataNotes}</span></ReqSection>}
     </div>
   );
+}
+
+function CreateLinkedCase({ requirement, onCreated }: { requirement: any; onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({ title: '', testingType: 'Functional', crud: 'Read', priority: 'Medium', preconditions: '', action: '', expected: '' });
+
+  const create = async () => {
+    if (!form.title.trim() || !form.action.trim() || !form.expected.trim()) return;
+    setSaving(true); setError('');
+    try {
+      const created = await fetch('/api/cases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        title: form.title.trim(), testingTypes: [form.testingType, form.crud], testingType: form.testingType, priority: form.priority,
+        preconditions: form.preconditions.trim(), steps: [{ action: form.action.trim(), expected: form.expected.trim(), captureEvidence: true }],
+        status: 'Draft', type: 'Manual', testingScope: 'Manual', folderId: requirement.folderId || '', createdBy: 'Traceability',
+      }) });
+      const createdBody = await created.json().catch(() => ({}));
+      if (!created.ok || !createdBody.id) throw new Error(createdBody.error || 'Could not create the test case.');
+      const linked = await fetch(`/api/requirements/${encodeURIComponent(requirement.id)}/links`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: createdBody.id, linkType: 'existing', note: `Created from Traceability for ${requirement.id}` }) });
+      const linkedBody = await linked.json().catch(() => ({}));
+      if (!linked.ok) throw new Error(linkedBody.error || 'Case was created but could not be linked.');
+      setForm({ title: '', testingType: 'Functional', crud: 'Read', priority: 'Medium', preconditions: '', action: '', expected: '' });
+      setOpen(false); onCreated();
+    } catch (cause) { setError((cause as Error).message); } finally { setSaving(false); }
+  };
+
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className="mb-3 inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white"><Plus className="h-4 w-4" />Create linked case</button>;
+  return <div className="mb-3 rounded-lg border border-[var(--accent)]/30 bg-[var(--bg-card)] p-3">
+    <div className="grid gap-3 md:grid-cols-3">
+      <label className="md:col-span-2 text-xs text-[var(--text-muted)]">Case title<input className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[var(--text-primary)]" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></label>
+      <label className="text-xs text-[var(--text-muted)]">Priority<select className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>{['Low', 'Medium', 'High', 'Critical'].map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label className="text-xs text-[var(--text-muted)]">Test type<select className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2" value={form.testingType} onChange={(e) => setForm({ ...form, testingType: e.target.value })}>{['Functional', 'Smoke', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Security', 'Performance'].map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label className="text-xs text-[var(--text-muted)]">CRUD coverage<select className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2" value={form.crud} onChange={(e) => setForm({ ...form, crud: e.target.value })}>{['Create', 'Read', 'Update', 'Delete'].map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label className="text-xs text-[var(--text-muted)]">Preconditions<input className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[var(--text-primary)]" value={form.preconditions} onChange={(e) => setForm({ ...form, preconditions: e.target.value })} /></label>
+      <label className="text-xs text-[var(--text-muted)]">Action<input className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[var(--text-primary)]" value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} /></label>
+      <label className="md:col-span-2 text-xs text-[var(--text-muted)]">Expected result<input className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[var(--text-primary)]" value={form.expected} onChange={(e) => setForm({ ...form, expected: e.target.value })} /></label>
+    </div>
+    {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
+    <div className="mt-3 flex gap-2"><button type="button" disabled={saving || !form.title.trim() || !form.action.trim() || !form.expected.trim()} onClick={() => void create()} className="rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{saving ? 'Creating…' : 'Create and link'}</button><button type="button" onClick={() => setOpen(false)} className="rounded-md border border-[var(--border)] px-3 py-2 text-xs">Cancel</button></div>
+  </div>;
 }
 
 export default function Traceability() {
@@ -265,6 +306,7 @@ export default function Traceability() {
                 {isOpen && (
                   <div className="bg-[var(--bg-secondary)]/40 px-4 pb-4 pt-1">
                     <RequirementContent req={detail || req} />
+                    <CreateLinkedCase requirement={detail || req} onCreated={() => { loadDetail(req.id); fetchRequirements(); }} />
                     {req.description && !(detail || req).businessRules?.length && !(detail || req).dataPopulationNotes && (
                       <p className="mb-2 whitespace-pre-wrap text-xs text-[var(--text-muted)]">{req.description}</p>
                     )}
