@@ -40,16 +40,16 @@ Workspace data follows this hierarchy:
 
 ```text
 Signed-in user
-â””â”€â”€ Project
-    â””â”€â”€ Application
-        â”œâ”€â”€ Repository folders
-        â”œâ”€â”€ Requirements
-        â”œâ”€â”€ Test plans
-        â”œâ”€â”€ Test suites
-        â”œâ”€â”€ Test cases
-        â”œâ”€â”€ Test runs and evidence
-        â”œâ”€â”€ Reports and defects
-        â””â”€â”€ Automation assets
+└── Project
+    └── Application
+        ├── Repository folders
+        ├── Requirements
+        ├── Test plans
+        ├── Test suites
+        ├── Test cases
+        ├── Test runs and evidence
+        ├── Reports and defects
+        └── Automation assets
 ```
 
 The web client sends the selected project and application with scoped requests. The API also applies the authenticated owner. This prevents one signed-in user, project, or application from silently reading another scope.
@@ -223,9 +223,9 @@ flowchart TB
     Scope --> Exec["Playwright and automation services"]
     Scope --> Source["Git and API intelligence"]
 
-    Orch --> Coord["Coordinator<br/>plans Â· dispatches Â· accepts"]
+    Orch --> Coord["Coordinator<br/>plans · dispatches · accepts"]
     Coord --> Specialists["Specialist agents<br/>isolated model threads"]
-    Coord --> Gates["Deterministic gates<br/>evidence Â· critique Â· compile Â· review"]
+    Coord --> Gates["Deterministic gates<br/>evidence · critique · compile · review"]
     Specialists --> Providers["AI providers and authenticated local tools"]
 
     QA --> DB[("PostgreSQL")]
@@ -265,7 +265,7 @@ The orchestration layer turns a request into a planned mission and runs it. It o
 | **Task ledger** | The checkpointed record of who was asked to do what, its status, attempt, and dependencies. |
 | **Shared facts** | Append-only evidence. A fact is `proposed` until the coordinator accepts it; only accepted facts reach a downstream agent. |
 
-Each specialist reasons on its own isolated model thread with its own tool permissions, so one agent can never read another's private reasoning or reach tools it was not granted. Compiling, executing, and persisting are never on an agent's tool belt â€” they are coordinator-initiated capabilities.
+Each specialist reasons on its own isolated model thread with its own tool permissions, so one agent can never read another's private reasoning or reach tools it was not granted. Compiling, executing, and persisting are never on an agent's tool belt — they are coordinator-initiated capabilities.
 
 ### Layered view
 
@@ -273,18 +273,18 @@ Each specialist reasons on its own isolated model thread with its own tool permi
 flowchart TB
     subgraph UI["Presentation"]
         Console["Agent Console"]
-        Pages["Test management Â· runs Â· reports"]
+        Pages["Test management · runs · reports"]
     end
 
     subgraph Edge["API and scope"]
-        Routes["Feature APIs Â· event streams"]
-        Guard["Auth Â· project/app scope Â· RBAC"]
+        Routes["Feature APIs · event streams"]
+        Guard["Auth · project/app scope · RBAC"]
     end
 
     subgraph Brain["Orchestration"]
         Profiles["Mission profiles"]
-        Coordinator["Coordinator Â· task ledger"]
-        Roster["Agent registry<br/>prompts Â· tools Â· permissions"]
+        Coordinator["Coordinator · task ledger"]
+        Roster["Agent registry<br/>prompts · tools · permissions"]
     end
 
     subgraph Truth["Deterministic authority"]
@@ -295,7 +295,7 @@ flowchart TB
     end
 
     subgraph Store["Persistence"]
-        PG[("PostgreSQL<br/>records Â· ledger Â· checkpoints")]
+        PG[("PostgreSQL<br/>records · ledger · checkpoints")]
         Artifacts[("Evidence and artifacts")]
     end
 
@@ -314,13 +314,13 @@ Two engines with one boundary between them: **LangGraph schedules, Codex reasons
 
 ```mermaid
 flowchart LR
-    subgraph LG["LangGraph â€” the scheduler"]
+    subgraph LG["LangGraph — the scheduler"]
         Nodes["Graph nodes"]
-        State["Checkpointed state<br/>plan Â· ledger Â· budget"]
+        State["Checkpointed state<br/>plan · ledger · budget"]
         Interrupt["interrupt() for human review"]
     end
 
-    subgraph CX["Codex SDK â€” the reasoning"]
+    subgraph CX["Codex SDK — the reasoning"]
         T1["Scout thread"]
         T2["Forge thread"]
         T3["Sentinel thread"]
@@ -337,16 +337,16 @@ flowchart LR
     Interrupt --> PGC
 ```
 
-**LangGraph owns** durable scheduling and checkpointing, routing from accepted results, retry and loop bounds, interrupt/resume/cancel, and terminal-state truth. Because state is checkpointed in PostgreSQL, a run paused at a review gate can be resumed by a different process â€” a restart does not lose it.
+**LangGraph owns** durable scheduling and checkpointing, routing from accepted results, retry and loop bounds, interrupt/resume/cancel, and terminal-state truth. Because state is checkpointed in PostgreSQL, a run paused at a review gate can be resumed by a different process — a restart does not lose it.
 
 **The Codex SDK owns** reasoning inside one assigned task. Each specialist gets its own persistent thread (`startThread` / `resumeThread`), its own model and reasoning effort, and a read-only sandbox. Structured output is validated against the agent's contract; an invalid result gets exactly one correction turn, then fails the task visibly rather than being read as prose.
 
 Two deliberate boundaries:
 
 - **Codex never schedules.** It cannot decide which agent runs next, retry itself, or extend the run. That is the graph's job, which is why one wrong model answer cannot derail a pipeline.
-- **State-changing work is never a model tool.** Agents call read/inspect tools in-turn through a scoped in-process bridge â€” the tools keep their normal database access and permission checks, and each agent only sees the tools it was granted. Compiling, executing, and persisting run as coordinator-initiated capabilities under an idempotency key.
+- **State-changing work is never a model tool.** Agents call read/inspect tools in-turn through a scoped in-process bridge — the tools keep their normal database access and permission checks, and each agent only sees the tools it was granted. Compiling, executing, and persisting run as coordinator-initiated capabilities under an idempotency key.
 
-Model and reasoning effort are configurable per agent in **Settings â†’ AI Runtime**.
+Model and reasoning effort are configurable per agent in **Settings → AI Runtime**.
 
 ### Persistence and connected systems
 
@@ -359,13 +359,13 @@ A request is planned as a **mission**. The request decides which agents wake and
 ```mermaid
 flowchart LR
     Req["Your request"] --> Target{"Target chosen<br/>and responding?"}
-    Target -- "no" --> Ask["Ask which target<br/>â€” no run is started"]
+    Target -- "no" --> Ask["Ask which target<br/>— no run is started"]
     Target -- "yes" --> Mission["Select mission profile"]
     Mission --> Plan["Pin plan + agent roster<br/>(versions frozen for the run)"]
     Plan --> Coord["Coordinator"]
 
     Coord --> Agents["Specialists<br/>each on its own thread"]
-    Agents --> Gates{"Evidence Â· critique<br/>compile Â· review"}
+    Agents --> Gates{"Evidence · critique<br/>compile · review"}
     Gates -- "accepted" --> Ledger[("Task ledger<br/>+ accepted facts")]
     Gates -- "rejected" --> Coord
     Ledger --> Deliverable["Mission deliverable"]
@@ -381,7 +381,7 @@ Three rules hold throughout:
 
 | Agent | Role | Owns |
 | --- | --- | --- |
-| **Maestro** | Supervisor | Scope ambiguity, repair-vs-escalate, budget breach. Never routes nodes â€” deterministic edges do that. |
+| **Maestro** | Supervisor | Scope ambiguity, repair-vs-escalate, budget breach. Never routes nodes — deterministic edges do that. |
 | **Atlas** | Repo cartographer | Reads the codebase once; produces the map every other agent depends on. |
 | **Compass** | Scope resolver | Reduces that map to the minimal slice needed to test the target. |
 | **Scout** | Live grounding | Grounds evidence against the running application: DOM, selectors, API. |
@@ -396,21 +396,21 @@ Three rules hold throughout:
 
 Compiling and executing are **deterministic capabilities**, not agents. They are invoked by the coordinator under an idempotency key, so a retried or resumed run cannot compile or execute the same work twice.
 
-Every agent's system prompt is editable in **Settings â†’ System Prompts**.
+Every agent's system prompt is editable in **Settings → System Prompts**.
 
 ### What a mission runs
 
 | You ask for | Agents that wake | Run ends at |
 | --- | --- | --- |
-| Requirements | Atlas â†’ Compass â†’ Scribe â†’ Sentinel | Accepted requirements |
-| A test plan | Atlas â†’ Compass â†’ Charter â†’ Sentinel | Accepted test plan |
-| A suite | Curator â†’ Sentinel | Accepted suite |
-| Test cases | Atlas/Scout â†’ Compass â†’ Scribe â†’ Forge â†’ Sentinel | Cases awaiting your review |
-| A full test run | The above, then Anvil â†’ Compiler â†’ Runner â†’ Sleuth â†’ Herald | Evidence, verdicts, and a report |
-| An investigation | Sleuth â†’ Herald | Classified failures |
-| A question | Atlas/Scout (read-only) â†’ Herald | A grounded answer, no artifacts written |
+| Requirements | Atlas → Compass → Scribe → Sentinel | Accepted requirements |
+| A test plan | Atlas → Compass → Charter → Sentinel | Accepted test plan |
+| A suite | Curator → Sentinel | Accepted suite |
+| Test cases | Atlas/Scout → Compass → Scribe → Forge → Sentinel | Cases awaiting your review |
+| A full test run | The above, then Anvil → Compiler → Runner → Sleuth → Herald | Evidence, verdicts, and a report |
+| An investigation | Sleuth → Herald | Classified failures |
+| A question | Atlas/Scout (read-only) → Herald | A grounded answer, no artifacts written |
 
-A mission cannot write an artifact it does not declare â€” asking a question never creates test cases. A short mission can be promoted to a longer one (cases â†’ automation) only after you approve it.
+A mission cannot write an artifact it does not declare — asking a question never creates test cases. A short mission can be promoted to a longer one (cases → automation) only after you approve it.
 
 ## Agent runtime flow
 
@@ -426,13 +426,13 @@ sequenceDiagram
     You->>Coord: Test the list view
     Coord->>Scout: Ground the target
     Scout-->>Coord: Proposed evidence
-    Coord->>Coord: Evidence gate â€” accept or reject
+    Coord->>Coord: Evidence gate — accept or reject
     Coord->>Forge: Design cases from accepted evidence
     Forge-->>Coord: Draft cases
     Coord->>Sentinel: Refute what the evidence does not support
     Sentinel-->>Forge: Critique (one bounded revision)
     Forge-->>Coord: Revised cases
-    Coord->>You: Review gate â€” approve, edit, or reject
+    Coord->>You: Review gate — approve, edit, or reject
     You-->>Coord: Approved
     Coord->>Cap: Compile, then execute (exactly once)
     Cap-->>Coord: Scripts, verdicts, evidence
@@ -553,23 +553,20 @@ Optional runtime flags enable features such as the desktop automation agent, inv
 
 Vitals is the operational workspace for application health, infrastructure health, errors, traces, load-test evidence, and authorized security-test evidence. This is the canonical UI guide for every Vitals screen.
 
-### Data source and request flow
+### Data source and scope
 
-Vitals is a console, not a collector. The monitored product writes metrics, issues, traces, heartbeats, and run records to its observability store. Vitals pages call this application's backend, which runs bounded queries through a separate connection pool. The browser never connects directly to the database, and observability queries cannot consume the application database pool. Catalogs, labels, dashboards, servers, sandboxes, and run history are discovered at runtime; unavailable data is reported instead of fabricated.
+Vitals is a console, not a collector. The monitored product writes metrics, issues, traces, heartbeats, and run records to its observability store. Vitals pages call this application's backend, which runs bounded queries through a separate connection pool. The browser never connects directly to the database. Catalogs, labels, dashboards, servers, sandboxes, and run history are discovered at runtime; unavailable data is reported instead of fabricated.
 
-### Shared controls and metric scope
+- **Range** selects the evidence window; **Refresh** controls live reload and can be paused.
+- **Whole fleet** includes every server and sandbox.
+- **Server** filters host-level metrics using the canonical `server` label.
+- **Sandbox** filters one environment using the canonical `sandbox` label.
 
-- **Range:** selects the evidence window.
-- **Refresh:** controls live reload and can be paused without changing the range.
-- **Whole fleet:** includes every server and sandbox.
-- **Server:** filters using one host's canonical `server` label.
-- **Sandbox:** filters using one environment's canonical `sandbox` label.
-
-Server measurements are host-level and are never calculated by adding sandbox values. Sandbox measurements describe only the selected environment. Unlabelled legacy series remain visible only under Whole fleet.
+Server measurements are never calculated by adding sandbox values. Unlabelled legacy series remain visible only under Whole fleet.
 
 ### Overview
 
-Overview shows request rate, request/error counts, error rate, p50/p95 latency, CPU, RSS memory, event-loop lag, database waiters, SLO availability, error-budget burn, tested-capacity headroom, incidents, changes, and slow routes. Cards compare the selected window with the preceding equivalent window when available. Metrics follow the selected scope; store-wide totals are labelled explicitly.
+Overview shows request rate, request/error counts, error rate, p50/p95 latency, CPU, RSS memory, event-loop lag, database waiters, SLO availability, error-budget burn, tested-capacity headroom, incidents, changes, and slow routes. Cards compare the current and preceding equivalent windows when possible. Metrics follow the selected scope; store-wide totals are labelled explicitly.
 
 ### Fleet
 
@@ -585,19 +582,19 @@ Selecting a server or sandbox carries that scope into other Vitals screens and A
 
 ### Metrics
 
-Metrics provides curated dashboards and direct exploration of discovered metrics. Explorer supports metric, labels, reducer, grouping, unit, stacking, server matcher, and sandbox matcher. Chart tables expose exact plotted values. Configured panels can be saved; viewing built-in dashboards writes nothing to the monitored store.
+Metrics provides curated dashboards and direct exploration of discovered metrics. Explorer supports metric, labels, reducer, grouping, unit, stacking, server matcher, and sandbox matcher. Chart tables expose exact values. Configured panels can be saved; viewing built-in dashboards writes nothing to the monitored store.
 
 ### Alerts
 
-Alerts contains rules, evaluated instances, contact points, and silences. Rules define metric, reducer, window, comparator, threshold, grouping labels, and pending duration. Silences suppress matching notifications without deleting evidence. Evaluation is opt-in, and store locking prevents duplicate transition notifications. The SLO target drives availability, burn-rate, and remaining-budget calculations.
+Alerts contains rules, evaluated instances, contact points, and silences. Rules define metric, reducer, window, comparator, threshold, grouping labels, and pending duration. Silences suppress notifications without deleting evidence. Evaluation is opt-in, store locking prevents duplicate notifications, and the SLO target drives availability, burn-rate, and remaining-budget calculations.
 
 ### Issues
 
-Issues groups repeated errors by fingerprint. Lists support status, severity, platform, sorting, and bulk workflow changes. Detail shows first/last occurrence, count, affected context, events, stack frames, breadcrumbs, and tags. Resolve and ignore preserve the underlying evidence.
+Issues groups repeated errors by fingerprint. Lists support status, severity, platform, sorting, and bulk workflow changes. Detail shows first/last occurrence, count, affected context, events, stack frames, breadcrumbs, and tags. Resolve and ignore preserve evidence.
 
 ### Traces
 
-Traces explains request duration. Transactions summarize route volume and latency. Search filters sampled traces by identifier, duration, and status. Detail renders the parent-child span waterfall with service, operation, timing, status, and attributes. Errors and configured slow requests are retained even when ordinary fast requests are sampled.
+Traces explains request duration. Transactions summarize route volume and latency. Search filters traces by identifier, duration, and status. Detail renders the parent-child span waterfall with service, operation, timing, status, and attributes. Errors and configured slow requests are retained even when ordinary fast requests are sampled.
 
 ### Load Lab
 
@@ -621,13 +618,11 @@ Vitals **Ask AI** uses the same bounded queries as the current page and receives
 
 The main Agent Console has the same read-only Vitals access. It can discover fleet names and answer whole-server and individual-sandbox questions. Starting a load or security run requires a preview followed by explicit confirmation in a later interaction.
 
-### Telemetry retention and accuracy
+### Retention and documentation location
 
 Metrics are aggregated into fixed buckets and rolled up on the monitored product's schedule. Coarse-window p95/p99 use the worst relevant bucket so tail latency is over-estimated rather than hidden. Trace retention follows the collector's sampling policy.
 
-### Documentation location
-
-The main `/documentation` page is the canonical UI documentation location, including all Vitals guidance. Contextual Vitals help may remain available inside the observability workspace, but it does not replace this guide.
+The main `/documentation` page is the canonical UI documentation location, including all Vitals guidance. Contextual feature help may supplement but does not replace this guide.
 
 ## Glossary
 
