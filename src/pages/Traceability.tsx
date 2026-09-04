@@ -4,7 +4,6 @@ import { ChevronDown, ChevronRight, Sparkles, Loader2, Target, ShieldCheck, Aler
 import ExportMenu from '../components/ExportMenu';
 import EditableCaseCard from '../components/EditableCaseCard';
 import { normalizeTestCaseTypes } from '@/core/shared/testCaseTypes';
-import { useUrlState } from '@/src/lib/useUrlState';
 import { nextSort, sortRows, SortableHeader, type SortState } from '@/src/components/DataTable/sortable';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -52,8 +51,6 @@ export default function Traceability() {
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiWorking, setAiWorking] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
-  // #12 — matrix (table) view vs the detailed accordion. Matrix needs coverage for every requirement.
-  const [view, setView] = useUrlState('view', 'matrix', ['matrix', 'detailed'] as const);
   const [coverageLoaded, setCoverageLoaded] = useState(false);
   const [sort, setSort] = useState<SortState>({ key: 'requirement', direction: 'ascending' });
 
@@ -166,11 +163,6 @@ export default function Traceability() {
           <p className="text-sm text-[var(--text-muted)] mt-1">Requirement → test case coverage matrix. Edit or rework the linked cases in place.</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-0.5">
-            {(['matrix', 'detailed'] as const).map((v) => (
-              <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 text-sm font-medium rounded capitalize ${view === v ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>{v}</button>
-            ))}
-          </div>
           <ExportMenu
             filename="traceability-matrix"
             title="Traceability Matrix"
@@ -219,7 +211,7 @@ export default function Traceability() {
         {!loading && requirements.length === 0 && (
           <div className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Discover one from the Agent Console or the Requirements page.</div>
         )}
-        {!loading && requirements.length > 0 && view === 'matrix' && (
+        {!loading && requirements.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-left text-sm">
               <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
@@ -236,8 +228,8 @@ export default function Traceability() {
                   const badge = COVERAGE_BADGE[row.coverage] || COVERAGE_BADGE.unknown;
                   const firstOfReq = i === 0 || sortedTraceRows[i - 1].reqId !== row.reqId;
                   return (
-                    <tr key={`${row.reqId}-${row.caseId}-${i}`} className={`align-top hover:bg-[var(--bg-secondary)]/40 ${firstOfReq ? 'border-t-2 border-t-[var(--border)]' : ''}`}>
-                      <td className="px-4 py-2.5">{firstOfReq && (<><span className="font-mono text-[10px] text-[var(--text-muted)]">{row.reqId}</span><div className="font-medium text-[var(--text-primary)]">{row.requirement}</div></>)}</td>
+                    <tr key={`${row.reqId}-${row.caseId}-${i}`} onClick={() => toggle(row.reqId)} className={`cursor-pointer align-top hover:bg-[var(--bg-secondary)]/40 ${firstOfReq ? 'border-t-2 border-t-[var(--border)]' : ''}`}>
+                      <td className="px-4 py-2.5">{firstOfReq && (<div className="flex items-start gap-2">{expanded[row.reqId] ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" /> : <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />}<div><span className="font-mono text-[10px] text-[var(--text-muted)]">{row.reqId}</span><div className="font-medium text-[var(--text-primary)]">{row.requirement}</div></div></div>)}</td>
                       <td className="px-4 py-2.5">{firstOfReq && <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badge.cls}`}>{badge.label}</span>}</td>
                       <td className="px-4 py-2.5">{row.caseId && <span className="mr-2 font-mono text-xs text-[var(--text-muted)]">{row.caseId}</span>}<span className={row.caseId ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)] italic'}>{row.caseTitle}</span></td>
                       <td className="px-4 py-2.5 text-[var(--text-muted)]">{row.casePriority || '—'}</td>
@@ -250,9 +242,9 @@ export default function Traceability() {
           </div>
         )}
 
-        {view === 'detailed' && (
+        {Object.values(expanded).some(Boolean) && (
         <div className="divide-y divide-[var(--border)]">
-          {requirements.map((req) => {
+          {requirements.filter((req) => expanded[req.id]).map((req) => {
             const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
             const isOpen = !!expanded[req.id];
             const detail = details[req.id];

@@ -154,8 +154,8 @@ export default function VitalsDocs() {
 
         <Card title="Traceability">
           <p className="text-sm leading-relaxed text-[var(--text-muted)]">
-            Traceability links each requirement to its proving test cases. Use the matrix for a sortable, exportable audit view and Detailed for the requirement context
-            and in-place case editing. CRUD coverage belongs on the linked cases as their test type; the matrix exposes that type beside each requirement-to-case link.
+            Traceability links each requirement to its proving test cases in one sortable, exportable matrix. Select a requirement row to reveal its context and linked
+            cases inline, including in-place editing and unlink controls. CRUD coverage belongs on linked cases as their test type and is exported with each link.
           </p>
           <div className="mt-3 overflow-x-auto rounded-lg border border-[var(--border)]">
             <table className="w-full min-w-[540px] text-left text-xs">

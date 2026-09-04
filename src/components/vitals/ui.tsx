@@ -110,6 +110,10 @@ export function StatusDot({ color, className = '' }: { color: string; className?
   return <span aria-hidden="true" className={cn('inline-block h-2 w-2 shrink-0 rounded-full', className)} style={{ background: color }} />;
 }
 
+export function MetricTiles({ items, className = '' }: { items: Array<{ label: string; value: ReactNode; color?: string }>; className?: string }) {
+  return <div className={cn('mb-4 grid grid-cols-2 gap-3', className)}>{items.map((item) => <div key={item.label} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm"><span className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">{item.color && <StatusDot color={item.color} />}{item.label}</span><div className="mt-1 text-2xl font-bold text-[var(--text-primary)]">{item.value}</div></div>)}</div>;
+}
+
 export function Banner({ tone = 'info', children }: { tone?: 'info' | 'warning' | 'critical'; children: ReactNode }) {
   const Icon = tone === 'critical' ? ShieldAlert : tone === 'warning' ? AlertTriangle : Info;
   return (
