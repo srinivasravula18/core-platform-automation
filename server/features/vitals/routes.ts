@@ -20,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { listLabelValues, listMetricNames, querySchema, runMetricQuery } from './metricsQuery';
 import { getAnnotations, getOverviewSnapshot } from './overview';
+import { metricScopeSchema } from './scope';
 import { getIssue, issueListSchema, issueStatusSchema, listIssues, setIssueStatus } from './issues';
 import { getTrace, listSlowLoads, listTraces, listTransactions, traceListSchema } from './traces';
 import { getFleet } from './fleet';
@@ -39,7 +40,7 @@ import {
   updateRule,
 } from './alerts';
 import { dashboardSaveSchema, deleteDashboard, getDashboard, listDashboards, saveDashboard } from './dashboards';
-import { abortRun, getRun, listKnownProfiles, listRuns, startRun } from './runs';
+import { abortLocalRun, getRun, listLocalKnownProfiles, listRuns, startLocalRun } from './runs';
 import {
   createEngagement,
   createFinding,
@@ -273,7 +274,11 @@ export function registerVitalsRoutes(app: Express): void {
 
   app.get(
     '/api/vitals/overview',
-    handle(async (req) => getOverviewSnapshot(req.query.from as string | undefined, req.query.to as string | undefined)),
+    handle(async (req) => getOverviewSnapshot(
+      req.query.from as string | undefined,
+      req.query.to as string | undefined,
+      metricScopeSchema.parse({ kind: req.query.scopeKind, value: req.query.scopeValue }),
+    )),
   );
 
   app.get(
@@ -414,7 +419,7 @@ export function registerVitalsRoutes(app: Express): void {
 
   // ---- load & security runs ----
 
-  app.get('/api/vitals/tests/profiles', handle(async () => listKnownProfiles()));
+  app.get('/api/vitals/tests/profiles', handle(async () => listLocalKnownProfiles()));
 
   app.get('/api/vitals/tests/runs', handle(async (req) => listRuns(Number(req.query.limit ?? 50), req.query.profileId as string | undefined)));
 
@@ -431,11 +436,11 @@ export function registerVitalsRoutes(app: Express): void {
       const parsed = startRunSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, 'Invalid run request', parsed.error.issues);
       res.status(202);
-      return startRun(parsed.data);
+      return startLocalRun(parsed.data, actorOf(req) ?? 'unknown');
     }),
   );
 
-  app.post('/api/vitals/tests/runs/:id/abort', handle(async (req) => abortRun(req.params.id)));
+  app.post('/api/vitals/tests/runs/:id/abort', handle(async (req) => abortLocalRun(req.params.id)));
 
   app.get('/api/vitals/tests/control', handle(async () => controlStatus()));
 

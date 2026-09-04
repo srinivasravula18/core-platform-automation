@@ -14,6 +14,7 @@ import {
   Card,
   Chip,
   EmptyNote,
+  MetricTiles,
   StatusDot,
   TableFrame,
   Thead,
@@ -154,7 +155,7 @@ function RunLog({ runId }: { runId: string }) {
 }
 
 export default function VitalsLoadLab() {
-  const { refreshMs, live } = useVitalsView();
+  const { refreshMs, live, scope } = useVitalsView();
   const history = usePolled(() => vitals.runs(50), [], refreshMs || 30_000, live);
   // Polled alongside history so an active run and a control plane that drops out are both noticed.
   const catalogue = usePolled(() => vitals.profiles(), [], refreshMs || 30_000, live);
@@ -181,25 +182,18 @@ export default function VitalsLoadLab() {
       title="Load Lab"
       subtitle="Every load and security run the monitored product has recorded, with its summary, verdict and the resources it consumed."
     >
-      <div className="mb-4">
-        <RunLauncher catalogue={catalogue.data ?? null} onStarted={() => { history.reload(); catalogue.reload(); }} />
-      </div>
-
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {[
+      <MetricTiles
+        className="sm:grid-cols-4"
+        items={[
           { label: 'Recorded runs', value: String(runs.length), color: undefined as string | undefined },
           { label: 'Passed', value: String(stats.passed), color: STATUS.good },
           { label: 'Failed', value: String(stats.failed), color: STATUS.critical },
           { label: 'Best throughput', value: stats.best === null ? '—' : `${stats.best.toFixed(1)}/s`, color: undefined },
-        ].map((tile) => (
-          <div key={tile.label} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">
-              {tile.color && <StatusDot color={tile.color} />}
-              {tile.label}
-            </span>
-            <div className="mt-1 text-2xl font-bold text-[var(--text-primary)]">{tile.value}</div>
-          </div>
-        ))}
+        ]}
+      />
+
+      <div className="mb-4">
+        <RunLauncher catalogue={catalogue.data ?? null} excludeCategory="Security" title="Load test profiles" onStarted={() => { history.reload(); catalogue.reload(); }} />
       </div>
 
       <Card title="Run history" note="Select a run to see its summary, verdict, log and the resource window it ran in.">
@@ -328,6 +322,7 @@ export default function VitalsLoadLab() {
                       range={{ from: openRun.started_at, to: openRun.finished_at ?? 'now' }}
                       refreshMs={0}
                       live={false}
+                      scope={scope}
                     />
                   </div>
                 )}

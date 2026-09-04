@@ -4,7 +4,7 @@ import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
 import { formatBytes, formatDateTime, formatRelative } from '@/src/lib/vitals/format';
 import { STATUS } from '@/src/lib/vitals/theme';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
-import { Banner, Card, Chip, Meter, StatusDot, TableFrame, Thead, rowClass, tdMainClass, tdClass, tdNumClass, thClass, thNumClass } from '@/src/components/vitals/ui';
+import { Banner, Card, Chip, Meter, MetricTiles, StatusDot, TableFrame, Thead, rowClass, tdMainClass, tdClass, tdNumClass, thClass, thNumClass } from '@/src/components/vitals/ui';
 
 const HEALTH_TONE: Record<string, string> = {
   healthy: STATUS.good,
@@ -51,27 +51,20 @@ export default function VitalsFleet() {
         <Banner tone="info">The registry has no servers or environments recorded yet. Rows appear as soon as an agent reports in.</Banner>
       )}
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        {[
+      <MetricTiles
+        className="sm:grid-cols-3 lg:grid-cols-6"
+        items={[
           { label: 'Environments', value: environments.length, color: undefined as string | undefined },
           { label: 'Healthy', value: counts.healthy ?? 0, color: STATUS.good },
           { label: 'Degraded', value: (counts.degraded ?? 0) + (counts.stale ?? 0), color: STATUS.warning },
           { label: 'Down', value: counts.down ?? 0, color: STATUS.critical },
           { label: 'Servers', value: servers.length, color: undefined },
           { label: 'Cohorts', value: data?.cohorts.length ?? 0, color: undefined },
-        ].map((tile) => (
-          <div key={tile.label} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">
-              {tile.color && <StatusDot color={tile.color} />}
-              {tile.label}
-            </span>
-            <div className="mt-1 text-2xl font-bold text-[var(--text-primary)]">{tile.value}</div>
-          </div>
-        ))}
-      </div>
+        ]}
+      />
 
       <div className="grid gap-3">
-        <Card title="Servers" meta={<Chip>{servers.length}</Chip>} bodyClassName="max-h-96">
+        <Card title="Whole-server metrics" meta={<Chip>{servers.length}</Chip>} note="Host-wide load, CPU, memory and disk. These values are not a sum of sandbox rows." bodyClassName="max-h-96">
           <TableFrame className="max-h-96">
             <Thead>
               <tr>
@@ -125,9 +118,9 @@ export default function VitalsFleet() {
         </Card>
 
         <Card
-          title="Environments"
+          title="Individual sandbox metrics"
           meta={<Chip>{environments.length}</Chip>}
-          note="An environment is healthy when its heartbeat is current and every managed process is online."
+          note="Per-sandbox process, memory, database and file usage. Heartbeat and metric sample times are reported independently."
         >
           <TableFrame className="max-h-[28rem]">
             <Thead>
@@ -137,10 +130,11 @@ export default function VitalsFleet() {
                 <th className={thClass}>Server</th>
                 <th className={thClass}>Version</th>
                 <th className={thClass}>Processes</th>
+                <th className={thNumClass}>Memory</th>
                 <th className={thNumClass}>Database</th>
                 <th className={thNumClass}>Files</th>
                 <th className={thNumClass}>Issues</th>
-                <th className={thClass}>Last seen</th>
+                <th className={thClass}>Heartbeat / metrics</th>
               </tr>
             </Thead>
             <tbody>
@@ -163,19 +157,21 @@ export default function VitalsFleet() {
                       ? '—'
                       : `${environment.processes.filter((process) => (process.status ?? '').toLowerCase() === 'online').length}/${environment.processes.length} online`}
                   </td>
+                  <td className={tdNumClass}>{formatBytes(environment.memoryBytes)}</td>
                   <td className={tdNumClass}>{formatBytes(environment.dbBytes)}</td>
                   <td className={tdNumClass}>{formatBytes(environment.filesBytes)}</td>
                   <td className={tdNumClass} style={{ color: environment.unresolvedIssues > 0 ? STATUS.critical : undefined }}>
                     {environment.unresolvedIssues}
                   </td>
-                  <td className={tdClass} title={formatDateTime(environment.lastSeen)}>
-                    {formatRelative(environment.lastSeen)}
+                  <td className={tdClass} title={`Heartbeat: ${formatDateTime(environment.lastSeen)}\nMetrics: ${formatDateTime(environment.metricsAt)}`}>
+                    <div>{formatRelative(environment.lastSeen)}</div>
+                    <div className="text-[10px] text-[var(--text-muted)]">metrics {formatRelative(environment.metricsAt)}</div>
                   </td>
                 </tr>
               ))}
               {environments.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">
+                  <td colSpan={10} className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">
                     {fleet.loading ? 'Loading…' : 'No environments are registered.'}
                   </td>
                 </tr>

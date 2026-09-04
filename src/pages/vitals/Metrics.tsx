@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/src/lib/utils';
 import { vitals, type DashboardModel, type Panel } from '@/src/lib/vitals/api';
-import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
+import { scopeMatchers, usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
 import { BUILTIN_DASHBOARDS, resolveDashboard } from '@/src/lib/vitals/builtinDashboards';
 import type { Unit } from '@/src/lib/vitals/format';
 import DashboardView from '@/src/components/vitals/DashboardView';
@@ -22,7 +22,7 @@ const unitForMetric = (metric: string): Unit => {
 };
 
 export default function VitalsMetrics() {
-  const { range, refreshMs, live } = useVitalsView();
+  const { range, refreshMs, live, scope } = useVitalsView();
   const catalog = usePolled(() => vitals.metricNames(), [], 0, false);
   const dashboards = usePolled(() => vitals.dashboards(), [], 0, false);
   const [tab, setTab] = useState<'explore' | 'dashboards'>('explore');
@@ -57,13 +57,14 @@ export default function VitalsMetrics() {
                 refId: 'A',
                 metric,
                 reducer,
+                matchers: scopeMatchers(scope),
                 groupBy: groupBy ? [groupBy] : [],
                 legend: groupBy ? undefined : `${metric} (${reducer})`,
               },
             ],
           })
         : Promise.resolve({ series: [], resolution: '1m' as const, fromMs: 0, toMs: 0, stepMs: 0 }),
-    [metric, reducer, groupBy, range.from, range.to],
+    [metric, reducer, groupBy, range.from, range.to, scope.kind, scope.value],
     refreshMs,
     live,
   );
@@ -220,7 +221,7 @@ export default function VitalsMetrics() {
             </button>
             <h2 className="text-lg font-semibold text-[var(--text-primary)]">{detail.data.title}</h2>
           </div>
-          <DashboardView model={detail.data.model} range={range} refreshMs={refreshMs} live={live} />
+          <DashboardView model={detail.data.model} range={range} refreshMs={refreshMs} live={live} scope={scope} />
         </>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

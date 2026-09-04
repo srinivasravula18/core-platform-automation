@@ -54,14 +54,20 @@ export const usePolled = <T>(loader: () => Promise<T>, deps: unknown[], interval
 };
 
 export type TimeRange = { from: string; to: string };
+export type VitalsScope = { kind: 'all' | 'server' | 'sandbox'; value: string };
+
+export const scopeMatchers = (scope: VitalsScope) =>
+  scope.kind === 'all' ? [] : [{ label: scope.kind, op: 'eq' as const, value: scope.value }];
 
 interface VitalsViewState {
   range: TimeRange;
   refreshMs: number;
   live: boolean;
+  scope: VitalsScope;
   setRange: (range: TimeRange) => void;
   setRefreshMs: (ms: number) => void;
   setLive: (live: boolean) => void;
+  setScope: (scope: VitalsScope) => void;
 }
 
 /** Time range, refresh interval and live/paused are shared by every Vitals page and persisted. */
@@ -71,9 +77,11 @@ export const useVitalsView = create<VitalsViewState>()(
       range: { from: 'now-1h', to: 'now' },
       refreshMs: 30_000,
       live: true,
+      scope: { kind: 'all', value: '' },
       setRange: (range) => set({ range }),
       setRefreshMs: (refreshMs) => set({ refreshMs }),
       setLive: (live) => set({ live }),
+      setScope: (scope) => set({ scope }),
     }),
     { name: 'vitals-view' },
   ),

@@ -10,6 +10,9 @@
 
 import { abortControlRun, isControlConfigured, listControlProfiles, startControlRun, type StartRunInput } from './control';
 import { vitalsQuery } from './db';
+import { profileSummaries } from './testing/profiles';
+import { resolveTestTargets } from './testing/targetPolicy';
+import { abortLocalProcess, activeRunIds, MAX_CONCURRENT_RUNS, startLocalProcess } from './testing/runner';
 
 export const listRuns = async (limit = 50, profileId?: string) => {
   const capped = Math.min(Number(limit) || 50, 200);
@@ -36,6 +39,7 @@ export const getRun = async (id: string) => {
     `select seq, at, stream, line from obs.test_run_log where run_id = $1 order by seq limit 5000`,
     [id],
   );
+  const running = activeRunIds();
   return {
     run: run[0],
     logs: logs.map((row) => ({ seq: Number(row.seq), at: new Date(row.at).toISOString(), stream: row.stream, line: row.line })),
@@ -70,7 +74,7 @@ const profilesFromHistory = async () => {
  * real parameters, real targets, startable — merged with run counts from history. Without one it
  * degrades to the names history remembers.
  */
-export const listKnownProfiles = async () => {
+const listControlKnownProfiles = async () => {
   const historical = await profilesFromHistory();
   const runCounts = new Map(historical.map((profile) => [profile.id, profile.runCount]));
 
@@ -143,6 +147,39 @@ export const listKnownProfiles = async () => {
  * bounds, which targets may be hit — belongs to the product's console and is enforced there; adding
  * a second opinion here would only drift out of date.
  */
-export const startRun = async (input: StartRunInput) => startControlRun(input);
+export const startRun = async (_input: StartRunInput) => startLocalRun(_input);
 
-export const abortRun = async (runId: string) => abortControlRun(runId);
+export const abortRun = async (_runId: string) => abortLocalRun(_runId);
+
+/** Local catalog used by Vitals. The legacy proxy exports above are retained only until Phase 2 replaces the process lifecycle. */
+export const listLocalKnownProfiles = async () => {
+  const historical = await profilesFromHistory();
+  const runCounts = new Map(historical.map((profile) => [profile.id, profile.runCount]));
+  const targets = await resolveTestTargets();
+  const local = profileSummaries();
+  const localIds = new Set(local.map((profile) => profile.id));
+  const running = activeRunIds();
+  return {
+    profiles: [
+      ...local.map((profile) => ({ ...profile, runCount: runCounts.get(profile.id) ?? 0, startable: true })),
+      ...historical.filter((profile) => !localIds.has(profile.id)),
+    ],
+    activeRunId: running[0] ?? null,
+    activeRunIds: running,
+    maxConcurrentRuns: MAX_CONCURRENT_RUNS,
+    defaultTargetBaseUrl: targets[0]?.url ?? '',
+    allowedTargetBaseUrls: targets.map((target) => target.url),
+    pentestTargetBaseUrls: targets.filter((target) => target.pentestAllowed).map((target) => target.url),
+    targets,
+    userPoolAvailable: false,
+    executionAvailable: true,
+    executionMessage: null,
+  };
+};
+
+export const startLocalRun = async (input: StartRunInput, triggeredBy = 'unknown') => startLocalProcess(input, triggeredBy);
+
+export const abortLocalRun = abortLocalProcess;
+
+/** Existing agent callers use the same local catalogue as the Load Lab. */
+export const listKnownProfiles = listLocalKnownProfiles;

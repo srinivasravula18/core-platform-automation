@@ -29,6 +29,7 @@
     ".playwright-mcp",
     "architecture-import",
     "mcp-servers",
-    "agent"
+    "agent",
+    "tests/load"
   ]
 }
