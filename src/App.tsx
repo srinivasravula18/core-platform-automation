@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked, PlugZap } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, FolderGit2, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, BookOpen, Database, ShieldAlert, Trash2, Activity, ServerCog, LineChart, BellRing, AlertOctagon, Waypoints, Gauge, Crosshair, BookMarked } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { readScopedStorage, RUNTIME_MODEL_KEY, RUNTIME_MODEL_EVENT } from '@/src/lib/storage';
@@ -109,7 +109,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
         { name: 'Load Lab', href: '/vitals/load-lab', icon: Gauge },
         { name: 'Pentest', href: '/vitals/pentest', icon: Crosshair },
         { name: 'Docs', href: '/vitals/docs', icon: BookMarked },
-        { name: 'Connect', href: '/vitals/connect', icon: PlugZap },
       ],
     },
   ];
