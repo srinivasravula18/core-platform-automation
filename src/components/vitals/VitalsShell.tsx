@@ -124,6 +124,7 @@ export default function VitalsShell({
   subtitle,
   actions,
   showTimeControls = true,
+  showScopeControl = true,
   requiresConnection = true,
   showAgent = true,
   children,
@@ -132,6 +133,7 @@ export default function VitalsShell({
   subtitle?: string;
   actions?: ReactNode;
   showTimeControls?: boolean;
+  showScopeControl?: boolean;
   requiresConnection?: boolean;
   /** Off for pages with no window to reason about, such as Connect and Docs. */
   showAgent?: boolean;
@@ -158,7 +160,7 @@ export default function VitalsShell({
         subtitle={subtitle}
         actions={
           <>
-            {showTimeControls && !blocked && <ScopeControl />}
+            {showTimeControls && showScopeControl && !blocked && <ScopeControl />}
             {showTimeControls && !blocked && <TimeControls range={range} onRangeChange={setRange} />}
             {showAgent && !blocked && <AgentPanel range={range} scope={scope} />}
             {actions}

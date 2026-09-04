@@ -5,13 +5,13 @@ import { Modal } from '@/src/components/Modal';
 import { cn } from '@/src/lib/utils';
 import { vitals } from '@/src/lib/vitals/api';
 import { usePolled, useVitalsView } from '@/src/lib/vitals/hooks';
-import { formatRelative, formatValue } from '@/src/lib/vitals/format';
-import { statusForValue } from '@/src/lib/vitals/theme';
+import { formatBytes, formatRelative, formatValue } from '@/src/lib/vitals/format';
+import { STATUS, statusForValue } from '@/src/lib/vitals/theme';
 import DashboardView from '@/src/components/vitals/DashboardView';
 import { resolveDashboard } from '@/src/lib/vitals/builtinDashboards';
 import StatTile from '@/src/components/vitals/StatTile';
 import VitalsShell from '@/src/components/vitals/VitalsShell';
-import { Banner, Card, EmptyNote, buttonClass } from '@/src/components/vitals/ui';
+import { Banner, Card, Chip, EmptyNote, StatusDot, buttonClass } from '@/src/components/vitals/ui';
 
 type DetailKey = 'alerts' | 'rps' | 'errors' | 'p95' | 'cpu' | 'lag' | 'issues' | 'slo' | 'capacity' | 'incidents' | 'changes';
 
@@ -68,10 +68,11 @@ function Insight({ label, value, sub, onClick }: { label: string; value: string;
 
 export default function VitalsOverview() {
   const navigate = useNavigate();
-  const { range, refreshMs, live, scope } = useVitalsView();
+  const { range, refreshMs, live, scope, setScope } = useVitalsView();
   const [detail, setDetail] = useState<DetailKey | null>(null);
 
   const overview = usePolled(() => vitals.overview(range.from, range.to, scope), [range.from, range.to, scope.kind, scope.value], refreshMs, live);
+  const fleet = usePolled(() => vitals.fleet(), [], refreshMs || 30_000, live);
   const annotations = usePolled(() => vitals.annotations(range.from, range.to), [range.from, range.to], refreshMs, live);
   // Falls back to the compiled-in layout until somebody edits it, so charts render on a store
   // this console has never written to.
@@ -83,7 +84,7 @@ export default function VitalsOverview() {
   const incidentSignals = (overview.data?.alertStates.alerting ?? 0) + (overview.data?.issues.critical ?? 0);
 
   return (
-    <VitalsShell title="Overview" subtitle="Service health, throughput, latency and resources for the connected environment.">
+    <VitalsShell title="Overview" subtitle="Every server and sandbox at a glance, with fleet-wide operational detail below." showScopeControl={false}>
       {overview.error && (
         <Banner tone="critical">
           <strong>Cannot read metrics.</strong> {overview.error}
@@ -107,6 +108,33 @@ export default function VitalsOverview() {
         </Banner>
       )}
 
+      <Card
+        className="mb-4"
+        title="Fleet overview"
+        meta={<Chip>{(fleet.data?.servers.length ?? 0) + (fleet.data?.environments.length ?? 0)} targets</Chip>}
+        actions={<button type="button" onClick={() => setScope({ kind: 'all', value: '' })} className={buttonClass(scope.kind === 'all' ? 'primary' : 'secondary', 'py-1.5 text-xs')}>Whole fleet</button>}
+        note="All servers and sandboxes remain visible. Select a card only when you want the detailed charts below scoped to that target."
+      >
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {(fleet.data?.servers ?? []).map((server) => {
+            const selected = scope.kind === 'server' && scope.value === server.name;
+            const usedMemory = server.memoryTotalBytes !== null && server.memoryFreeBytes !== null ? server.memoryTotalBytes - server.memoryFreeBytes : null;
+            return <button key={`server-${server.name}`} type="button" onClick={() => setScope({ kind: 'server', value: server.name })} aria-pressed={selected} className={cn('rounded-xl border bg-[var(--bg-secondary)] p-4 text-left transition-colors hover:border-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]', selected ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)]')}>
+              <div className="flex items-start justify-between gap-2"><div><span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Server</span><h3 className="truncate font-semibold text-[var(--text-primary)]">{server.name}</h3></div><Chip><StatusDot color={server.health.level === 'healthy' ? STATUS.good : server.health.level === 'degraded' || server.health.level === 'stale' ? STATUS.warning : STATUS.critical} />{server.health.level}</Chip></div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div><span className="block text-[var(--text-muted)]">Load / cores</span><strong>{server.loadAvg1m?.toFixed(2) ?? '—'} / {server.cpuCount ?? '—'}</strong></div><div><span className="block text-[var(--text-muted)]">Memory used</span><strong>{formatBytes(usedMemory)}</strong></div><div><span className="block text-[var(--text-muted)]">Disk free</span><strong>{formatBytes(server.diskFreeBytes)}</strong></div><div><span className="block text-[var(--text-muted)]">Last seen</span><strong>{formatRelative(server.lastSeen)}</strong></div></div>
+            </button>;
+          })}
+          {(fleet.data?.environments ?? []).map((sandbox) => {
+            const selected = scope.kind === 'sandbox' && scope.value === sandbox.name;
+            const online = sandbox.processes.filter((process) => (process.status ?? '').toLowerCase() === 'online').length;
+            return <button key={`sandbox-${sandbox.name}`} type="button" onClick={() => setScope({ kind: 'sandbox', value: sandbox.name })} aria-pressed={selected} className={cn('rounded-xl border bg-[var(--bg-secondary)] p-4 text-left transition-colors hover:border-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]', selected ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)]')}>
+              <div className="flex items-start justify-between gap-2"><div className="min-w-0"><span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sandbox · {sandbox.server ?? sandbox.hostname ?? 'unassigned'}</span><h3 className="truncate font-semibold text-[var(--text-primary)]">{sandbox.name}</h3></div><Chip><StatusDot color={sandbox.health.level === 'healthy' ? STATUS.good : sandbox.health.level === 'degraded' || sandbox.health.level === 'stale' ? STATUS.warning : STATUS.critical} />{sandbox.health.level}</Chip></div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div><span className="block text-[var(--text-muted)]">Processes</span><strong>{online}/{sandbox.processes.length} online</strong></div><div><span className="block text-[var(--text-muted)]">Memory</span><strong>{formatBytes(sandbox.memoryBytes)}</strong></div><div><span className="block text-[var(--text-muted)]">Database / files</span><strong>{formatBytes(sandbox.dbBytes)} / {formatBytes(sandbox.filesBytes)}</strong></div><div><span className="block text-[var(--text-muted)]">Issues / seen</span><strong className={sandbox.unresolvedIssues ? 'text-red-400' : ''}>{sandbox.unresolvedIssues} · {formatRelative(sandbox.lastSeen)}</strong></div></div>
+            </button>;
+          })}
+          {!fleet.loading && !(fleet.data?.servers.length || fleet.data?.environments.length) && <div className="py-6 text-sm text-[var(--text-muted)]">No servers or sandboxes have reported yet.</div>}
+        </div>
+      </Card>
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile
           label="Firing alerts"
